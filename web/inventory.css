@@ -130,3 +130,9 @@ dialog .error { margin-top: 12px; padding: 8px; }
   .bills .bill-edit-items > li { grid-template-columns: minmax(0, 1fr) 80px; }
   .bills .bill-edit-items button { grid-column: 2; }
 }
+
+.checkout #sale-connection.sale-offline { background: #fff7e8; }
+.checkout #sale-queue li { flex-wrap: wrap; }
+.checkout #sale-queue li > span { flex: 1 1 240px; }
+.checkout #sale-queue small { display: block; color: #536375; }
+.checkout #sale-receipt-state { font-weight: 700; color: #8b4b00; }

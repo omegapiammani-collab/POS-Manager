@@ -6,16 +6,20 @@
   <title>ขายสินค้า | POS Manager</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/offline-store.js"></script>
   <script defer src="/checkout.js"></script>
 </head>
 <body class="checkout">
   <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
   <main class="frame">
     <div class="page-title"><h1>ขายสินค้า</h1><nav class="actions" aria-label="เมนู POS"><a class="pos-link" href="/">สินค้าและสต๊อก</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a></nav></div>
-    <div id="sale-pending" class="panel sale-pending" role="status" hidden>
-      <p>ยังไม่ได้รับผลยืนยันการปิดบิล กดส่งบิลเดิมอีกครั้งเพื่อดูผล</p>
-      <button id="sale-retry" type="button">ส่งบิลเดิมอีกครั้ง</button>
-    </div>
+    <p id="sale-connection" class="sale-message" role="status">กำลังเชื่อมต่อ…</p>
+    <section id="sale-pending" class="panel sale-pending" aria-labelledby="sale-queue-title" hidden>
+      <h2 id="sale-queue-title">บิลในเครื่องนี้</h2>
+      <p id="sale-queue-summary" class="muted" role="status"></p>
+      <ul id="sale-queue" class="lines"></ul>
+      <button id="sale-retry" type="button">ส่งบิลที่รออีกครั้ง</button>
+    </section>
     <p id="sale-message" class="sale-message" role="status" hidden></p>
     <div class="workspace">
       <section class="panel" aria-labelledby="sale-products-title">
@@ -50,6 +54,7 @@
             </div>
             <div id="sale-credit" hidden>
               <label>ลูกค้าเงินเชื่อ<select name="customer_id"></select></label>
+              <p id="sale-customer-state" class="muted" hidden>ยังไม่มีข้อมูลลูกค้าในเครื่อง กรุณาเชื่อมต่อก่อนขายเงินเชื่อ</p>
               <button id="sale-new-customer" class="secondary sale-cash-all" type="button">เพิ่มลูกค้า</button>
             </div>
             <p id="sale-balance" class="muted" aria-live="polite"></p>
@@ -70,6 +75,7 @@
   <dialog id="sale-receipt" aria-labelledby="sale-receipt-title">
     <article>
       <h2 id="sale-receipt-title">ใบเสร็จรับเงิน</h2>
+      <p id="sale-receipt-state" class="muted" hidden></p>
       <p id="sale-receipt-id" class="muted"></p>
       <p id="sale-receipt-date" class="muted"></p>
       <ul id="sale-receipt-lines" class="lines"></ul>

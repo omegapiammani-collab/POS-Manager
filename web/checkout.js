@@ -9,8 +9,20 @@ const formatter = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 });
 const cart = new Map();
 let products = [];
 let customers = [];
-let pending = restorePending();
-let sending = false;
+let legacyPending = restorePending();
+let staging = false;
+let syncing = false;
+let connected = navigator.onLine !== false;
+const snapshotKeys = new Set();
+const cacheProblems = new Set();
+let shellReady = false;
+let syncRequested = false;
+let stagedDuringSync = new Set();
+let queueRequest = 0;
+let queueProblem = false;
+let productsRequest = 0;
+let customersRequest = 0;
+const store = window.PosOffline;
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -33,7 +45,14 @@ async function api(path, data) {
     options.headers = { "Content-Type": "application/json" };
     options.body = JSON.stringify(data);
   }
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (failure) {
+    setConnected(false);
+    throw failure;
+  }
+  setConnected(response.status < 500);
   const result = await response.json();
   if (response.ok) return result;
   const error = new Error(result.error || "บันทึกไม่สำเร็จ");
@@ -72,14 +91,20 @@ function displayDecimal(value) {
   return formatter.format(Number(value));
 }
 
+function lineTotal(item) {
+  const quantity = boundedDecimal(item.quantity, 6);
+  const price = boundedDecimal(item.unit.price, 6, true);
+  if (!quantity || price === null) return null;
+  // Two six-decimal values yield twelve decimals. Round each line to a satang.
+  return (quantity * price + 5000000000n) / 10000000000n;
+}
+
 function cartTotal() {
   let total = 0n;
   for (const item of cart.values()) {
-    const quantity = boundedDecimal(item.quantity, 6);
-    const price = boundedDecimal(item.unit.price, 6, true);
-    if (!quantity || price === null) return null;
-    // Two six-decimal values yield twelve decimals. Round each line to a satang.
-    total += (quantity * price + 5000000000n) / 10000000000n;
+    const amount = lineTotal(item);
+    if (amount === null) return null;
+    total += amount;
   }
   return total;
 }
@@ -178,7 +203,7 @@ function updatePayment() {
   else balance.textContent = "ยอดชำระครบ";
 
   byId("sale-cash-all").disabled = !cart.size || total === null;
-  byId("sale-submit").disabled = !cart.size || difference !== 0n
+  byId("sale-submit").disabled = staging || !cart.size || difference !== 0n
     || (paid.credit > 0n && !payment.customer_id.value)
     || (paid.qr > 0n && !payment.qr_confirmed.checked);
 }
@@ -188,11 +213,12 @@ function clearQr() {
   byId("sale-qr-image").hidden = true;
   byId("sale-qr-state").hidden = true;
   payment.qr_confirmed.checked = false;
+  if (!connected) setConnected(false);
 }
 
 byId("sale-show-qr").addEventListener("click", () => {
   const amount = amounts().qr;
-  if (!(amount > 0n)) return;
+  if (!connected || !(amount > 0n)) return;
   const container = byId("sale-qr-image");
   const message = byId("sale-qr-state");
   const image = element("img");
@@ -234,26 +260,105 @@ function restorePending() {
   }
 }
 
-function setPending(payload) {
-  pending = payload;
-  try {
-    if (pending) sessionStorage.setItem(storageKey, JSON.stringify(pending));
-    else sessionStorage.removeItem(storageKey);
-  } catch {
-    // The current tab still retains the request when browser storage is unavailable.
+function setConnected(value) {
+  connected = value && navigator.onLine !== false;
+  const connection = byId("sale-connection");
+  const connectionMessage = connected ? "เชื่อมต่อแล้ว" : "ออฟไลน์ · ใช้ข้อมูลสินค้าและลูกค้าที่บันทึกไว้ในเครื่อง";
+  const prepared = shellReady && snapshotKeys.has("products") && snapshotKeys.has("customers");
+  const preparation = cacheProblems.size
+    ? " · เตรียมข้อมูลสำหรับออฟไลน์ไม่สำเร็จ"
+    : prepared ? " · เปิดหน้าขายและบันทึกบิลออฟไลน์ได้" : " · กำลังเตรียมข้อมูลสำหรับออฟไลน์";
+  connection.textContent = connectionMessage + preparation;
+  connection.classList.toggle("sale-offline", !connected || cacheProblems.size > 0);
+  byId("sale-show-qr").disabled = !connected;
+  byId("sale-new-customer").disabled = !connected;
+  if (!connected && byId("sale-qr-image").hidden) {
+    byId("sale-qr-state").textContent = "สร้าง QR ตามยอดได้เมื่อออนไลน์ ใช้ QR ร้านและตรวจสอบเงินโอนด้วยตนเอง";
+    byId("sale-qr-state").hidden = false;
+  } else if (connected && byId("sale-qr-state").textContent.startsWith("สร้าง QR ตามยอดได้เมื่อออนไลน์")) {
+    byId("sale-qr-state").hidden = true;
   }
-  renderPending();
 }
 
-function renderPending() {
+function lockSaleFields() {
   for (const id of ["sale-picker", "sale-cart-fields", "sale-payment-fields"]) {
-    byId(id).disabled = Boolean(pending);
+    byId(id).disabled = staging;
   }
-  byId("sale-pending").hidden = !pending || sending;
-  byId("sale-retry").disabled = sending;
+  updatePayment();
 }
 
-function showReceipt(sale) {
+async function showQueue() {
+  const request = ++queueRequest;
+  const queue = byId("sale-queue");
+  const summary = byId("sale-queue-summary");
+  let entries;
+  try {
+    entries = await store.list();
+    if (request !== queueRequest) return;
+    queueProblem = false;
+  } catch {
+    if (request !== queueRequest) return;
+    queueProblem = true;
+    entries = [];
+  }
+  const pendingCount = entries.filter(({ state }) => state === "pending").length;
+  const conflictCount = entries.filter(({ state }) => state === "conflict").length;
+  byId("sale-pending").hidden = !entries.length && !legacyPending && !queueProblem;
+  byId("sale-retry").disabled = syncing || staging || (!pendingCount && !legacyPending);
+  summary.textContent = queueProblem
+    ? "อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์"
+    : "รอส่ง " + (pendingCount + Number(Boolean(legacyPending))) + " บิล · ต้องตรวจสอบ " + conflictCount + " บิล";
+  queue.replaceChildren(...entries.map(({ payload, state, error }) => {
+    const row = element("li");
+    const total = paymentMethods.reduce((sum, method) =>
+      sum + (scaledDecimal(payload.payments[method], 2, true) ?? 0n), 0n
+    );
+    const title = element("span", money(total));
+    title.append(element("small", payload.id),
+      element("small", state === "conflict" ? error || "ต้องตรวจสอบ" : "รอส่งข้อมูล"));
+    row.append(title);
+    if (state === "conflict") {
+      const retry = element("button", "ลองส่งอีกครั้ง", "secondary");
+      retry.type = "button";
+      retry.disabled = syncing || staging;
+      retry.setAttribute("aria-label", "ลองส่งบิล " + payload.id + " อีกครั้ง");
+      retry.addEventListener("click", () => retryQueue(payload.id));
+      row.append(retry);
+    }
+    return row;
+  }));
+}
+
+async function migrateLegacy() {
+  if (!legacyPending) return;
+  await store.put(legacyPending);
+  legacyPending = null;
+  try {
+    sessionStorage.removeItem(storageKey);
+  } catch {
+    // The staged copy retains the same identifier if this tab retries migration.
+  }
+}
+
+function localReceipt(payload) {
+  return {
+    ...payload,
+    created_at: new Date().toISOString(),
+    total: moneyString(cartTotal()),
+    customer_name: customers.find(({ id }) => id === payload.customer_id)?.name,
+    items: [...cart.values()].map((item) => ({
+      name: item.product.name, unit_name: item.unit.name, quantity: item.quantity,
+      total: moneyString(lineTotal(item)),
+    })),
+  };
+}
+
+function showReceipt(sale, state = "synced") {
+  const temporary = state !== "synced";
+  byId("sale-receipt-title").textContent = temporary ? "หลักฐานการขายจากเครื่องนี้" : "ใบเสร็จรับเงิน";
+  byId("sale-receipt-state").textContent = state === "conflict"
+    ? "ต้องตรวจสอบก่อนบันทึกเข้าระบบ" : "รอส่งข้อมูลเข้าระบบ";
+  byId("sale-receipt-state").hidden = !temporary;
   byId("sale-receipt-id").textContent = "เลขอ้างอิง " + sale.id;
   const timestamp = new Date(sale.created_at.replace(" ", "T"));
   byId("sale-receipt-date").textContent = Number.isNaN(timestamp.getTime())
@@ -286,53 +391,75 @@ const saleErrors = {
   idempotency_conflict: "เลขอ้างอิงนี้ถูกใช้แล้ว กรุณาตรวจสอบบิลก่อนปิดบิลใหม่",
 };
 
-async function submitPending() {
-  if (!pending || sending) return;
-  sending = true;
-  renderPending();
-  status("กำลังบันทึกบิล…");
+async function syncSale(payload) {
   let sale;
   try {
-    sale = await api("/sales", pending);
+    sale = await api("/sales", payload);
   } catch (failure) {
-    if ([400, 404, 409, 413, 415, 422].includes(failure.status)) {
-      setPending(null);
-      status(saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ", true);
-      if (["price_changed", "insufficient_stock", "item_unavailable"].includes(failure.code)) {
-        await loadProducts();
-        if (failure.code === "price_changed") {
-          for (const item of cart.values()) {
-            const product = products.find(({ id }) => id === item.product.id);
-            const unit = product?.units.find(({ id }) => id === item.unit.id);
-            if (unit) item.unit = unit;
-          }
-          clearQr();
-          renderCart();
-        }
-      }
-    } else {
-      status("การเชื่อมต่อขัดข้อง กรุณาส่งบิลเดิมอีกครั้ง", true);
-    }
-    return;
-  } finally {
-    sending = false;
-    renderPending();
+    if (![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
+    const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
+    await store.update(payload.id, "conflict", reason);
+    return { state: "conflict", reason };
   }
-  setPending(null);
-  cart.clear();
-  paymentForm.reset();
-  clearQr();
-  renderCart();
-  status("ปิดบิลแล้ว");
-  showReceipt(sale);
-  loadProducts();
+  try {
+    await store.remove(payload.id);
+  } catch {
+    // The server has confirmed the sale. Retrying the retained identifier is safe.
+    status("บันทึกบิลแล้ว แต่ล้างคิวในเครื่องไม่สำเร็จ", true);
+  }
+  return { state: "synced", sale };
 }
 
-paymentForm.addEventListener("submit", (event) => {
+async function syncQueue(onlyId) {
+  if (syncing || staging) return;
+  syncing = true;
+  stagedDuringSync = new Set();
+  let synced = 0;
+  let conflicts = 0;
+  let deferred = false;
+  try {
+    await showQueue();
+    await migrateLegacy();
+    if (navigator.onLine === false) return;
+    for (const entry of await store.list()) {
+      if (stagedDuringSync.has(entry.payload.id)) continue;
+      if (onlyId ? entry.payload.id !== onlyId : entry.state !== "pending") continue;
+      const result = await syncSale(entry.payload);
+      if (result.state === "synced") synced++;
+      if (result.state === "conflict") conflicts++;
+      if (result.state === "pending") {
+        deferred = true;
+        break;
+      }
+    }
+    if (synced) loadProducts();
+    if (synced || conflicts || deferred) {
+      const parts = [];
+      if (synced) parts.push("ส่งสำเร็จ " + synced + " บิล");
+      if (conflicts) parts.push("ต้องตรวจสอบ " + conflicts + " บิล");
+      if (deferred) parts.push("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+      status(parts.join(" · "), Boolean(conflicts || deferred));
+    }
+  } catch {
+    status("จัดการคิวในเครื่องไม่สำเร็จ กรุณาลองอีกครั้ง", true);
+  } finally {
+    syncing = false;
+    await showQueue();
+    flushRequestedSync();
+  }
+}
+
+function flushRequestedSync() {
+  if (!syncRequested || syncing || staging || !connected) return;
+  syncRequested = false;
+  syncQueue();
+}
+
+paymentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (pending || sending || byId("sale-submit").disabled) return;
+  if (staging || byId("sale-submit").disabled) return;
   const paid = amounts();
-  setPending({
+  const payload = {
     id: crypto.randomUUID(),
     items: [...cart.values()].map(({ product, unit, quantity }) => ({
       product_id: product.id,
@@ -343,8 +470,50 @@ paymentForm.addEventListener("submit", (event) => {
     payments: Object.fromEntries(paymentMethods.map((method) => [method, moneyString(paid[method])])),
     customer_id: paid.credit > 0n ? payment.customer_id.value : null,
     qr_confirmed: paid.qr > 0n && payment.qr_confirmed.checked,
-  });
-  submitPending();
+  };
+  const receipt = localReceipt(payload);
+  const queuedDuringSync = syncing;
+  if (queuedDuringSync) stagedDuringSync.add(payload.id);
+  staging = true;
+  lockSaleFields();
+  let staged = false;
+  try {
+    await store.put(payload);
+    staged = true;
+    let result = { state: "pending" };
+    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(payload);
+    if (queuedDuringSync) syncRequested = true;
+    cart.clear();
+    paymentForm.reset();
+    clearQr();
+    renderCart();
+    if (result.state === "synced") {
+      status("ปิดบิลและส่งข้อมูลแล้ว");
+      loadProducts();
+    } else if (result.state === "conflict") {
+      status("บิลอยู่ในคิวตรวจสอบ · " + result.reason, true);
+      if (connected) loadProducts();
+    } else {
+      status("บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล");
+    }
+    showReceipt(result.sale ?? receipt, result.state);
+  } catch {
+    if (staged) {
+      cart.clear();
+      paymentForm.reset();
+      clearQr();
+      renderCart();
+      status("บันทึกบิลในเครื่องแล้ว · ตรวจสอบคิวก่อนส่งอีกครั้ง", true);
+      showReceipt(receipt, "pending");
+    } else {
+      status("บันทึกบิลในเครื่องไม่สำเร็จ กรุณาลองอีกครั้ง", true);
+    }
+  } finally {
+    staging = false;
+    lockSaleFields();
+    await showQueue();
+    flushRequestedSync();
+  }
 });
 
 paymentForm.addEventListener("input", (event) => {
@@ -358,7 +527,15 @@ byId("sale-cash-all").addEventListener("click", () => {
   clearQr();
   updatePayment();
 });
-byId("sale-retry").addEventListener("click", submitPending);
+function retryQueue(onlyId) {
+  if (navigator.onLine === false) {
+    status("ยังออฟไลน์อยู่ บิลยังเก็บไว้ในเครื่องนี้", true);
+    return;
+  }
+  syncQueue(onlyId);
+}
+
+byId("sale-retry").addEventListener("click", () => retryQueue());
 byId("sale-search").addEventListener("input", renderProducts);
 byId("sale-receipt-close").addEventListener("click", () => byId("sale-receipt").close());
 byId("sale-print").addEventListener("click", () => window.print());
@@ -368,6 +545,7 @@ const customerForm = customerDialog.querySelector("form");
 const customerError = customerForm.querySelector(".error");
 const customerSave = customerForm.querySelector("button:not([type])");
 byId("sale-new-customer").addEventListener("click", () => {
+  if (!connected) return;
   customerForm.reset();
   customerError.hidden = true;
   customerDialog.showModal();
@@ -380,6 +558,11 @@ customerDialog.addEventListener("cancel", (event) => {
 customerForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (customerSave.disabled) return;
+  if (!connected) {
+    customerError.textContent = "เพิ่มลูกค้าได้เมื่อเชื่อมต่อกับระบบ";
+    customerError.hidden = false;
+    return;
+  }
   const name = customerForm.elements.name.value.trim();
   if (!name) return;
   customerSave.disabled = customerClose.disabled = true;
@@ -388,6 +571,7 @@ customerForm.addEventListener("submit", async (event) => {
     const customer = await api("/customers", { name });
     customers.push(customer);
     renderCustomers(customer.id);
+    saveSnapshot("customers", customers);
     customerDialog.close();
   } catch {
     customerError.textContent = "บันทึกลูกค้าไม่สำเร็จ กรุณาลองอีกครั้ง";
@@ -397,23 +581,88 @@ customerForm.addEventListener("submit", async (event) => {
   }
 });
 
-async function loadProducts() {
+async function saveSnapshot(key, value) {
   try {
-    products = await api("/products");
-    renderProducts();
+    await store.putSnapshot(key, value);
+    snapshotKeys.add(key);
+    cacheProblems.delete(key);
   } catch {
-    byId("sale-products-state").textContent = "โหลดสินค้าไม่สำเร็จ กรุณารีเฟรชหน้า";
+    cacheProblems.add(key);
+  }
+  setConnected(connected);
+}
+
+async function cachedRead(key, path) {
+  if (navigator.onLine !== false) {
+    try {
+      return { data: await api(path), fresh: true };
+    } catch {
+      // Keep the last successful server snapshot for disconnected sales.
+    }
+  }
+  const data = await store.getSnapshot(key);
+  if (Array.isArray(data)) snapshotKeys.add(key);
+  setConnected(connected);
+  return { data, fresh: false };
+}
+
+async function loadProducts() {
+  const request = ++productsRequest;
+  try {
+    const { data, fresh } = await cachedRead("products", "/products");
+    if (request !== productsRequest) return;
+    if (!Array.isArray(data)) throw new Error("Missing products");
+    products = data;
+    renderProducts();
+    if (fresh) saveSnapshot("products", data);
+  } catch {
+    if (request !== productsRequest) return;
+    byId("sale-products-state").textContent = "ยังไม่มีข้อมูลสินค้าในเครื่อง กรุณาเปิดหน้านี้ขณะออนไลน์";
     byId("sale-products-state").hidden = false;
   }
 }
 
-renderCustomers();
-renderPending();
-loadProducts();
-api("/customers").then((rows) => {
-  const knownIds = new Set(customers.map((customer) => customer.id));
-  customers.push(...rows.filter((customer) => !knownIds.has(customer.id)));
-  renderCustomers(payment.customer_id.value);
-}).catch(() => {
-  status("โหลดรายชื่อลูกค้าไม่สำเร็จ กรุณารีเฟรชก่อนขายเงินเชื่อ", true);
+async function loadCustomers() {
+  const request = ++customersRequest;
+  try {
+    const { data, fresh } = await cachedRead("customers", "/customers");
+    if (request !== customersRequest) return;
+    if (!Array.isArray(data)) throw new Error("Missing customers");
+    const knownIds = new Set(data.map(({ id }) => id));
+    customers = [...data, ...customers.filter(({ id }) => !knownIds.has(id))];
+    renderCustomers(payment.customer_id.value);
+    byId("sale-customer-state").hidden = true;
+    if (fresh) saveSnapshot("customers", customers);
+  } catch {
+    if (request !== customersRequest) return;
+    byId("sale-customer-state").hidden = false;
+  }
+}
+
+window.addEventListener("online", () => {
+  setConnected(true);
+  loadProducts();
+  loadCustomers();
+  syncRequested = true;
+  flushRequestedSync();
 });
+window.addEventListener("offline", () => setConnected(false));
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/checkout" })
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => {
+      shellReady = true;
+      setConnected(connected);
+    })
+    .catch(() => {
+      cacheProblems.add("shell");
+      setConnected(connected);
+    });
+} else {
+  cacheProblems.add("shell");
+}
+setConnected(connected);
+renderCustomers();
+loadProducts();
+loadCustomers();
+syncQueue();

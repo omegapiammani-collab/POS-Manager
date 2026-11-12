@@ -23,6 +23,8 @@ WEB_ASSETS = {
     "/": ("index.html", "text/html"),
     "/checkout": ("checkout.html", "text/html"),
     "/checkout.js": ("checkout.js", "text/javascript"),
+    "/offline-store.js": ("offline-store.js", "text/javascript"),
+    "/sw.js": ("sw.js", "text/javascript"),
     "/debts": ("debts.html", "text/html"),
     "/debts.js": ("debts.js", "text/javascript"),
     "/bills": ("bills.html", "text/html"),
