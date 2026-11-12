@@ -353,12 +353,18 @@ function localReceipt(payload) {
   };
 }
 
+function hasStockShortage(sale) {
+  return sale?.stock_shortages?.some(({ remaining }) => Number(remaining) > 0) ?? false;
+}
+
 function showReceipt(sale, state = "synced") {
   const temporary = state !== "synced";
   byId("sale-receipt-title").textContent = temporary ? "หลักฐานการขายจากเครื่องนี้" : "ใบเสร็จรับเงิน";
   byId("sale-receipt-state").textContent = state === "conflict"
     ? "ต้องตรวจสอบก่อนบันทึกเข้าระบบ" : "รอส่งข้อมูลเข้าระบบ";
-  byId("sale-receipt-state").hidden = !temporary;
+  const shortage = hasStockShortage(sale);
+  if (shortage) byId("sale-receipt-state").textContent = "ส่งบิลแล้ว · ตรวจสอบสต๊อกติดลบที่หน้าสินค้าและสต๊อก";
+  byId("sale-receipt-state").hidden = !temporary && !shortage;
   byId("sale-receipt-id").textContent = "เลขอ้างอิง " + sale.id;
   const timestamp = new Date(sale.created_at.replace(" ", "T"));
   byId("sale-receipt-date").textContent = Number.isNaN(timestamp.getTime())
@@ -394,7 +400,7 @@ const saleErrors = {
 async function syncSale(payload) {
   let sale;
   try {
-    sale = await api("/sales", payload);
+    sale = await api(payload.offline ? "/offline-sales" : "/sales", payload);
   } catch (failure) {
     if (![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
     const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
@@ -416,6 +422,7 @@ async function syncQueue(onlyId) {
   stagedDuringSync = new Set();
   let synced = 0;
   let conflicts = 0;
+  let shortages = 0;
   let deferred = false;
   try {
     await showQueue();
@@ -425,7 +432,10 @@ async function syncQueue(onlyId) {
       if (stagedDuringSync.has(entry.payload.id)) continue;
       if (onlyId ? entry.payload.id !== onlyId : entry.state !== "pending") continue;
       const result = await syncSale(entry.payload);
-      if (result.state === "synced") synced++;
+      if (result.state === "synced") {
+        synced++;
+        if (hasStockShortage(result.sale)) shortages++;
+      }
       if (result.state === "conflict") conflicts++;
       if (result.state === "pending") {
         deferred = true;
@@ -436,9 +446,10 @@ async function syncQueue(onlyId) {
     if (synced || conflicts || deferred) {
       const parts = [];
       if (synced) parts.push("ส่งสำเร็จ " + synced + " บิล");
+      if (shortages) parts.push("สต๊อกติดลบ " + shortages + " บิล · ตรวจที่หน้าสินค้าและสต๊อก");
       if (conflicts) parts.push("ต้องตรวจสอบ " + conflicts + " บิล");
       if (deferred) parts.push("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
-      status(parts.join(" · "), Boolean(conflicts || deferred));
+      status(parts.join(" · "), Boolean(conflicts || deferred || shortages));
     }
   } catch {
     status("จัดการคิวในเครื่องไม่สำเร็จ กรุณาลองอีกครั้ง", true);
@@ -461,6 +472,7 @@ paymentForm.addEventListener("submit", async (event) => {
   const paid = amounts();
   const payload = {
     id: crypto.randomUUID(),
+    ...((!connected || navigator.onLine === false) ? { offline: true } : {}),
     items: [...cart.values()].map(({ product, unit, quantity }) => ({
       product_id: product.id,
       unit_id: unit.id,

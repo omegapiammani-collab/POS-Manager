@@ -128,6 +128,9 @@ function renderList() {
     title.append(element("small", bill.id));
     const total = element("span", moneyText(bill.total));
     if (bill.status === "voided") total.append(element("small", "ยกเลิกแล้ว", "low"));
+    else if (bill.stock_shortages?.some(({ remaining }) => Number(remaining) > 0)) {
+      total.append(element("small", "รอรับสินค้าเพื่อปรับต้นทุน", "low"));
+    }
     button.append(title, total);
     button.addEventListener("click", () => selectBill(bill.id));
     row.append(button);
@@ -155,6 +158,25 @@ function renderDetail() {
   byId("bill-items").replaceChildren(...bill.items.map((item) =>
     line(item.name + " × " + numberFormat.format(Number(item.quantity)) + " " + item.unit_name, moneyText(item.total))
   ));
+  const shortages = byId("bill-stock-shortages");
+  const rows = bill.stock_shortages ?? [];
+  shortages.hidden = !rows.length;
+  shortages.replaceChildren(...rows.flatMap((shortage) => {
+    const name = bill.items[shortage.position]?.name ?? "สินค้า";
+    const remaining = Number(shortage.remaining);
+    const details = shortage.fills.map(({ quantity, unit_cost }) =>
+      line(name + " · ต้นทุนจริง " + numberFormat.format(Number(quantity)) + " หน่วยสต๊อก",
+        numberFormat.format(Number(unit_cost)) + " บาท/หน่วยสต๊อก")
+    );
+    if (remaining > 0) {
+      const cost = shortage.provisional_unit_cost;
+      details.push(line(
+        name + " · ขาด " + numberFormat.format(remaining) + " หน่วยสต๊อก",
+        cost === null ? "รอต้นทุน" : "ทุนชั่วคราว " + numberFormat.format(Number(cost)) + " บาท/หน่วยสต๊อก"
+      ));
+    }
+    return details;
+  }));
   byId("bill-total").textContent = "ยอดรวม " + moneyText(bill.total);
   byId("bill-payments").replaceChildren(...Object.entries(methods).flatMap(([method, label]) =>
     decimal(bill.payments[method], 2, true) > 0n ? [line(label, moneyText(bill.payments[method]))] : []
@@ -398,6 +420,7 @@ const errors = {
   insufficient_stock: "สินค้าคงเหลือไม่พอ กรุณาตรวจสอบจำนวน",
   item_unavailable: "สินค้าหรือหน่วยขายบางรายการไม่พร้อมใช้งาน",
   idempotency_conflict: "เลขอ้างอิงนี้ถูกใช้แล้ว กรุณาตรวจสอบประวัติบิล",
+  stock_shortage_unresolved: "กรุณารับสินค้าเข้าจนยอดพ้นติดลบก่อนแก้ไขหรือยกเลิกบิล",
   sale_already_voided: "บิลนี้ถูกยกเลิกแล้ว กรุณาตรวจสอบประวัติบิล",
 };
 

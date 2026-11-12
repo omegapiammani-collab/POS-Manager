@@ -5,6 +5,7 @@ import json
 from uuid import UUID, uuid4
 
 from inventory import number
+from stock_shortages import SHORTAGE_SCHEMA, sale_shortages
 
 SALES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
     base_unit_cost TEXT,
     PRIMARY KEY (sale_id, position)
 );
-"""
+""" + SHORTAGE_SCHEMA
 CENT = Decimal("0.01")
 PAYMENT_METHODS = ("cash", "qr", "credit")
 
@@ -74,7 +75,7 @@ def read_sale(db, sale_id, *, include_item_ids=False):
     item_fields = ("name", "unit_name", "quantity", "unit_price", "total")
     if include_item_ids:
         item_fields += ("product_id", "unit_id")
-    return {
+    sale = {
         "id": row[0],
         "created_at": row[1],
         "total": row[2],
@@ -86,6 +87,11 @@ def read_sale(db, sale_id, *, include_item_ids=False):
         "customer_id": row[6],
         "customer_name": row[7],
     }
+
+    shortages = sale_shortages(db, sale_id)
+    if shortages:
+        sale["stock_shortages"] = shortages
+    return sale
 
 
 def checkout_number(value, field, *, positive=False, places=6, maximum=Decimal("1000000000")):
@@ -153,11 +159,12 @@ def checkout_hash(items, payments, customer_id, qr_confirmed):
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
 
-def prepare_items(db, items):
+def prepare_items(db, items, *, allow_negative):
     stock = {}
     details = []
+    shortages = []
     total = Decimal(0)
-    for product_id, unit_id, quantity, expected_price in items:
+    for position, (product_id, unit_id, quantity, expected_price) in enumerate(items):
         row = db.execute(
             "SELECT p.name, p.quantity, p.average_cost, u.name, u.multiplier, u.price "
             "FROM products p JOIN units u ON p.id = u.product_id WHERE p.id = ? AND u.id = ?",
@@ -169,9 +176,13 @@ def prepare_items(db, items):
         price = Decimal(unit_price)
         if price != expected_price:
             raise SaleConflict("price_changed", "A unit price changed. Refresh the cart")
-        remaining = stock.get(product_id, Decimal(available)) - quantity * Decimal(multiplier)
-        if remaining < 0:
+        before = stock.get(product_id, Decimal(available))
+        remaining = before - quantity * Decimal(multiplier)
+        if remaining < 0 and not allow_negative:
             raise SaleConflict("insufficient_stock", "A product has insufficient stock")
+        if remaining < 0:
+            shortage = str(min(before, Decimal(0)) - remaining)
+            shortages.append((position, product_id, shortage, shortage))
         stock[product_id] = remaining
         line_total = (quantity * price).quantize(CENT, rounding=ROUND_HALF_UP)
         total += line_total
@@ -179,17 +190,17 @@ def prepare_items(db, items):
             product_id, unit_id, name, unit_name, str(quantity), unit_price,
             str(line_total), multiplier, average_cost,
         ))
-    return stock, details, total
+    return stock, details, total, shortages
 
 
-def checkout(db, data):
+def checkout(db, data, *, allow_negative=False):
     validated = validate_checkout(data)
     with db:
         db.execute("BEGIN IMMEDIATE")
-        return checkout_in_transaction(db, validated)
+        return checkout_in_transaction(db, validated, allow_negative=allow_negative)
 
 
-def checkout_in_transaction(db, validated):
+def checkout_in_transaction(db, validated, *, allow_negative=False):
     if not db.in_transaction:
         raise RuntimeError("Checkout requires a transaction")
     sale_id, items, payments, customer_id, qr_confirmed = validated
@@ -209,7 +220,7 @@ def checkout_in_transaction(db, validated):
 
     with localcontext() as context:
         context.prec = 50
-        stock, details, total = prepare_items(db, items)
+        stock, details, total, shortages = prepare_items(db, items, allow_negative=allow_negative)
         if sum(payments.values()) != total:
             raise ValueError("Payment amounts must add up to the sale total")
         db.execute(
@@ -224,6 +235,12 @@ def checkout_in_transaction(db, validated):
         "quantity, unit_price, total, multiplier, base_unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ((sale_id, position, *detail) for position, detail in enumerate(details)),
     )
+    if shortages:
+        db.executemany(
+            "INSERT INTO stock_shortages (sale_id, position, product_id, quantity, remaining) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ((sale_id, *shortage) for shortage in shortages),
+        )
     db.executemany(
         "UPDATE products SET quantity = ? WHERE id = ?",
         ((str(remaining), product_id) for product_id, remaining in stock.items()),

@@ -1,7 +1,9 @@
 """Inventory foundation. Quantities and costs use exact decimal arithmetic."""
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from uuid import uuid4
 import sqlite3
+
+from stock_shortages import cover_shortages
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -69,17 +71,26 @@ def receive(db, product_id, unit_id, quantity, unit_cost):
         row = db.execute('SELECT p.quantity, p.average_cost, u.multiplier FROM products p JOIN units u ON u.product_id = p.id WHERE p.id = ? AND u.id = ?', (product_id, unit_id)).fetchone()
         if row is None:
             raise ValueError('Product or unit not found')
-        old_quantity = Decimal(row[0])
-        if old_quantity < 0:
-            raise ValueError('Negative stock reconciliation is not implemented')
-        multiplier = Decimal(row[2])
-        added = quantity * multiplier
-        new_quantity = old_quantity + added
-        old_value = old_quantity * Decimal(row[1] or '0')
-        average = (old_value + quantity * unit_cost) / new_quantity
         receipt_id = str(uuid4())
-        db.execute('INSERT INTO receipts (id, product_id, unit_id, quantity, unit_cost) VALUES (?, ?, ?, ?, ?)', (receipt_id, product_id, unit_id, str(quantity), str(unit_cost)))
-        db.execute('UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?', (str(new_quantity), str(average), product_id))
+        db.execute(
+            'INSERT INTO receipts (id, product_id, unit_id, quantity, unit_cost) VALUES (?, ?, ?, ?, ?)',
+            (receipt_id, product_id, unit_id, str(quantity), str(unit_cost)),
+        )
+        with localcontext() as context:
+            context.prec = 50
+            old_quantity = Decimal(row[0])
+            multiplier = Decimal(row[2])
+            added = quantity * multiplier
+            new_quantity = old_quantity + added
+            if old_quantity < 0:
+                incoming_cost = unit_cost / multiplier
+                cover_shortages(db, product_id, receipt_id, min(-old_quantity, added), incoming_cost)
+                average = str(incoming_cost) if new_quantity >= 0 else row[1]
+            else:
+                old_value = old_quantity * Decimal(row[1] or '0')
+                average = str((old_value + quantity * unit_cost) / new_quantity)
+        db.execute('UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?',
+                   (str(new_quantity), average, product_id))
         db.commit()
         return receipt_id
     except Exception:

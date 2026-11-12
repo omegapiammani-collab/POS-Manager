@@ -48,7 +48,7 @@ function renderList() {
     name.append(element("small", product.code));
     const stock = element("span", format(product.quantity) + " " + product.base_unit);
     if (product.low_stock) {
-      const low = element("small", "ใกล้หมด");
+      const low = element("small", Number(product.quantity) < 0 ? "สต๊อกติดลบ" : "ใกล้หมด");
       low.className = "low";
       stock.append(low);
     }
@@ -82,7 +82,12 @@ async function renderDetail() {
   byId("detail-title").textContent = product?.name ?? "รายละเอียดสินค้า";
   if (!product) return;
   byId("code").textContent = product.code;
+  const negative = Number(product.quantity) < 0;
   byId("quantity").textContent = format(product.quantity) + " " + product.base_unit;
+  byId("stock-shortage").hidden = !negative;
+  byId("stock-shortage").textContent = negative
+    ? "สต๊อกติดลบ ตรวจยอดและบันทึกรับสินค้าเพื่อจัดสรรต้นทุนจริงให้บิลที่ค้าง"
+    : "";
   byId("average").textContent = product.average_cost === null
     ? "ยังไม่มีต้นทุน"
     : format(product.average_cost) + " บาท / " + product.base_unit;

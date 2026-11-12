@@ -9,6 +9,8 @@ from sales import (
     SaleConflict, checkout_hash, checkout_in_transaction, checkout_number, read_sale, uuid_field, validate_checkout,
 )
 
+from stock_shortages import sale_shortages
+
 CORRECTION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sale_corrections (
     id TEXT PRIMARY KEY,
@@ -87,13 +89,21 @@ def restore_stock(db, sale_id):
     restored = defaultdict(lambda: [Decimal(0), Decimal(0), Decimal(0)])
     with localcontext() as context:
         context.prec = 50
-        for product_id, quantity, multiplier, cost in db.execute(
-            "SELECT product_id, quantity, multiplier, base_unit_cost "
+        shortages = {row["position"]: row for row in sale_shortages(db, sale_id)}
+        for position, product_id, quantity, multiplier, cost in db.execute(
+            "SELECT position, product_id, quantity, multiplier, base_unit_cost "
             "FROM sale_items WHERE sale_id = ?", (sale_id,),
         ):
             quantity = Decimal(quantity) * Decimal(multiplier)
             entry = restored[product_id]
             entry[0] += quantity
+            shortage = shortages.get(position)
+            if shortage:
+                quantity -= Decimal(shortage["quantity"])
+                for fill in shortage["fills"]:
+                    applied = Decimal(fill["quantity"])
+                    entry[1] += applied
+                    entry[2] += applied * Decimal(fill["unit_cost"])
             if cost is not None:
                 entry[1] += quantity
                 entry[2] += quantity * Decimal(cost)
@@ -103,8 +113,12 @@ def restore_stock(db, sale_id):
                 "SELECT quantity, average_cost FROM products WHERE id = ?", (product_id,),
             ).fetchone()
             quantity = Decimal(quantity)
+            if quantity < 0:
+                raise SaleConflict(
+                    "stock_shortage_unresolved", "Receive stock before correcting a sale for this product",
+                )
             new_quantity = quantity + restored_qty
-            if known_qty and quantity >= 0:
+            if known_qty:
                 if average is not None:
                     existing_valued_qty = quantity + restored_qty - known_qty
                     new_value = existing_valued_qty * Decimal(average) + known_value

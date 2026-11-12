@@ -16,6 +16,7 @@ from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
 )
 from sales import SALES_SCHEMA, SaleConflict, add_customer, checkout, customer_list, read_sale, uuid_field
+from stock_shortages import list_stock_shortages
 
 MAX_BODY = 8192
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -141,12 +142,17 @@ class InventoryHandler(BaseHTTPRequestHandler):
             created, correction = correct_sale(db, sale_id, self.read_json())
             return (201 if created else 200), correction
 
-        if parts == ["sales"] and self.command == "POST":
-            created, sale = checkout(db, self.read_json())
+        if parts == ["stock-shortages"] and self.command == "GET":
+            return 200, list_stock_shortages(db)
+
+        if parts in (["sales"], ["offline-sales"]) and self.command == "POST":
+            created, sale = checkout(db, self.read_json(), allow_negative=parts == ["offline-sales"])
             return (201 if created else 200), sale
 
         if len(parts) == 2 and parts[0] == "sales" and self.command == "GET":
-            sale = read_sale(db, uuid_field(parts[1], "id"))
+            with db:
+                db.execute("BEGIN")
+                sale = read_sale(db, uuid_field(parts[1], "id"))
             if sale is None:
                 raise RequestError(404, "Sale not found")
             return 200, sale

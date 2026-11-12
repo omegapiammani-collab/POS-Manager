@@ -116,3 +116,68 @@ class OfflineApiTests(unittest.TestCase):
             {receipt["id"] for receipt in self.expect(200, "/sale-history")},
             {first_sale["id"], second_sale["id"]},
         )
+
+    def test_two_offline_sales_survive_and_receipts_reconcile_cost(self):
+        product = self.expect(201, "/products", {
+            "code": "W02", "name": "น้ำดื่ม", "base_unit": "ขวด", "price": "10",
+        })
+        self.replenish(product)
+        first, second = self.sale(product), self.sale(product)
+        second["items"][0]["quantity"] = "2"
+        second["payments"]["cash"] = "20"
+        self.expect(201, "/offline-sales", first)
+        self.expect(409, "/sales", second)
+        saved = self.expect(201, "/offline-sales", second)
+        self.assertEqual(self.expect(200, "/sales", second), saved)
+        self.assertEqual(self.stock(), -2)
+        self.assertEqual(self.expect(200, f"/sales/{first['id']}")["id"], first["id"])
+        shortage, = saved["stock_shortages"]
+        self.assertEqual(Decimal(shortage["provisional_unit_cost"]), 5)
+        self.assertEqual(Decimal(shortage["remaining"]), 2)
+        self.assertEqual(self.expect(200, "/stock-shortages")[0]["sale_id"], second["id"])
+
+        receipt_path = f"/products/{product['id']}/receipts"
+        first_fill = self.expect(201, receipt_path, {
+            "unit_id": product["base_unit_id"], "quantity": "1", "unit_cost": "7",
+        })
+        self.assertEqual(self.stock(), -1)
+        self.assertEqual(Decimal(self.expect(200, "/stock-shortages")[0]["remaining"]), 1)
+
+        correction = {"id": str(uuid4()), "reason": "ยกเลิกบิล", "replacement": None}
+        path = f"/sales/{second['id']}/corrections"
+        self.assertEqual(self.expect(409, path, correction)["code"], "stock_shortage_unresolved")
+
+        second_fill = self.expect(201, receipt_path, {
+            "unit_id": product["base_unit_id"], "quantity": "2", "unit_cost": "9",
+        })
+        self.assertEqual(self.stock(), 1)
+        self.assertEqual(self.expect(200, "/stock-shortages"), [])
+        reconciled, = self.expect(200, f"/sales/{second['id']}")["stock_shortages"]
+        self.assertEqual(Decimal(reconciled["remaining"]), 0)
+        self.assertEqual(
+            [(f["receipt_id"], Decimal(f["quantity"]), Decimal(f["unit_cost"])) for f in reconciled["fills"]],
+            [(first_fill["id"], Decimal(1), Decimal(7)), (second_fill["id"], Decimal(1), Decimal(9))],
+        )
+        self.assertEqual(Decimal(self.expect(200, "/products")[0]["average_cost"]), 9)
+        self.expect(201, path, correction)
+        self.assertEqual(self.stock(), 3)
+        self.assertAlmostEqual(Decimal(self.expect(200, "/products")[0]["average_cost"]), Decimal(25) / 3)
+
+    def test_offline_sale_with_no_prior_cost_uses_actual_cost_when_received(self):
+        product = self.expect(201, "/products", {
+            "code": "W03", "name": "น้ำดื่ม", "base_unit": "ขวด", "price": "10",
+        })
+        first, second = self.sale(product), self.sale(product)
+        first["items"] *= 2
+        first["payments"]["cash"] = "20"
+        saved = self.expect(201, "/offline-sales", first)
+        self.expect(201, "/offline-sales", second)
+        self.assertEqual(self.stock(), -3)
+        self.assertEqual([row["quantity"] for row in saved["stock_shortages"]], ["1", "1"])
+        self.assertTrue(all(row["provisional_unit_cost"] is None for row in saved["stock_shortages"]))
+        self.expect(201, f"/products/{product['id']}/receipts", {
+            "unit_id": product["base_unit_id"], "quantity": "2", "unit_cost": "6",
+        })
+        remaining, = self.expect(200, "/stock-shortages")
+        self.assertEqual(remaining["sale_id"], second["id"])
+        self.assertEqual(self.stock(), -1)
