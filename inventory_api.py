@@ -12,6 +12,12 @@ from urllib.parse import parse_qs, urlsplit
 from inventory import add_product, add_unit, connect, number, receive
 
 MAX_BODY = 8192
+WEB_DIR = Path(__file__).resolve().parent / "web"
+WEB_ASSETS = {
+    "/": ("index.html", "text/html"),
+    "/inventory.css": ("inventory.css", "text/css"),
+    "/inventory.js": ("inventory.js", "text/javascript"),
+}
 
 
 class RequestError(Exception):
@@ -66,6 +72,15 @@ class InventoryHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def serve_asset(self, name, content_type):
+        body = (WEB_DIR / name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -134,9 +149,12 @@ class InventoryHandler(BaseHTTPRequestHandler):
             port = self.server.server_port
             if self.headers.get("Host") not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
                 raise RequestError(403, "Use the local server address")
+            route = urlsplit(self.path)
+            if self.command == "GET" and route.path in WEB_ASSETS:
+                return self.serve_asset(*WEB_ASSETS[route.path])
             with closing(connect(self.database)) as db:
                 db.row_factory = sqlite3.Row
-                status, body = self.dispatch(db, urlsplit(self.path))
+                status, body = self.dispatch(db, route)
         except RequestError as exc:
             status, body = exc.status, {"error": str(exc)}
         except ValueError as exc:

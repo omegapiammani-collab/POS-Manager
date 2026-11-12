@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>สินค้าและสต๊อก | POS Manager</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/inventory.js"></script>
+</head>
+<body>
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title"><h1>สินค้าและสต๊อก</h1><button data-open="product">+ เพิ่มสินค้า</button></div>
+    <p id="notice" role="status" hidden></p>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="list-title">
+        <h2 id="list-title">รายการสินค้า</h2>
+        <label class="search">ค้นหาสินค้า<input id="search" type="search" placeholder="ค้นด้วยชื่อหรือรหัสสินค้า"></label>
+        <ul id="products" class="products"></ul>
+        <p id="list-state" class="muted">กำลังโหลดสินค้า…</p>
+      </section>
+      <section class="panel" aria-labelledby="detail-title">
+        <h2 id="detail-title">รายละเอียดสินค้า</h2>
+        <p id="detail-empty" class="muted">เลือกสินค้าจากรายการเพื่อดูสต๊อกและรับสินค้าเข้า</p>
+        <div id="detail" hidden>
+          <p id="code" class="muted"></p>
+          <dl class="metrics">
+            <div><dt>คงเหลือ</dt><dd id="quantity"></dd></div>
+            <div><dt>ต้นทุนเฉลี่ย</dt><dd id="average"></dd></div>
+          </dl>
+          <div class="actions"><button data-open="receipt">รับสินค้า</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button></div>
+          <h3>หน่วยขาย</h3>
+          <ul id="units" class="lines"></ul>
+          <h3>ประวัติรับสินค้า</h3>
+          <ul id="receipts" class="lines"></ul>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="product">
+    <form>
+      <h2>เพิ่มสินค้า</h2>
+      <label>รหัสสินค้า<input name="code" required maxlength="120"></label>
+      <label>ชื่อสินค้า<input name="name" required maxlength="120"></label>
+      <label>หน่วยสต๊อก<input name="base_unit" required maxlength="120" placeholder="เช่น ขวด"></label>
+      <label>ราคาขายต่อหน่วย (บาท)<input name="price" type="number" required min="0" max="1000000000" step="0.000001"></label>
+      <label>แจ้งเตือนเมื่อคงเหลือไม่เกิน<input name="minimum_quantity" type="number" min="0" max="1000000000" step="0.000001" value="0"></label>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกสินค้า</button></div>
+    </form>
+  </dialog>
+  <dialog id="unit">
+    <form>
+      <h2>เพิ่มหน่วยขาย</h2>
+      <label>ชื่อหน่วยขาย<input name="name" required maxlength="120" placeholder="เช่น แพ็ก"></label>
+      <label>จำนวนหน่วยสต๊อกต่อหน่วยขาย<input name="multiplier" type="number" required min="0.000001" max="1000000000" step="0.000001"></label>
+      <label>ราคาขายต่อหน่วย (บาท)<input name="price" type="number" required min="0" max="1000000000" step="0.000001"></label>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกหน่วยขาย</button></div>
+    </form>
+  </dialog>
+  <dialog id="receipt">
+    <form>
+      <h2>รับสินค้า</h2>
+      <label>หน่วยที่รับ<select name="unit_id" required></select></label>
+      <label>จำนวนที่รับ<input name="quantity" type="number" required min="0.000001" max="1000000000" step="0.000001"></label>
+      <label>ราคาทุนต่อหน่วยที่รับ (บาท)<input name="unit_cost" type="number" required min="0" max="1000000000" step="0.000001"></label>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกรับสินค้า</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

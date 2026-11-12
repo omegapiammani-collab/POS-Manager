@@ -1,0 +1,55 @@
+:root {
+  font-family: "Leelawadee UI", Tahoma, system-ui, sans-serif;
+  color: #172331;
+  background: #f4f6f8;
+  font-size: 16px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { background: #142334; color: white; }
+.frame { width: min(1180px, calc(100% - 40px)); margin-inline: auto; }
+.brand { display: flex; align-items: center; gap: 12px; min-height: 66px; font-weight: 750; }
+.brand span { width: 15px; height: 15px; border-radius: 4px; background: #a3e36c; }
+main { padding-block: 32px 50px; }
+.page-title, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.page-title { justify-content: space-between; margin-bottom: 22px; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: clamp(1.55rem, 4vw, 2.15rem); }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1rem; margin-top: 26px; }
+.workspace { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.panel, dialog { background: white; border: 1px solid #dce3e9; border-radius: 14px; padding: 22px; }
+.muted { color: #536375; margin-top: 10px; }
+button, input, select { font: inherit; border-radius: 8px; min-height: 44px; }
+button { cursor: pointer; padding: 9px 15px; background: #136140; color: white; border: 1px solid transparent; font-weight: 650; }
+button:hover { background: #0b4c30; }
+button:disabled { cursor: wait; opacity: .65; }
+button.secondary { color: #1e374a; background: white; border-color: #b7c5cf; }
+button.secondary:hover { background: #edf3f6; }
+:focus-visible { outline: 3px solid #377fb7; outline-offset: 2px; }
+label { display: grid; gap: 5px; margin-top: 13px; }
+input, select { width: 100%; min-width: 0; padding: 8px 11px; color: inherit; background: white; border: 1px solid #aabac7; }
+.products, .lines { list-style: none; padding: 0; margin: 12px 0 0; }
+.products button, .lines li { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.products button { width: 100%; text-align: start; color: inherit; background: white; border-color: #e1e8ed; margin-block: 6px; font-weight: 500; }
+.products button:hover, .products button[aria-pressed="true"] { background: #eef7f1; border-color: #85ad96; }
+.products button > span, .lines li > span { min-width: 0; overflow-wrap: anywhere; }
+.products small { display: block; color: #536375; }
+.products .low { color: #8b4b00; }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.metrics div { min-width: 0; background: #f3f6f8; border-radius: 9px; padding: 12px; overflow-wrap: anywhere; }
+.metrics dt { color: #536375; font-size: .88rem; }
+.metrics dd { margin: 4px 0 0; font-weight: 700; }
+.lines li { border-bottom: 1px solid #e1e8ed; padding-block: 9px; }
+dialog { width: min(440px, calc(100% - 24px)); max-height: calc(100% - 24px); }
+dialog::backdrop { background: #14233499; }
+dialog .actions { justify-content: end; margin-top: 20px; }
+#notice { padding: 10px 14px; margin-bottom: 16px; background: #e6f4eb; border-radius: 8px; }
+.error, #notice.error { color: #8b1d18; background: #fff1f0; }
+dialog .error { margin-top: 12px; padding: 8px; }
+@media (max-width: 720px) {
+  .frame { width: calc(100% - 28px); }
+  .workspace { grid-template-columns: 1fr; }
+  .panel { padding: 16px; }
+  main { padding-top: 22px; }
+}
