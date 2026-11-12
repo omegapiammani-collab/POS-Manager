@@ -89,6 +89,8 @@ class SalesReportApiTests(unittest.TestCase):
         summary = {
             "bill_count": 2, "revenue": "30.00", "cash": "19.00", "qr": "5.00",
             "credit": "6.00", "cost": "12.00", "gross_profit": "18.00",
+            "expenses": "0.00", "cash_drawer_expenses": "0.00", "external_expenses": "0.00",
+            "profit_after_expenses": "18.00",
             "pending_cost_bills": 0, "unknown_cost_bills": 0,
         }
         self.assertEqual(report["summary"], summary)
@@ -131,6 +133,8 @@ class SalesReportApiTests(unittest.TestCase):
         self.assertEqual(report["summary"], {
             "bill_count": 1, "revenue": "30.00", "cash": "5.00", "qr": "20.00",
             "credit": "5.00", "cost": "12.00", "gross_profit": "18.00",
+            "expenses": "0.00", "cash_drawer_expenses": "0.00", "external_expenses": "0.00",
+            "profit_after_expenses": "18.00",
             "pending_cost_bills": 0, "unknown_cost_bills": 0,
         })
         self.assertEqual(self.report("2026-11-11", "2026-11-12")["summary"]["bill_count"], 0)

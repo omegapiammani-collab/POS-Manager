@@ -1,9 +1,9 @@
 """Sales and gross margin for inclusive Bangkok business dates."""
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
 from decimal import Decimal, ROUND_HALF_UP, localcontext
-import re
+
+from expenses import active_expenses, validate_date_range
 
 
 CENT = Decimal("0.01")
@@ -58,6 +58,8 @@ class SalesTotals(Totals):
     cash: Decimal = ZERO
     qr: Decimal = ZERO
     credit: Decimal = ZERO
+    cash_drawer_expenses: Decimal = ZERO
+    external_expenses: Decimal = ZERO
 
     def add_bill(self, total, cash, qr, credit):
         self.bill_count += 1
@@ -66,21 +68,28 @@ class SalesTotals(Totals):
         self.qr += Decimal(qr)
         self.credit += Decimal(credit)
 
+    def add_expense(self, amount, source):
+        if source == "cash_drawer":
+            self.cash_drawer_expenses += amount
+        else:
+            self.external_expenses += amount
+
     def result(self):
+        totals = super().result()
+        expenses = self.cash_drawer_expenses + self.external_expenses
+        gross = totals["gross_profit"]
         return {
-            **super().result(), "bill_count": self.bill_count,
+            **totals, "bill_count": self.bill_count,
             "cash": money(self.cash), "qr": money(self.qr), "credit": money(self.credit),
+            "expenses": money(expenses),
+            "cash_drawer_expenses": money(self.cash_drawer_expenses),
+            "external_expenses": money(self.external_expenses),
+            "profit_after_expenses": None if gross is None else money(Decimal(gross) - expenses),
         }
 
 
 def money(value):
     return format(value.quantize(CENT, rounding=ROUND_HALF_UP), "f")
-
-
-def business_date(value):
-    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
-        raise ValueError("Use YYYY-MM-DD dates")
-    return date.fromisoformat(value)
 
 
 def bill_line_costs(db, sale_id):
@@ -110,8 +119,7 @@ def bill_line_costs(db, sale_id):
 
 
 def sales_report(db, start, end):
-    if business_date(start) > business_date(end):
-        raise ValueError("Start date must be on or before end date")
+    validate_date_range(start, end)
     summary = SalesTotals()
     days = defaultdict(SalesTotals)
     products = {}
@@ -131,9 +139,12 @@ def sales_report(db, start, end):
                 product["totals"].revenue += revenue
                 for group in (summary, daily, product["totals"]):
                     group.add_cost(sale_id, cost, pending)
+        for day, amount, source in active_expenses(db, start, end):
+            summary.add_expense(amount, source)
+            days[day].add_expense(amount, source)
         return {
             "from": start, "to": end, "summary": summary.result(),
-            "days": [{"date": day, **group.result()} for day, group in days.items()],
+            "days": [{"date": day, **group.result()} for day, group in sorted(days.items())],
             "products": [
                 {
                     "product_id": item["product_id"], "name": item["name"], "base_unit": item["base_unit"],

@@ -10,6 +10,7 @@ import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
+from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
 from inventory import add_product, add_unit, connect, number, receive
 from payment_qr import PaymentQrUnavailable, payment_qr_svg
 from sale_corrections import (
@@ -34,6 +35,8 @@ WEB_ASSETS = {
     "/bills.js": ("bills.js", "text/javascript"),
     "/reports": ("reports.html", "text/html"),
     "/reports.js": ("reports.js", "text/javascript"),
+    "/expense-entry": ("expenses.html", "text/html"),
+    "/expenses.js": ("expenses.js", "text/javascript"),
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
@@ -137,6 +140,16 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 customer_id = uuid_field(parts[1], "customer_id")
                 created, repayment = record_repayment(db, customer_id, self.read_json())
                 return (201 if created else 200), repayment
+
+        if parts == ["expenses"]:
+            if self.command == "GET":
+                dates = parse_qs(route.query)
+                return 200, list_expenses(db, dates.get("from", [""])[0], dates.get("to", [""])[0])
+            created, expense = record_expense(db, self.read_json())
+            return (201 if created else 200), expense
+
+        if len(parts) == 3 and parts[0] == "expenses" and parts[2] == "void" and self.command == "POST":
+            return 200, void_expense(db, uuid_field(parts[1], "id"), self.read_json())
 
         if parts == ["sales-report"] and self.command == "GET":
             dates = parse_qs(route.query)
@@ -255,6 +268,7 @@ def make_server(database, port):
         db.executescript(DEBT_SCHEMA)
         db.executescript(CORRECTION_SCHEMA)
         db.executescript(COUNT_SCHEMA)
+        db.executescript(EXPENSE_SCHEMA)
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 

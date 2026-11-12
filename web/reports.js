@@ -60,6 +60,10 @@ function renderSummary(summary) {
     ["จำนวนบิล", integers.format(summary.bill_count) + " บิล"],
     ["ต้นทุนขาย", summary.cost === null ? money(null) : money(summary.cost) + " บาท", note],
     ["กำไรขั้นต้น", summary.gross_profit === null ? money(null) : money(summary.gross_profit) + " บาท", note],
+    ["ค่าใช้จ่ายร้าน", money(summary.expenses) + " บาท",
+      "ลิ้นชัก " + money(summary.cash_drawer_expenses) + " บาท · แหล่งอื่น " + money(summary.external_expenses) + " บาท"],
+    ["กำไรหลังหักค่าใช้จ่าย", summary.profit_after_expenses === null
+      ? money(null) : money(summary.profit_after_expenses) + " บาท", note],
     ["เงินสด", money(summary.cash) + " บาท"],
     ["โอน", money(summary.qr) + " บาท"],
     ["เงินเชื่อ", money(summary.credit) + " บาท"],
@@ -103,7 +107,7 @@ function renderReport(report) {
   renderSummary(report.summary);
   renderTable("days", report.days.map((day) => tableRow(displayDate(day.date), [
     integers.format(day.bill_count), money(day.revenue), money(day.cash), money(day.qr), money(day.credit),
-    [money(day.cost), costLabel(day)], money(day.gross_profit),
+    [money(day.cost), costLabel(day)], money(day.gross_profit), money(day.expenses), money(day.profit_after_expenses),
   ])));
   renderTable("products", report.products.map((product) => tableRow(product.name, [
     quantities.format(product.quantity) + " " + product.base_unit, money(product.revenue),

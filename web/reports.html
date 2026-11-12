@@ -18,6 +18,7 @@
         <a class="pos-link" href="/checkout">ขายสินค้า</a>
         <a class="pos-link" href="/debts">ลูกหนี้</a>
         <a class="pos-link" href="/bills">ประวัติบิล</a>
+        <a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a>
       </nav>
     </div>
 
@@ -41,11 +42,11 @@
 
       <section class="panel" aria-labelledby="report-days-title">
         <h2 id="report-days-title">ยอดขายรายวัน</h2>
-        <p id="report-days-empty" class="muted" hidden>ไม่มีบิลในช่วงที่เลือก</p>
+        <p id="report-days-empty" class="muted" hidden>ไม่มียอดขายหรือค่าใช้จ่ายในช่วงที่เลือก</p>
         <div id="report-days-wrap" class="report-table-wrap" role="region" tabindex="0" aria-labelledby="report-days-title" hidden>
           <table class="report-table">
             <thead>
-              <tr><th scope="col">วันที่</th><th scope="col">บิล</th><th scope="col">ยอดขาย (บาท)</th><th scope="col">เงินสด (บาท)</th><th scope="col">โอน (บาท)</th><th scope="col">เงินเชื่อ (บาท)</th><th scope="col">ต้นทุนขาย (บาท)</th><th scope="col">กำไรขั้นต้น (บาท)</th></tr>
+              <tr><th scope="col">วันที่</th><th scope="col">บิล</th><th scope="col">ยอดขาย (บาท)</th><th scope="col">เงินสด (บาท)</th><th scope="col">โอน (บาท)</th><th scope="col">เงินเชื่อ (บาท)</th><th scope="col">ต้นทุนขาย (บาท)</th><th scope="col">กำไรขั้นต้น (บาท)</th><th scope="col">ค่าใช้จ่าย (บาท)</th><th scope="col">กำไรหลังหักค่าใช้จ่าย (บาท)</th></tr>
             </thead>
             <tbody id="report-days"></tbody>
           </table>
