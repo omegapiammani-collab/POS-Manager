@@ -136,3 +136,7 @@ dialog .error { margin-top: 12px; padding: 8px; }
 .checkout #sale-queue li > span { flex: 1 1 240px; }
 .checkout #sale-queue small { display: block; color: #536375; }
 .checkout #sale-receipt-state { font-weight: 700; color: #8b4b00; }
+
+#stock-count-pending { margin-bottom: 16px; }
+#stock-count-cost-label[hidden] { display: none; }
+#stock-counts small { display: block; margin-top: 3px; color: #536375; }

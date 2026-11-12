@@ -16,6 +16,7 @@ from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
 )
 from sales import SALES_SCHEMA, SaleConflict, add_customer, checkout, customer_list, read_sale, uuid_field
+from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
 
 MAX_BODY = 8192
@@ -169,10 +170,15 @@ class InventoryHandler(BaseHTTPRequestHandler):
             )
             return 201, {"id": product_id, "base_unit_id": unit_id}
 
-        if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts"}:
+        if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts"}:
             raise RequestError(404, "Route not found")
         _, product_id, resource = parts
         check_product(db, product_id)
+        if resource == "stock-counts":
+            if self.command == "GET":
+                return 200, list_counts(db, product_id)
+            created, count = record_count(db, product_id, self.read_json())
+            return (201 if created else 200), count
         if self.command == "GET":
             if resource != "receipts":
                 raise RequestError(405, "Use GET /products to list units")
@@ -216,6 +222,8 @@ class InventoryHandler(BaseHTTPRequestHandler):
             status, body = 404, {"error": str(exc)}
         except RequestError as exc:
             status, body = exc.status, {"error": str(exc)}
+        except CountCostRequired as exc:
+            status, body = 400, {"code": "stock_count_cost_required", "error": str(exc)}
         except ValueError as exc:
             status, body = 400, {"error": str(exc)}
         except CorrectionConflict as exc:
@@ -239,6 +247,7 @@ def make_server(database, port):
         db.executescript(SALES_SCHEMA)
         db.executescript(DEBT_SCHEMA)
         db.executescript(CORRECTION_SCHEMA)
+        db.executescript(COUNT_SCHEMA)
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 

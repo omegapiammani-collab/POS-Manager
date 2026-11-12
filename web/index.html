@@ -13,6 +13,9 @@
   <main class="frame">
     <div class="page-title"><h1>สินค้าและสต๊อก</h1><div class="actions"><a class="pos-link" href="/checkout">ขายสินค้า</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><button data-open="product">+ เพิ่มสินค้า</button></div></div>
     <p id="notice" role="status" hidden></p>
+    <div id="stock-count-pending" hidden>
+      <button type="button" class="secondary" id="retry-stock-count">ตรวจสอบผลการปรับสต๊อกที่ค้าง</button>
+    </div>
     <div class="workspace">
       <section class="panel" aria-labelledby="list-title">
         <h2 id="list-title">รายการสินค้า</h2>
@@ -30,11 +33,13 @@
             <div><dt>คงเหลือ</dt><dd id="quantity"></dd></div>
             <div><dt>ต้นทุนเฉลี่ย</dt><dd id="average"></dd></div>
           </dl>
-          <div class="actions"><button data-open="receipt">รับสินค้า</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button></div>
+          <div class="actions"><button data-open="receipt">รับสินค้า</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button><button type="button" class="secondary" id="open-stock-count">ปรับยอดจากการตรวจนับ</button></div>
           <h3>หน่วยขาย</h3>
           <ul id="units" class="lines"></ul>
           <h3>ประวัติรับสินค้า</h3>
           <ul id="receipts" class="lines"></ul>
+          <h3>ประวัติปรับยอดจากการตรวจนับ</h3>
+          <ul id="stock-counts" class="lines"></ul>
         </div>
       </section>
     </div>
@@ -69,6 +74,19 @@
       <label>ราคาทุนต่อหน่วยที่รับ (บาท)<input name="unit_cost" type="number" required min="0" max="1000000000" step="0.000001"></label>
       <p class="error" role="alert" hidden></p>
       <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกรับสินค้า</button></div>
+    </form>
+  </dialog>
+  <dialog id="stock-count" aria-labelledby="stock-count-title">
+    <form>
+      <h2 id="stock-count-title">ปรับยอดจากการตรวจนับ</h2>
+      <p class="muted" id="stock-count-product"></p>
+      <p class="muted" id="stock-count-before"></p>
+      <label><span>จำนวนที่นับได้ <span id="stock-count-unit"></span></span><input name="counted_quantity" type="number" required min="0" max="1000000000" step="0.000001"></label>
+      <label>เหตุผลที่ปรับยอด<input name="reason" required maxlength="300"></label>
+      <label id="stock-count-cost-label">ต้นทุนต่อหน่วยสต๊อก (บาท)<input name="unit_cost" type="number" min="0" max="1000000000" step="0.000001"></label>
+      <p class="muted" id="stock-count-cost-help"></p>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button type="button" class="secondary" data-close>ปิด</button><button id="submit-stock-count">บันทึกยอดตรวจนับ</button></div>
     </form>
   </dialog>
 </body>

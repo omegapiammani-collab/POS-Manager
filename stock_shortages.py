@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS stock_shortage_fills (
 """
 
 
-def cover_shortages(db, product_id, receipt_id, quantity, unit_cost):
+def cover_shortages(db, product_id, source_id, quantity, unit_cost, *, from_count=False):
+    fill_sql = (
+        "INSERT INTO stock_shortage_count_fills VALUES (?, ?, ?, ?, ?)" if from_count
+        else "INSERT INTO stock_shortage_fills VALUES (?, ?, ?, ?, ?)"
+    )
     rows = db.execute(
         "SELECT q.sale_id, q.position, q.remaining FROM stock_shortages q "
         "JOIN sales s ON s.id = q.sale_id WHERE q.product_id = ? "
@@ -36,8 +40,8 @@ def cover_shortages(db, product_id, receipt_id, quantity, unit_cost):
         if not applied:
             continue
         db.execute(
-            "INSERT INTO stock_shortage_fills VALUES (?, ?, ?, ?, ?)",
-            (sale_id, position, receipt_id, str(applied), str(unit_cost)),
+            fill_sql,
+            (sale_id, position, source_id, str(applied), str(unit_cost)),
         )
         db.execute(
             "UPDATE stock_shortages SET remaining = ? WHERE sale_id = ? AND position = ?",
@@ -60,18 +64,29 @@ def sale_shortages(db, sale_id):
             "position": position, "product_id": product_id,
             "quantity": quantity, "remaining": remaining,
             "provisional_unit_cost": cost,
-            "fills": [
-                {"receipt_id": receipt_id, "quantity": applied, "unit_cost": unit_cost}
-                for receipt_id, applied, unit_cost in db.execute(
-                    "SELECT f.receipt_id, f.quantity, f.unit_cost FROM stock_shortage_fills f "
-                    "JOIN receipts r ON r.id = f.receipt_id "
-                    "WHERE f.sale_id = ? AND f.position = ? ORDER BY r.rowid",
-                    (sale_id, position),
-                )
-            ],
+            "fills": shortage_fills(db, sale_id, position),
         }
         for position, product_id, quantity, remaining, cost in rows
     ]
+
+
+def shortage_fills(db, sale_id, position):
+    receipts = [
+        {"receipt_id": receipt_id, "quantity": applied, "unit_cost": unit_cost}
+        for receipt_id, applied, unit_cost in db.execute(
+            "SELECT f.receipt_id, f.quantity, f.unit_cost FROM stock_shortage_fills f "
+            "JOIN receipts r ON r.id = f.receipt_id "
+            "WHERE f.sale_id = ? AND f.position = ? ORDER BY r.rowid", (sale_id, position),
+        )
+    ]
+    counts = [
+        {"stock_count_id": count_id, "quantity": applied, "unit_cost": unit_cost}
+        for count_id, applied, unit_cost in db.execute(
+            "SELECT stock_count_id, quantity, unit_cost FROM stock_shortage_count_fills "
+            "WHERE sale_id = ? AND position = ?", (sale_id, position),
+        )
+    ]
+    return receipts + counts
 
 
 def list_stock_shortages(db):

@@ -164,8 +164,8 @@ function renderDetail() {
   shortages.replaceChildren(...rows.flatMap((shortage) => {
     const name = bill.items[shortage.position]?.name ?? "สินค้า";
     const remaining = Number(shortage.remaining);
-    const details = shortage.fills.map(({ quantity, unit_cost }) =>
-      line(name + " · ต้นทุนจริง " + numberFormat.format(Number(quantity)) + " หน่วยสต๊อก",
+    const details = shortage.fills.map(({ quantity, unit_cost, stock_count_id }) =>
+      line(name + (stock_count_id ? " · ต้นทุนจากการตรวจนับ " : " · ต้นทุนจริง ") + numberFormat.format(Number(quantity)) + " หน่วยสต๊อก",
         numberFormat.format(Number(unit_cost)) + " บาท/หน่วยสต๊อก")
     );
     if (remaining > 0) {
@@ -420,7 +420,7 @@ const errors = {
   insufficient_stock: "สินค้าคงเหลือไม่พอ กรุณาตรวจสอบจำนวน",
   item_unavailable: "สินค้าหรือหน่วยขายบางรายการไม่พร้อมใช้งาน",
   idempotency_conflict: "เลขอ้างอิงนี้ถูกใช้แล้ว กรุณาตรวจสอบประวัติบิล",
-  stock_shortage_unresolved: "กรุณารับสินค้าเข้าจนยอดพ้นติดลบก่อนแก้ไขหรือยกเลิกบิล",
+  stock_shortage_unresolved: "กรุณารับสินค้าหรือปรับยอดจากการตรวจนับก่อนแก้ไขหรือยกเลิกบิล",
   sale_already_voided: "บิลนี้ถูกยกเลิกแล้ว กรุณาตรวจสอบประวัติบิล",
 };
 

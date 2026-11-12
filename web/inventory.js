@@ -15,10 +15,13 @@ async function api(path, data) {
   } : undefined;
   const response = await fetch(path, options);
   if (response.ok) return response.json();
-  if (response.status === 409) throw new Error("รหัสสินค้าหรือชื่อหน่วยขายซ้ำ");
-  if (response.status === 400) throw new Error("ตรวจสอบข้อมูลที่กรอกหรือหน่วยที่เลือก");
-  if (response.status === 404) throw new Error("ไม่พบสินค้าที่เลือก");
-  throw new Error("เชื่อมต่อระบบสต๊อกไม่สำเร็จ");
+  const { code } = await response.json().catch(() => ({}));
+  const message = {
+    400: "ตรวจสอบข้อมูลที่กรอกหรือหน่วยที่เลือก",
+    404: "ไม่พบสินค้าที่เลือก",
+    409: "รหัสสินค้าหรือชื่อหน่วยขายซ้ำ",
+  }[response.status] ?? "เชื่อมต่อระบบสต๊อกไม่สำเร็จ";
+  throw Object.assign(new Error(message), { status: response.status, code });
 }
 
 function element(tag, text) {
@@ -86,7 +89,7 @@ async function renderDetail() {
   byId("quantity").textContent = format(product.quantity) + " " + product.base_unit;
   byId("stock-shortage").hidden = !negative;
   byId("stock-shortage").textContent = negative
-    ? "สต๊อกติดลบ ตรวจยอดและบันทึกรับสินค้าเพื่อจัดสรรต้นทุนจริงให้บิลที่ค้าง"
+    ? "สต๊อกติดลบ ตรวจนับเพื่อปรับยอด หรือบันทึกรับสินค้าเมื่อมีสินค้าเข้า"
     : "";
   byId("average").textContent = product.average_cost === null
     ? "ยังไม่มีต้นทุน"
@@ -94,18 +97,36 @@ async function renderDetail() {
   byId("units").replaceChildren(...product.units.map((unit) =>
     line(unit.name + " · " + format(unit.multiplier) + " " + product.base_unit, format(unit.price) + " บาท")
   ));
-  const list = byId("receipts");
+  await Promise.all([
+    renderHistory("receipts", product, request, "ยังไม่มีรายการรับสินค้า", "โหลดประวัติรับสินค้าไม่สำเร็จ", (row) =>
+      line(format(row.quantity) + " " + row.unit_name + " · " + row.created_at.slice(0, 10),
+        format(row.unit_cost) + " บาท / " + row.unit_name)),
+    renderHistory("stock-counts", product, request, "ยังไม่มีรายการปรับยอด", "โหลดประวัติปรับยอดไม่สำเร็จ", (row) =>
+      stockCountRow(row, product.base_unit)),
+  ]);
+}
+
+async function renderHistory(resource, product, request, emptyText, errorText, renderRow) {
+  const list = byId(resource);
   list.replaceChildren(element("li", "กำลังโหลดประวัติ…"));
   try {
-    const receipts = await api(productPath(product.id) + "/receipts");
+    const rows = await api(productPath(product.id) + "/" + resource);
     if (request !== historyRequest) return;
-    list.replaceChildren(...(receipts.length ? receipts.map((row) =>
-      line(format(row.quantity) + " " + row.unit_name + " · " + row.created_at.slice(0, 10),
-        format(row.unit_cost) + " บาท / " + row.unit_name)
-    ) : [element("li", "ยังไม่มีรายการรับสินค้า")]));
+    list.replaceChildren(...(rows.length ? rows.map(renderRow) : [element("li", emptyText)]));
   } catch {
-    if (request === historyRequest) list.replaceChildren(element("li", "โหลดประวัติรับสินค้าไม่สำเร็จ"));
+    if (request === historyRequest) list.replaceChildren(element("li", errorText));
   }
+}
+
+function stockCountRow(row, unit) {
+  const change = Number(row.delta) > 0 ? "+" + format(row.delta) : format(row.delta);
+  const rowNode = line(format(row.expected_quantity) + " → " + format(row.counted_quantity) + " " + unit, change + " " + unit);
+  const summary = rowNode.firstElementChild;
+  summary.append(element("small", row.reason + " · " + row.created_at.slice(0, 10)));
+  if (row.unit_cost != null) {
+    summary.append(element("small", "ต้นทุนที่ใช้ปรับยอด " + format(row.unit_cost) + " บาท / " + unit));
+  }
+  return rowNode;
 }
 
 async function refresh() {
@@ -140,7 +161,7 @@ const actions = {
   receipt: { path: () => productPath(selectedId) + "/receipts", success: "บันทึกรับสินค้าแล้ว" },
 };
 
-document.querySelectorAll("dialog").forEach((dialog) => {
+document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
   const form = dialog.querySelector("form");
   const buttons = [...form.querySelectorAll("button")];
   const error = form.querySelector(".error");
@@ -180,6 +201,158 @@ document.querySelectorAll("dialog").forEach((dialog) => {
   });
 });
 
+const countDialog = byId("stock-count");
+const countForm = countDialog.querySelector("form");
+const countError = countForm.querySelector(".error");
+const countSubmit = byId("submit-stock-count");
+const countClose = countForm.querySelector("[data-close]");
+const countFields = [...countForm.querySelectorAll("input")];
+const countStorageKey = "pos-pending-stock-count";
+let pendingCount = restorePendingCount();
+let countProduct = null;
+let savingCount = false;
+
+function restorePendingCount() {
+  try {
+    const pending = JSON.parse(sessionStorage.getItem(countStorageKey));
+    if (typeof pending?.product?.id === "string" && typeof pending.payload?.id === "string") return pending;
+  } catch {
+    // This session may not have storage access.
+  }
+  return null;
+}
+
+function setPendingCount(pending) {
+  pendingCount = pending;
+  try {
+    if (pending) sessionStorage.setItem(countStorageKey, JSON.stringify(pending));
+    else sessionStorage.removeItem(countStorageKey);
+  } catch {
+    // The same request can still be retried while the page remains open.
+  }
+  byId("stock-count-pending").hidden = !pending;
+}
+
+function countMessage(message) {
+  countError.textContent = message;
+  countError.hidden = !message;
+}
+
+function updateCountControls() {
+  const counted = countForm.elements.counted_quantity;
+  const cost = countForm.elements.unit_cost;
+  const increase = counted.value !== "" && Number(counted.value) > Number(countProduct?.quantity);
+  cost.required = increase && countProduct.average_cost === null;
+  byId("stock-count-cost-label").hidden = !increase;
+  byId("stock-count-cost-help").hidden = !increase;
+  byId("stock-count-cost-help").textContent = cost.required
+    ? "ระบุต้นทุนต่อหน่วยสำหรับจำนวนที่ปรับเพิ่ม"
+    : "เว้นว่างเพื่อใช้ต้นทุนเฉลี่ยปัจจุบัน";
+  for (const field of countFields) field.disabled = savingCount || Boolean(pendingCount);
+  cost.disabled ||= !increase;
+  countClose.disabled = savingCount;
+  countSubmit.disabled = savingCount || !countProduct;
+  countSubmit.textContent = pendingCount ? "ส่งรายการเดิมอีกครั้ง" : "บันทึกยอดตรวจนับ";
+}
+
+function openCount(product, pending = null) {
+  countProduct = product;
+  countForm.reset();
+  byId("stock-count-product").textContent = product.name;
+  byId("stock-count-before").textContent = "ยอดในระบบก่อนปรับ " + format(product.quantity) + " " + product.base_unit;
+  byId("stock-count-unit").textContent = "(" + product.base_unit + ")";
+  if (pending) {
+    for (const field of countFields) field.value = pending.payload[field.name] ?? "";
+  }
+  countMessage(pending ? "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล" : "");
+  updateCountControls();
+  countDialog.showModal();
+}
+
+byId("open-stock-count").addEventListener("click", () => {
+  if (pendingCount) {
+    openCount(pendingCount.product, pendingCount);
+    return;
+  }
+  const product = products.find((entry) => entry.id === selectedId);
+  if (product) openCount(product);
+});
+byId("retry-stock-count").addEventListener("click", () => {
+  if (pendingCount) openCount(pendingCount.product, pendingCount);
+});
+countForm.elements.counted_quantity.addEventListener("input", updateCountControls);
+countClose.addEventListener("click", () => countDialog.close());
+countDialog.addEventListener("cancel", (event) => {
+  if (savingCount) event.preventDefault();
+});
+
+countForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (savingCount || !countProduct) return;
+  if (!pendingCount) {
+    const fields = Object.fromEntries(new FormData(countForm));
+    const reason = fields.reason.trim();
+    if (!reason) {
+      countMessage("กรุณาระบุเหตุผลที่ปรับยอด");
+      return;
+    }
+    const payload = {
+      id: crypto.randomUUID(),
+      expected_quantity: countProduct.quantity,
+      counted_quantity: fields.counted_quantity,
+      reason,
+    };
+    if (fields.unit_cost) payload.unit_cost = fields.unit_cost;
+    setPendingCount({ product: countProduct, payload });
+  }
+
+  const { product, payload } = pendingCount;
+  savingCount = true;
+  updateCountControls();
+  countMessage("");
+  try {
+    await api(productPath(product.id) + "/stock-counts", payload);
+    setPendingCount(null);
+    selectedId = product.id;
+    countDialog.close();
+    notice("บันทึกยอดตรวจนับแล้ว");
+    try {
+      await refresh();
+    } catch {
+      notice("บันทึกยอดตรวจนับแล้ว แต่โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้า", true);
+    }
+  } catch (failure) {
+    if ([400, 404, 409, 422].includes(failure.status)) {
+      setPendingCount(null);
+      if (failure.code === "stock_changed" || failure.status === 404) {
+        countDialog.close();
+        notice("ยอดสต๊อกเปลี่ยนหรือไม่พบสินค้า กรุณาตรวจนับใหม่ก่อนปรับยอด", true);
+        try {
+          await refresh();
+        } catch {
+          countProduct = null;
+          byId("open-stock-count").disabled = true;
+          notice("โหลดสต๊อกล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้าก่อนตรวจนับใหม่", true);
+        }
+      } else if (failure.code === "idempotency_conflict") {
+        countDialog.close();
+        notice("รหัสรายการซ้ำกับข้อมูลอื่น กรุณาตรวจสอบประวัติและยอดสต๊อกก่อนบันทึกใหม่", true);
+        refresh().catch(() => {});
+      } else {
+        countMessage(failure.code === "stock_count_cost_required"
+          ? "กรุณาระบุต้นทุนต่อหน่วยสต๊อก"
+          : "ตรวจสอบจำนวนที่นับได้และต้นทุนต่อหน่วย");
+      }
+    } else {
+      countMessage("ยังไม่ทราบผลการบันทึก ส่งรายการเดิมอีกครั้งเพื่อดูผล");
+    }
+  } finally {
+    savingCount = false;
+    updateCountControls();
+  }
+});
+
+byId("stock-count-pending").hidden = !pendingCount;
 refresh().catch(() => {
   byId("list-state").textContent = "โหลดสินค้าไม่สำเร็จ กรุณารีเฟรชหน้า";
 });
