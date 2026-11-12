@@ -174,3 +174,20 @@ dialog .error { margin-top: 12px; padding: 8px; }
 .expenses #expense-history small { display: block; margin-top: 3px; color: #536375; }
 .expenses .expense-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .expenses dialog .actions { margin-top: 12px; }
+
+.drawer .drawer-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 14px; }
+.drawer .drawer-filter label { flex: 0 1 180px; }
+.drawer #drawer-content { margin-top: 16px; }
+.drawer #drawer-content[hidden] { display: none; }
+.drawer #drawer-pending, .drawer #drawer-message { margin-top: 12px; }
+.drawer #drawer-message:not([hidden]) { padding: 10px 14px; border-radius: 8px; background: #e6f4eb; }
+.drawer #drawer-message.error { background: #fff1f0; }
+.drawer fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.drawer legend { font-weight: 700; }
+.drawer #drawer-actions form { margin-top: 12px; }
+.drawer #drawer-close { padding-top: 14px; border-top: 1px solid #e1e8ed; }
+.drawer #drawer-actions button, .drawer #drawer-retry { margin-top: 12px; }
+.drawer .drawer-warning { background: #fff7e8; color: #744100; padding: 10px 14px; border-radius: 8px; }
+.drawer .lines li { overflow-wrap: anywhere; }
+.drawer .lines strong { text-align: end; flex-shrink: 0; }
+.drawer .lines small { display: block; margin-top: 3px; color: #536375; }

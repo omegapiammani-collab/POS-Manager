@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ตรวจเงินสด | POS Manager</title>
+  <link rel="stylesheet" href="/inventory.css">
+  <script src="/drawer.js" defer></script>
+</head>
+<body class="drawer">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>ตรวจเงินสด</h1>
+      <nav class="actions" aria-label="เมนู POS">
+        <a class="pos-link" href="/">สินค้าและสต๊อก</a>
+        <a class="pos-link" href="/checkout">ขายสินค้า</a>
+        <a class="pos-link" href="/debts">ลูกหนี้</a>
+        <a class="pos-link" href="/bills">ประวัติบิล</a>
+        <a class="pos-link" href="/reports">รายงานยอดขาย</a>
+        <a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a>
+      </nav>
+    </div>
+    <section class="panel" aria-labelledby="drawer-date-title">
+      <h2 id="drawer-date-title">วันที่ตรวจเงินสด</h2>
+      <form id="drawer-filter" class="drawer-filter">
+        <label>วันที่ตามเวลาไทย<input type="date" name="date" required></label>
+        <button class="secondary" type="submit">แสดงยอดล่าสุด</button>
+      </form>
+      <p id="drawer-load-status" class="muted" role="status"></p>
+    </section>
+    <p id="drawer-message" role="status" hidden></p>
+    <div id="drawer-pending" class="panel" hidden>
+      <p>ยังไม่ทราบผลการบันทึก ส่งคำขอเดิมเพื่อตรวจสอบผล</p>
+      <p id="drawer-pending-date" class="muted"></p>
+      <button id="drawer-retry" type="button">ส่งคำขอเดิมอีกครั้ง</button>
+    </div>
+    <div id="drawer-content" class="workspace" hidden>
+      <section class="panel" aria-labelledby="drawer-summary-title">
+        <h2 id="drawer-summary-title">ยอดเงินสดในลิ้นชัก</h2>
+        <p id="drawer-state" class="muted"></p>
+        <dl id="drawer-summary" class="metrics"></dl>
+        <p id="drawer-late" class="drawer-warning" role="status" hidden></p>
+        <h3>ที่มาของยอดเงินสด</h3>
+        <ul id="drawer-breakdown" class="lines"></ul>
+        <h3>ประวัติเติมและถอนเงิน</h3>
+        <p id="drawer-movement-empty" class="muted">ยังไม่มีรายการเติมหรือถอนเงิน</p>
+        <ul id="drawer-movements" class="lines"></ul>
+      </section>
+      <section id="drawer-actions" class="panel" aria-labelledby="drawer-actions-title">
+        <h2 id="drawer-actions-title">บันทึกเงินสด</h2>
+        <form id="drawer-open" hidden>
+          <fieldset>
+            <label>เงินทอนตั้งต้น (บาท)<input type="number" name="opening_cash" min="0" max="1000000000" step="0.01" inputmode="decimal" required></label>
+            <button type="submit">เปิดลิ้นชัก</button>
+          </fieldset>
+        </form>
+        <form id="drawer-movement" hidden>
+          <fieldset>
+            <legend>เติมหรือถอนเงิน</legend>
+            <label>ประเภท
+              <select name="direction">
+                <option value="in">เติมเงินสด</option>
+                <option value="out">ถอนเงินสด</option>
+              </select>
+            </label>
+            <label>จำนวนเงิน (บาท)<input type="number" name="amount" min="0.01" max="1000000000" step="0.01" inputmode="decimal" required></label>
+            <label>เหตุผล<input name="reason" maxlength="300" required></label>
+            <button type="submit">บันทึกรายการ</button>
+          </fieldset>
+        </form>
+        <form id="drawer-close" hidden>
+          <fieldset>
+            <legend>ตรวจยอดตอนปิดร้าน</legend>
+            <p id="drawer-close-expected" class="muted"></p>
+            <label>เงินสดที่นับได้ (บาท)<input type="number" name="actual_cash" min="0" max="1000000000" step="0.01" inputmode="decimal" required></label>
+            <button type="submit">ยืนยันปิดลิ้นชัก</button>
+          </fieldset>
+        </form>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

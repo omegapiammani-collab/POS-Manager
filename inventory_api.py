@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
+from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawer
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
 from inventory import add_product, add_unit, connect, number, receive
@@ -35,6 +36,8 @@ WEB_ASSETS = {
     "/bills.js": ("bills.js", "text/javascript"),
     "/reports": ("reports.html", "text/html"),
     "/reports.js": ("reports.js", "text/javascript"),
+    "/drawer": ("drawer.html", "text/html"),
+    "/drawer.js": ("drawer.js", "text/javascript"),
     "/expense-entry": ("expenses.html", "text/html"),
     "/expenses.js": ("expenses.js", "text/javascript"),
     "/inventory.css": ("inventory.css", "text/css"),
@@ -140,6 +143,15 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 customer_id = uuid_field(parts[1], "customer_id")
                 created, repayment = record_repayment(db, customer_id, self.read_json())
                 return (201 if created else 200), repayment
+
+        if parts == ["cash-drawer"] and self.command == "GET":
+            dates = parse_qs(route.query)
+            return 200, read_drawer(db, dates.get("date", [""])[0])
+        if len(parts) == 2 and parts[0] == "cash-drawer" and self.command == "POST":
+            if parts[1] not in DRAWER_ACTIONS:
+                raise RequestError(404, "Drawer action not found")
+            created, drawer = record_drawer(db, parts[1], self.read_json())
+            return (201 if created else 200), drawer
 
         if parts == ["expenses"]:
             if self.command == "GET":
@@ -269,6 +281,7 @@ def make_server(database, port):
         db.executescript(CORRECTION_SCHEMA)
         db.executescript(COUNT_SCHEMA)
         db.executescript(EXPENSE_SCHEMA)
+        db.executescript(DRAWER_SCHEMA)
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
