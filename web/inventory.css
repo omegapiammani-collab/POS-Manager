@@ -140,3 +140,25 @@ dialog .error { margin-top: 12px; padding: 8px; }
 #stock-count-pending { margin-bottom: 16px; }
 #stock-count-cost-label[hidden] { display: none; }
 #stock-counts small { display: block; margin-top: 3px; color: #536375; }
+
+.reports .report-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; margin-top: 12px; }
+.reports .report-filters label { margin-top: 0; flex: 0 1 180px; }
+.reports .report-status:not(:empty) { margin-top: 12px; padding: 10px 14px; border-radius: 8px; }
+.reports .report-status:not(.error) { color: #536375; padding-inline: 0; }
+.reports .report-results:not([hidden]) { display: grid; gap: 16px; margin-top: 16px; }
+.reports .report-results .panel { min-width: 0; }
+.reports .report-metrics { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.reports .report-warning { color: #744100; background: #fff7e8; padding: 10px 14px; border-radius: 8px; }
+.reports .report-table-wrap { overflow: auto; margin-top: 12px; }
+.reports .report-table { width: 100%; border-collapse: collapse; }
+.reports .report-table :is(th, td) { padding: 11px 10px; border-bottom: 1px solid #e1e8ed; vertical-align: top; }
+.reports .report-table thead { background: #f3f6f8; }
+.reports .report-table th { text-align: start; }
+.reports .report-table :is(th, td):not(:first-child) { text-align: end; white-space: nowrap; }
+.reports .report-table th:first-child { min-width: 110px; overflow-wrap: anywhere; }
+.reports :is(.report-table, .report-metrics) small { display: block; margin-top: 3px; color: #744100; font-weight: 500; }
+@media (max-width: 450px) {
+  .reports .report-filters label { flex: 1 1 115px; min-width: 0; }
+  .reports .report-filters button { width: 100%; }
+  .reports .report-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

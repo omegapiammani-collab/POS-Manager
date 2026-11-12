@@ -16,6 +16,7 @@ from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
 )
 from sales import SALES_SCHEMA, SaleConflict, add_customer, checkout, customer_list, read_sale, uuid_field
+from sales_reports import sales_report
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
 
@@ -31,6 +32,8 @@ WEB_ASSETS = {
     "/debts.js": ("debts.js", "text/javascript"),
     "/bills": ("bills.html", "text/html"),
     "/bills.js": ("bills.js", "text/javascript"),
+    "/reports": ("reports.html", "text/html"),
+    "/reports.js": ("reports.js", "text/javascript"),
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
@@ -134,6 +137,10 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 customer_id = uuid_field(parts[1], "customer_id")
                 created, repayment = record_repayment(db, customer_id, self.read_json())
                 return (201 if created else 200), repayment
+
+        if parts == ["sales-report"] and self.command == "GET":
+            dates = parse_qs(route.query)
+            return 200, sales_report(db, dates.get("from", [""])[0], dates.get("to", [""])[0])
 
         if parts == ["sale-history"] and self.command == "GET":
             return 200, sale_history(db)
