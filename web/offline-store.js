@@ -124,6 +124,102 @@
     });
   }
 
+  function hasFields(value, required, optional = []) {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      && required.every((key) => Object.hasOwn(value, key))
+      && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+  }
+
+  function amount(value, places, limit, positive = false) {
+    if (typeof value === "number" && Number.isSafeInteger(value)) value = String(value);
+    if (typeof value !== "string" || value.length > 40) throw new TypeError("Invalid sale amount");
+    const match = /^(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(value);
+    if (!match || !(match[1] || match[2])) throw new TypeError("Invalid sale amount");
+    const fraction = match[2] ?? "";
+    const power = Number(match[3] ?? 0) + places - fraction.length;
+    if (!Number.isInteger(power) || Math.abs(power) > 40) throw new TypeError("Invalid sale amount");
+    const digits = BigInt(match[1] + fraction);
+    const scale = 10n ** BigInt(Math.abs(power));
+    if (power < 0 && digits % scale !== 0n) throw new TypeError("Invalid sale amount precision");
+    const scaled = power < 0 ? digits / scale : digits * scale;
+    if (scaled > limit * 10n ** BigInt(places) || (positive && scaled === 0n)) {
+      throw new TypeError("Sale amount is outside the supported range");
+    }
+    return scaled;
+  }
+
+  function validatedImportEntry(entry) {
+    if (!hasFields(entry, ["payload", "state", "error"]) || !STATES.has(entry.state)
+      || (entry.error !== null && (typeof entry.error !== "string" || entry.error.length > 1000))) {
+      throw new TypeError("Invalid offline queue entry");
+    }
+    const { payload, state, error } = entry;
+    if (!hasFields(payload, ["id", "items", "payments", "customer_id", "qr_confirmed"], ["offline"])
+      || !Array.isArray(payload.items) || !payload.items.length
+      || !hasFields(payload.payments, ["cash", "qr", "credit"])
+      || typeof payload.qr_confirmed !== "boolean"
+      || (Object.hasOwn(payload, "offline") && typeof payload.offline !== "boolean")) {
+      throw new TypeError("Invalid offline sale");
+    }
+    const id = saleId(payload.id);
+    if (payload.customer_id !== null) saleId(payload.customer_id);
+    for (const item of payload.items) {
+      if (!hasFields(item, ["product_id", "unit_id", "quantity", "expected_unit_price"])) {
+        throw new TypeError("Invalid offline sale item");
+      }
+      saleId(item.product_id);
+      saleId(item.unit_id);
+      amount(item.quantity, 6, 10n ** 9n, true);
+      amount(item.expected_unit_price, 6, 10n ** 9n);
+    }
+    const { cash, qr, credit } = payload.payments;
+    const paymentLimit = 10n ** 22n;
+    amount(cash, 2, paymentLimit);
+    const qrAmount = amount(qr, 2, paymentLimit);
+    const creditAmount = amount(credit, 2, paymentLimit);
+    if ((qrAmount && !payload.qr_confirmed) || (creditAmount && payload.customer_id === null)) {
+      throw new TypeError("Incomplete offline sale payment");
+    }
+    const submitted = structuredClone({ ...payload, id });
+    return { id, signature: canonicalJson(submitted), payload: submitted, state, error };
+  }
+
+  async function importQueue(entries) {
+    if (!Array.isArray(entries)) {
+      throw new TypeError("A queue backup must contain an array of entries");
+    }
+    const rows = Array.from(entries, validatedImportEntry);
+    return transaction(QUEUE, "readwrite", (store, setResult, abort) => {
+      const index = store.index("saleId");
+      const totals = { imported: 0, duplicates: 0 };
+      let position = 0;
+
+      function next() {
+        if (position === rows.length) {
+          setResult(totals);
+          return;
+        }
+        const row = rows[position++];
+        const request = index.get(row.id);
+        request.onsuccess = () => {
+          const existing = request.result;
+          if (existing && existing.signature !== row.signature) {
+            abort(new Error("This offline sale ID already has different data"));
+            return;
+          }
+          if (existing) {
+            totals.duplicates++;
+          } else {
+            store.add(row);
+            totals.imported++;
+          }
+          next();
+        };
+      }
+      next();
+    });
+  }
+
   async function update(id, state, error = null) {
     id = saleId(id);
     if (!STATES.has(state)) throw new TypeError("Unknown offline sale state");
@@ -153,5 +249,5 @@
     });
   }
 
-  window.PosOffline = { getSnapshot, putSnapshot, list, put, update, remove };
+  window.PosOffline = { getSnapshot, putSnapshot, list, put, update, remove, importQueue };
 })();

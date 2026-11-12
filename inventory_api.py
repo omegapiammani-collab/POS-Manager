@@ -6,10 +6,13 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+from shutil import copyfileobj
 import sqlite3
+from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 
 from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawer
+from database_backup import copy_database
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
 from inventory import add_product, add_unit, connect, number, receive
@@ -36,6 +39,8 @@ WEB_ASSETS = {
     "/bills.js": ("bills.js", "text/javascript"),
     "/reports": ("reports.html", "text/html"),
     "/reports.js": ("reports.js", "text/javascript"),
+    "/backup": ("backup.html", "text/html"),
+    "/backup.js": ("backup.js", "text/javascript"),
     "/drawer": ("drawer.html", "text/html"),
     "/drawer.js": ("drawer.js", "text/javascript"),
     "/expense-entry": ("expenses.html", "text/html"),
@@ -106,6 +111,19 @@ class InventoryHandler(BaseHTTPRequestHandler):
     def serve_asset(self, name, content_type):
         body = (WEB_DIR / name).read_bytes()
         self.send_bytes(200, body, content_type, "no-cache")
+
+    def send_database_backup(self):
+        with TemporaryDirectory(prefix="pos-backup-") as directory:
+            snapshot = Path(directory) / "pos-backup.sqlite3"
+            copy_database(self.database, snapshot)
+            with snapshot.open("rb") as stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.sqlite3")
+                self.send_header("Content-Disposition", 'attachment; filename="pos-backup.sqlite3"')
+                self.send_header("Content-Length", str(snapshot.stat().st_size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                copyfileobj(stream, self.wfile)
 
     def read_json(self):
         if self.headers.get_content_type() != "application/json":
@@ -240,6 +258,8 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if self.headers.get("Host") not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
                 raise RequestError(403, "Use the local server address")
             route = urlsplit(self.path)
+            if self.command == "GET" and route.path == "/database-backup":
+                return self.send_database_backup()
             if self.command == "GET" and route.path in WEB_ASSETS:
                 return self.serve_asset(*WEB_ASSETS[route.path])
             if self.command == "GET" and route.path == "/payment-qr":
