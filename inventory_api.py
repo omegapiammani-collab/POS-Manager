@@ -10,11 +10,15 @@ import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 from inventory import add_product, add_unit, connect, number, receive
+from payment_qr import PaymentQrUnavailable, payment_qr_svg
+from sales import SALES_SCHEMA, SaleConflict, add_customer, checkout, customer_list, read_sale, uuid_field
 
 MAX_BODY = 8192
 WEB_DIR = Path(__file__).resolve().parent / "web"
 WEB_ASSETS = {
     "/": ("index.html", "text/html"),
+    "/checkout": ("checkout.html", "text/html"),
+    "/checkout.js": ("checkout.js", "text/javascript"),
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
@@ -68,21 +72,19 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def send_json(self, status, data):
         body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.send_bytes(status, body, "application/json", "no-store")
+
+    def send_bytes(self, status, body, content_type, cache_control):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
 
     def serve_asset(self, name, content_type):
         body = (WEB_DIR / name).read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(body)
+        self.send_bytes(200, body, content_type, "no-cache")
 
     def read_json(self):
         if self.headers.get_content_type() != "application/json":
@@ -105,6 +107,21 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def dispatch(self, db, route):
         parts = route.path.strip("/").split("/")
+        if parts == ["customers"]:
+            if self.command == "GET":
+                return 200, customer_list(db)
+            return 201, add_customer(db, required_text(self.read_json(), "name"))
+
+        if parts == ["sales"] and self.command == "POST":
+            created, sale = checkout(db, self.read_json())
+            return (201 if created else 200), sale
+
+        if len(parts) == 2 and parts[0] == "sales" and self.command == "GET":
+            sale = read_sale(db, uuid_field(parts[1], "id"))
+            if sale is None:
+                raise RequestError(404, "Sale not found")
+            return 200, sale
+
         if parts == ["products"]:
             if self.command == "GET":
                 query = parse_qs(route.query).get("q", [""])[0].strip().casefold()
@@ -152,13 +169,20 @@ class InventoryHandler(BaseHTTPRequestHandler):
             route = urlsplit(self.path)
             if self.command == "GET" and route.path in WEB_ASSETS:
                 return self.serve_asset(*WEB_ASSETS[route.path])
+            if self.command == "GET" and route.path == "/payment-qr":
+                amount = parse_qs(route.query).get("amount", [""])[0]
+                return self.send_bytes(200, payment_qr_svg(amount), "image/svg+xml", "no-store")
             with closing(connect(self.database)) as db:
                 db.row_factory = sqlite3.Row
                 status, body = self.dispatch(db, route)
+        except PaymentQrUnavailable as exc:
+            status, body = 503, {"error": str(exc)}
         except RequestError as exc:
             status, body = exc.status, {"error": str(exc)}
         except ValueError as exc:
             status, body = 400, {"error": str(exc)}
+        except SaleConflict as exc:
+            status, body = 409, {"error": str(exc), "code": exc.code}
         except sqlite3.IntegrityError:
             status, body = 409, {"error": "Product code or unit name already exists"}
         except sqlite3.Error as exc:
@@ -172,8 +196,8 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
 def make_server(database, port):
     # Initialize the file before accepting requests.
-    with closing(connect(database)):
-        pass
+    with closing(connect(database)) as db:
+        db.executescript(SALES_SCHEMA)
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 

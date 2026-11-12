@@ -53,3 +53,38 @@ dialog .error { margin-top: 12px; padding: 8px; }
   .panel { padding: 16px; }
   main { padding-top: 22px; }
 }
+
+.pos-link { color: #136140; font-weight: 650; padding: 10px 4px; }
+.checkout fieldset { border: 0; padding: 0; margin: 0; min-inline-size: 0; }
+.checkout legend { font-weight: 700; padding: 0; }
+.checkout .sale-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.checkout .sale-list > li { padding: 12px 0; border-bottom: 1px solid #e1e8ed; overflow-wrap: anywhere; }
+.checkout .sale-product-name { font-weight: 700; }
+.checkout .sale-product-code { display: block; color: #536375; }
+.checkout .sale-unit-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.checkout .sale-cart-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(76px, 106px) auto; align-items: end; gap: 9px; }
+.checkout .sale-cart-row label { margin: 0; }
+.checkout .sale-cart-row small { display: block; color: #536375; }
+.checkout .sale-total { display: flex; justify-content: space-between; gap: 10px; margin-block: 14px; padding: 12px; background: #f3f6f8; border-radius: 9px; }
+.checkout .sale-payment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.checkout .sale-check { display: flex; align-items: center; }
+.checkout .sale-check input { width: 20px; min-height: 20px; }
+.checkout .sale-submit { width: 100%; margin-top: 12px; }
+.checkout .sale-cash-all { margin-top: 10px; }
+.checkout .sale-message, .checkout .sale-pending { margin-bottom: 16px; }
+.checkout .sale-message { padding: 10px 14px; border-radius: 8px; background: #e6f4eb; }
+.checkout .sale-message.error { background: #fff1f0; }
+.checkout .sale-pending button { margin-top: 8px; }
+.checkout #sale-receipt-id { overflow-wrap: anywhere; }
+@media (max-width: 390px) {
+  .checkout .sale-payment-grid { grid-template-columns: 1fr; }
+  .checkout .sale-cart-row { grid-template-columns: minmax(0, 1fr) minmax(64px, 84px); }
+  .checkout .sale-cart-row button { grid-column: 2; }
+}
+@media print {
+  body.checkout { background: white; }
+  .checkout > header, .checkout > main, .checkout .sale-receipt-actions { display: none; }
+  .checkout #sale-receipt[open] { position: static; margin: 0; border: 0; width: 100%; max-height: none; overflow: visible; }
+  .checkout #sale-receipt::backdrop { display: none; }
+}
+.checkout .sale-qr-image img { display: block; width: min(220px, 100%); margin: 12px auto; }
