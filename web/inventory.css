@@ -88,3 +88,22 @@ dialog .error { margin-top: 12px; padding: 8px; }
   .checkout #sale-receipt::backdrop { display: none; }
 }
 .checkout .sale-qr-image img { display: block; width: min(220px, 100%); margin: 12px auto; }
+
+.debts .debt-pending, .debts .debt-message { margin-bottom: 16px; }
+.debts .debt-pending button, .debts #debt-submit { margin-top: 12px; }
+.debts .debt-message { padding: 10px 14px; border-radius: 8px; background: #e6f4eb; }
+.debts .debt-message.error { background: #fff1f0; }
+.debts .metrics { grid-template-columns: 1fr; }
+.debts fieldset { border: 0; padding: 0; margin: 0; min-inline-size: 0; }
+.debts legend { font-weight: 700; padding: 0; }
+.debts .debt-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.debts .debt-check:not([hidden]) { display: flex; align-items: center; gap: 8px; }
+.debts .debt-check input { width: 20px; min-height: 20px; }
+.debts .debt-records { list-style: none; padding: 0; margin: 8px 0 0; }
+.debts .debt-records > li { border-bottom: 1px solid #e1e8ed; padding-block: 10px; overflow-wrap: anywhere; }
+.debts .debt-record-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; }
+.debts .debt-records small { display: block; margin-top: 3px; color: #536375; }
+.debts .debt-allocations { margin-top: 5px; padding-inline-start: 22px; }
+@media (max-width: 390px) {
+  .debts .debt-form-grid { grid-template-columns: 1fr; gap: 0; }
+}
