@@ -60,7 +60,7 @@ def add_customer(db, name):
     return {"id": customer_id, "name": name}
 
 
-def read_sale(db, sale_id):
+def read_sale(db, sale_id, *, include_item_ids=False):
     row = db.execute(
         "SELECT id, created_at, total, cash, qr, credit, customer_id, customer_name "
         "FROM sales WHERE id = ?", (sale_id,),
@@ -68,15 +68,18 @@ def read_sale(db, sale_id):
     if row is None:
         return None
     items = db.execute(
-        "SELECT name, unit_name, quantity, unit_price, total FROM sale_items "
+        "SELECT name, unit_name, quantity, unit_price, total, product_id, unit_id FROM sale_items "
         "WHERE sale_id = ? ORDER BY position", (sale_id,),
     )
+    item_fields = ("name", "unit_name", "quantity", "unit_price", "total")
+    if include_item_ids:
+        item_fields += ("product_id", "unit_id")
     return {
         "id": row[0],
         "created_at": row[1],
         "total": row[2],
         "items": [
-            dict(zip(("name", "unit_name", "quantity", "unit_price", "total"), item))
+            dict(zip(item_fields, item))
             for item in items
         ],
         "payments": dict(zip(PAYMENT_METHODS, row[3:6])),
@@ -180,49 +183,49 @@ def prepare_items(db, items):
 
 
 def checkout(db, data):
-    sale_id, items, payments, customer_id, qr_confirmed = validate_checkout(data)
+    validated = validate_checkout(data)
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        return checkout_in_transaction(db, validated)
+
+
+def checkout_in_transaction(db, validated):
+    if not db.in_transaction:
+        raise RuntimeError("Checkout requires a transaction")
+    sale_id, items, payments, customer_id, qr_confirmed = validated
     request_hash = checkout_hash(items, payments, customer_id, qr_confirmed)
-    db.execute("BEGIN IMMEDIATE")
-    try:
-        saved = db.execute("SELECT request_hash FROM sales WHERE id = ?", (sale_id,)).fetchone()
-        if saved is not None:
-            if saved[0] != request_hash:
-                raise SaleConflict("idempotency_conflict", "This sale ID was already used")
-            sale = read_sale(db, sale_id)
-            db.commit()
-            return False, sale
+    saved = db.execute("SELECT request_hash FROM sales WHERE id = ?", (sale_id,)).fetchone()
+    if saved is not None:
+        if saved[0] != request_hash:
+            raise SaleConflict("idempotency_conflict", "This sale ID was already used")
+        return False, read_sale(db, sale_id)
 
-        customer_name = None
-        if customer_id is not None:
-            customer = db.execute("SELECT name FROM customers WHERE id = ?", (customer_id,)).fetchone()
-            if customer is None:
-                raise ValueError("The selected customer was not found")
-            customer_name = customer[0]
+    customer_name = None
+    if customer_id is not None:
+        customer = db.execute("SELECT name FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        if customer is None:
+            raise ValueError("The selected customer was not found")
+        customer_name = customer[0]
 
-        with localcontext() as context:
-            context.prec = 50
-            stock, details, total = prepare_items(db, items)
-            if sum(payments.values()) != total:
-                raise ValueError("Payment amounts must add up to the sale total")
-            db.execute(
-                "INSERT INTO sales (id, request_hash, total, cash, qr, credit, customer_id, customer_name) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (sale_id, request_hash, str(total),
-                 *(str(payments[method].quantize(CENT)) for method in PAYMENT_METHODS),
-                 customer_id, customer_name),
-            )
-        db.executemany(
-            "INSERT INTO sale_items (sale_id, position, product_id, unit_id, name, unit_name, "
-            "quantity, unit_price, total, multiplier, base_unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ((sale_id, position, *detail) for position, detail in enumerate(details)),
+    with localcontext() as context:
+        context.prec = 50
+        stock, details, total = prepare_items(db, items)
+        if sum(payments.values()) != total:
+            raise ValueError("Payment amounts must add up to the sale total")
+        db.execute(
+            "INSERT INTO sales (id, request_hash, total, cash, qr, credit, customer_id, customer_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (sale_id, request_hash, str(total),
+             *(str(payments[method].quantize(CENT)) for method in PAYMENT_METHODS),
+             customer_id, customer_name),
         )
-        db.executemany(
-            "UPDATE products SET quantity = ? WHERE id = ?",
-            ((str(remaining), product_id) for product_id, remaining in stock.items()),
-        )
-        sale = read_sale(db, sale_id)
-        db.commit()
-        return True, sale
-    except Exception:
-        db.rollback()
-        raise
+    db.executemany(
+        "INSERT INTO sale_items (sale_id, position, product_id, unit_id, name, unit_name, "
+        "quantity, unit_price, total, multiplier, base_unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ((sale_id, position, *detail) for position, detail in enumerate(details)),
+    )
+    db.executemany(
+        "UPDATE products SET quantity = ? WHERE id = ?",
+        ((str(remaining), product_id) for product_id, remaining in stock.items()),
+    )
+    return True, read_sale(db, sale_id)

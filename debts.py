@@ -58,8 +58,10 @@ def bill_balances(db, customer_id):
 
     bills = []
     for sale_id, created_at, credit in db.execute(
-        "SELECT id, created_at, credit FROM sales "
-        "WHERE customer_id = ? ORDER BY created_at, id",
+        "SELECT s.id, s.created_at, s.credit FROM sales s "
+        "WHERE s.customer_id = ? "
+        "AND NOT EXISTS (SELECT 1 FROM sale_corrections c WHERE c.sale_id = s.id) "
+        "ORDER BY s.created_at, s.id",
         (customer_id,),
     ):
         credit = satang(credit)
@@ -99,10 +101,15 @@ def customer_debt_list(db):
         customers = db.execute("SELECT id, name FROM customers ORDER BY name, id").fetchall()
         outstanding = defaultdict(int)
         for customer_id, credit in db.execute(
-            "SELECT customer_id, credit FROM sales WHERE customer_id IS NOT NULL",
+            "SELECT s.customer_id, s.credit FROM sales s WHERE s.customer_id IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM sale_corrections c WHERE c.sale_id = s.id)",
         ):
             outstanding[customer_id] += satang(credit)
-        for customer_id, amount in db.execute("SELECT customer_id, amount FROM debt_repayments"):
+        for customer_id, amount in db.execute(
+            "SELECT s.customer_id, a.amount FROM debt_allocations a "
+            "JOIN sales s ON s.id = a.sale_id "
+            "WHERE NOT EXISTS (SELECT 1 FROM sale_corrections c WHERE c.sale_id = s.id)",
+        ):
             outstanding[customer_id] -= satang(amount)
     return [
         {"id": customer_id, "name": name, "outstanding": baht(outstanding[customer_id])}

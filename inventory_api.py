@@ -12,6 +12,9 @@ from urllib.parse import parse_qs, urlsplit
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from inventory import add_product, add_unit, connect, number, receive
 from payment_qr import PaymentQrUnavailable, payment_qr_svg
+from sale_corrections import (
+    CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
+)
 from sales import SALES_SCHEMA, SaleConflict, add_customer, checkout, customer_list, read_sale, uuid_field
 
 MAX_BODY = 8192
@@ -22,6 +25,8 @@ WEB_ASSETS = {
     "/checkout.js": ("checkout.js", "text/javascript"),
     "/debts": ("debts.html", "text/html"),
     "/debts.js": ("debts.js", "text/javascript"),
+    "/bills": ("bills.html", "text/html"),
+    "/bills.js": ("bills.js", "text/javascript"),
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
@@ -126,6 +131,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 created, repayment = record_repayment(db, customer_id, self.read_json())
                 return (201 if created else 200), repayment
 
+        if parts == ["sale-history"] and self.command == "GET":
+            return 200, sale_history(db)
+
+        if len(parts) == 3 and parts[0] == "sales" and parts[2] == "corrections" and self.command == "POST":
+            sale_id = uuid_field(parts[1], "id")
+            created, correction = correct_sale(db, sale_id, self.read_json())
+            return (201 if created else 200), correction
+
         if parts == ["sales"] and self.command == "POST":
             created, sale = checkout(db, self.read_json())
             return (201 if created else 200), sale
@@ -191,12 +204,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 status, body = self.dispatch(db, route)
         except PaymentQrUnavailable as exc:
             status, body = 503, {"error": str(exc)}
-        except CustomerNotFound as exc:
+        except (CustomerNotFound, SaleNotFound) as exc:
             status, body = 404, {"error": str(exc)}
         except RequestError as exc:
             status, body = exc.status, {"error": str(exc)}
         except ValueError as exc:
             status, body = 400, {"error": str(exc)}
+        except CorrectionConflict as exc:
+            status, body = 409, {"error": str(exc), "code": exc.code, "excess": exc.excess}
         except SaleConflict as exc:
             status, body = 409, {"error": str(exc), "code": exc.code}
         except sqlite3.IntegrityError:
@@ -215,6 +230,7 @@ def make_server(database, port):
     with closing(connect(database)) as db:
         db.executescript(SALES_SCHEMA)
         db.executescript(DEBT_SCHEMA)
+        db.executescript(CORRECTION_SCHEMA)
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 

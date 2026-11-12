@@ -107,3 +107,26 @@ dialog .error { margin-top: 12px; padding: 8px; }
 @media (max-width: 390px) {
   .debts .debt-form-grid { grid-template-columns: 1fr; gap: 0; }
 }
+
+.bills .bill-pending, .bills .bill-message { margin-bottom: 16px; }
+.bills .bill-message { padding: 10px 14px; border-radius: 8px; background: #e6f4eb; }
+.bills .bill-message.error { background: #fff1f0; }
+.bills .bill-pending button, .bills .bill-actions, .bills .bill-spaced { margin-top: 12px; }
+.bills .bill-total, .bills .bill-money-change { margin-block: 12px; padding: 12px; background: #f3f6f8; border-radius: 9px; }
+.bills .bill-total { font-weight: 700; }
+.bills .bill-money-change { white-space: pre-line; }
+.bills #bill-reference, .bills #bill-correction-ref { overflow-wrap: anywhere; }
+.bills #bill-correction { width: min(620px, calc(100% - 24px)); }
+.bills fieldset { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+.bills .bill-pay-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.bills .bill-check:not([hidden]) { display: flex; align-items: center; gap: 8px; }
+.bills .bill-check input { width: 20px; min-height: 20px; flex-shrink: 0; }
+.bills .bill-edit-items > li { display: grid; grid-template-columns: minmax(0, 1fr) 90px auto; align-items: end; }
+.bills .bill-edit-items label { margin: 0; }
+.bills .bill-edit-items small { display: block; color: #536375; }
+.bills #bill-excess { margin-top: 14px; padding: 10px; border-radius: 9px; background: #fff7e8; }
+@media (max-width: 430px) {
+  .bills .bill-pay-grid { grid-template-columns: 1fr; gap: 0; }
+  .bills .bill-edit-items > li { grid-template-columns: minmax(0, 1fr) 80px; }
+  .bills .bill-edit-items button { grid-column: 2; }
+}

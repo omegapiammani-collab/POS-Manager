@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ประวัติบิล | POS Manager</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/bills.js"></script>
+</head>
+<body class="bills">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>ประวัติบิล</h1>
+      <nav class="actions" aria-label="เมนู POS">
+        <a class="pos-link" href="/">สินค้าและสต๊อก</a>
+        <a class="pos-link" href="/checkout">ขายสินค้า</a>
+        <a class="pos-link" href="/debts">ลูกหนี้</a>
+      </nav>
+    </div>
+    <div id="bill-pending" class="panel bill-pending" hidden>
+      <p>ยังไม่ได้รับผลยืนยัน กดส่งคำขอเดิมอีกครั้งเพื่อดูผล</p>
+      <button id="bill-retry" type="button">ส่งคำขอเดิมอีกครั้ง</button>
+    </div>
+    <p id="bill-message" class="bill-message" role="status" hidden></p>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="bill-list-title">
+        <h2 id="bill-list-title">รายการบิล</h2>
+        <label>ค้นหาบิล<input id="bill-search" type="search" placeholder="ค้นด้วยเลขอ้างอิงหรือชื่อลูกค้า"></label>
+        <ul id="bill-list" class="products"></ul>
+        <p id="bill-list-state" class="muted" role="status">กำลังโหลดบิล…</p>
+      </section>
+      <section class="panel" aria-labelledby="bill-detail-title">
+        <h2 id="bill-detail-title">รายละเอียดบิล</h2>
+        <p id="bill-detail-state" class="muted">เลือกบิลจากรายการเพื่อดูรายละเอียด</p>
+        <div id="bill-detail" hidden>
+          <p id="bill-reference" class="muted"></p>
+          <p id="bill-meta" class="muted"></p>
+          <ul id="bill-items" class="lines"></ul>
+          <p id="bill-total" class="bill-total"></p>
+          <ul id="bill-payments" class="lines"></ul>
+          <p id="bill-customer" class="muted" hidden></p>
+          <p id="bill-reason" class="muted" hidden></p>
+          <div id="bill-related" class="actions bill-actions"></div>
+          <div id="bill-actions" class="actions bill-actions" hidden>
+            <button id="bill-edit" type="button">แก้ไขบิล</button>
+            <button id="bill-void" class="secondary" type="button">ยกเลิกบิล</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <dialog id="bill-correction" aria-labelledby="bill-correction-title">
+    <form>
+      <h2 id="bill-correction-title"></h2>
+      <p id="bill-correction-ref" class="muted"></p>
+      <fieldset id="bill-fields">
+        <div id="bill-replacement">
+          <label>เพิ่มสินค้าในบิล<select id="bill-catalog"></select></label>
+          <button id="bill-add-item" class="secondary bill-spaced" type="button">เพิ่มรายการ</button>
+          <ul id="bill-edit-items" class="lines bill-edit-items"></ul>
+          <p id="bill-edit-total" class="bill-total"></p>
+          <div class="bill-pay-grid">
+            <label>เงินสด (บาท)<input name="cash" inputmode="decimal" maxlength="28"></label>
+            <label>โอนผ่าน QR (บาท)<input name="qr" inputmode="decimal" maxlength="28"></label>
+            <label>เงินเชื่อ (บาท)<input name="credit" inputmode="decimal" maxlength="28"></label>
+          </div>
+          <label id="bill-customer-field" hidden>ลูกค้าเงินเชื่อ<select name="customer_id"></select></label>
+          <label id="bill-qr-field" class="bill-check" hidden><input name="qr_confirmed" type="checkbox">ตรวจสอบยอดเงินโอนแล้ว</label>
+          <p id="bill-balance" class="muted" aria-live="polite"></p>
+        </div>
+        <p id="bill-money-change" class="bill-money-change"></p>
+        <label class="bill-check"><input name="reconciled" type="checkbox" required>ตรวจสอบยอดเงินสดและเงินโอนที่เกี่ยวข้องแล้ว</label>
+        <label>เหตุผล<input name="reason" required maxlength="300"></label>
+        <div id="bill-excess" hidden>
+          <p id="bill-excess-text" class="muted"></p>
+          <label>วิธีจัดการยอดชำระเกิน<select name="excess_action">
+            <option value="">เลือกวิธีจัดการ</option>
+            <option value="refund_cash">บันทึกคืนเงินสด</option>
+            <option value="refund_qr">บันทึกคืนเงินโอน</option>
+            <option value="apply">ตัดยอดหนี้บิลอื่นที่เก่าที่สุดก่อน</option>
+          </select></label>
+          <label id="bill-refund-field" class="bill-check" hidden><input name="refund_confirmed" type="checkbox">คืนเงินจริงให้ลูกค้าแล้ว</label>
+        </div>
+      </fieldset>
+      <p id="bill-error" class="error" role="alert" hidden></p>
+      <div class="actions">
+        <button id="bill-close" class="secondary" type="button">ปิด</button>
+        <button id="bill-submit" type="submit">บันทึก</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
