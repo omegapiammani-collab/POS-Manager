@@ -75,13 +75,20 @@ function moneyText(value) {
   return money(decimal(value, 2, true));
 }
 
+function saleDate(value) {
+  // SQLite CURRENT_TIMESTAMP is UTC even though it has no timezone suffix.
+  const utcValue = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? value.replace(" ", "T") + "Z" : value;
+  return new Date(utcValue);
+}
+
 function dateText(value) {
-  const date = new Date(value);
+  const date = saleDate(value);
   return Number.isNaN(date.getTime()) ? value : dateFormat.format(date);
 }
 
 function businessDay(bill) {
-  const date = new Date(bill.sold_at ?? bill.created_at);
+  const date = saleDate(bill.sold_at ?? bill.created_at);
   return Number.isNaN(date.getTime()) ? "" : businessDateFormat.format(date);
 }
 

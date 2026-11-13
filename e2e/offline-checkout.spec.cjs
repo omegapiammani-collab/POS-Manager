@@ -751,6 +751,47 @@ test("reprints original receipt values and labels a voided bill", async ({ page,
   expect(await page.evaluate(() => window.printCount)).toBe(1);
 });
 
+test("legacy bill dates use Bangkok time for filtering, CSV, and receipts", async ({ browser, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const response = await request.post(pos + "/sales", { data: {
+    id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, qr_confirmed: false,
+  } });
+  expect(response.status()).toBe(201);
+  const [sample] = await (await request.get(pos + "/sale-history")).json();
+  const bills = [
+    { ...sample, id: "legacy-before", created_at: "2025-06-13 16:59:59", sold_at: null },
+    { ...sample, id: "legacy-midnight", created_at: "2025-06-13 17:00:00", sold_at: null },
+    { ...sample, id: "offline-midnight", created_at: "2025-06-20 00:00:00", sold_at: "2025-06-13T17:00:00.000Z" },
+  ];
+  const expected = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" })
+    .format(new Date("2025-06-13T17:00:00Z"));
+  for (const timezoneId of ["UTC", "Asia/Bangkok", "America/Los_Angeles"]) {
+    const context = await browser.newContext({ timezoneId });
+    try {
+      const page = await context.newPage();
+      await page.route("**/sale-history", (route) => route.fulfill({ json: bills }));
+      await page.goto(pos + "/bills");
+      await page.getByLabel("ตั้งแต่วันที่", { exact: true }).fill("2025-06-14");
+      await page.getByLabel("ถึงวันที่", { exact: true }).fill("2025-06-14");
+      const rows = page.locator("#bill-list").getByRole("button");
+      await expect(rows).toHaveCount(2);
+      await expect(rows.filter({ hasText: "legacy-midnight" })).toContainText(expected);
+      await expect(rows.filter({ hasText: "offline-midnight" })).toContainText(expected);
+      const csv = await downloadCsv(page, "ดาวน์โหลด CSV", "bill-history.csv");
+      expect(csv).toContain("legacy-midnight,2025-06-14");
+      expect(csv).toContain("offline-midnight,2025-06-14");
+      expect(csv).not.toContain("legacy-before");
+      await rows.filter({ hasText: "legacy-midnight" }).click();
+      await expect(page.locator("#bill-meta")).toContainText(expected);
+      await page.getByRole("button", { name: "พิมพ์ใบเสร็จ", exact: true }).click();
+      await expect(page.locator("#bill-receipt-date")).toHaveText(expected);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 test("filters bill history by inclusive Bangkok sale dates and status", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   const restock = await request.post(`${pos}/products/${product.id}/receipts`, {
