@@ -10,6 +10,7 @@ from shutil import copyfileobj
 import sqlite3
 from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawer
 from database_backup import copy_database, read_only_database, validate_backup
@@ -200,6 +201,8 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def dispatch(self, db, route):
         parts = route.path.strip("/").split("/")
+        if parts == ["store-identity"] and self.command == "GET":
+            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0]}
         if parts == ["customers"]:
             if self.command == "GET":
                 return 200, customer_list(db)
@@ -385,6 +388,7 @@ def make_server(database, port):
         db.executescript(COUNT_SCHEMA)
         db.executescript(EXPENSE_SCHEMA)
         db.executescript(DRAWER_SCHEMA)
+        db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 

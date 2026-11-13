@@ -10,6 +10,10 @@ from inventory import number
 from stock_shortages import SHORTAGE_SCHEMA, sale_shortages
 
 SALES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS store_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    id TEXT NOT NULL UNIQUE
+);
 CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL
