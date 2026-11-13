@@ -119,6 +119,37 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("adds exact product codes from search online and offline", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const unit = await request.post(pos + "/products/" + product.id + "/units", {
+    data: { name: "แพ็ก", multiplier: "6", price: "120" },
+  });
+  expect(unit.status()).toBe(201);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  const search = page.getByRole("searchbox", { name: "ค้นหาสินค้า" });
+  await search.fill("W0");
+  await search.press("Enter");
+  await expect(search).toHaveValue("W0");
+  await expect(page.locator("#sale-empty")).toBeVisible();
+  await search.fill("w01");
+  await search.press("Enter");
+  await expect(search).toHaveValue("");
+  await expect(search).toBeFocused();
+  const quantity = page.getByRole("textbox", { name: "จำนวน น้ำดื่ม ขวด" });
+  await expect(quantity).toHaveValue("1");
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.locator("#sale-connection")).toContainText("ออฟไลน์");
+  await search.fill("W01");
+  await search.press("Enter");
+  await search.fill("W01");
+  await search.press("Enter");
+  await expect(quantity).toHaveValue("2");
+  await expect(page.getByRole("textbox", { name: "จำนวน น้ำดื่ม แพ็ก" })).toHaveCount(0);
+});
+
 test("automatically retries a queued bill when the server recovers without an online event", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/checkout");

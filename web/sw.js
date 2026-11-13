@@ -1,5 +1,5 @@
 const SHELL_PREFIX = "pos-checkout-shell-";
-const SHELL_CACHE = SHELL_PREFIX + "8";
+const SHELL_CACHE = SHELL_PREFIX + "9";
 const CHECKOUT = "/checkout";
 const BACKUP = "/checkout/backup";
 const ASSETS = new Set(["/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js"]);

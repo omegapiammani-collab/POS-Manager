@@ -572,6 +572,21 @@ function retryQueue(onlyId) {
 
 byId("sale-retry").addEventListener("click", () => retryQueue());
 byId("sale-search").addEventListener("input", renderProducts);
+byId("sale-search").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || staging) return;
+  event.preventDefault();
+  const search = event.currentTarget;
+  const code = search.value.trim().toLowerCase();
+  if (!code) return;
+  const matches = products.filter((product) => product.code.trim().toLowerCase() === code);
+  if (matches.length !== 1) return;
+  const product = matches[0];
+  const unit = product.units.find((entry) => entry.name === product.base_unit);
+  if (!unit) return;
+  addItem(product, unit);
+  search.value = "";
+  renderProducts();
+});
 byId("sale-receipt-close").addEventListener("click", () => byId("sale-receipt").close());
 byId("sale-print").addEventListener("click", () => window.print());
 
