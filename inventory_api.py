@@ -41,6 +41,7 @@ WEB_ASSETS = {
     "/reports.js": ("reports.js", "text/javascript"),
     "/csv.js": ("csv.js", "text/javascript"),
     "/backup": ("backup.html", "text/html"),
+    "/checkout/backup": ("backup.html", "text/html"),
     "/backup.js": ("backup.js", "text/javascript"),
     "/drawer": ("drawer.html", "text/html"),
     "/drawer.js": ("drawer.js", "text/javascript"),

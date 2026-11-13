@@ -1,12 +1,13 @@
 const SHELL_PREFIX = "pos-checkout-shell-";
-const SHELL_CACHE = SHELL_PREFIX + "6";
+const SHELL_CACHE = SHELL_PREFIX + "7";
 const CHECKOUT = "/checkout";
-const ASSETS = new Set(["/checkout.js", "/offline-store.js", "/inventory.css"]);
+const BACKUP = "/checkout/backup";
+const ASSETS = new Set(["/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js"]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(SHELL_CACHE);
-    await cache.addAll([CHECKOUT, ...ASSETS].map((path) =>
+    await cache.addAll([CHECKOUT, BACKUP, ...ASSETS].map((path) =>
       new Request(path, { cache: "reload", redirect: "error" })
     ));
   })());
@@ -50,7 +51,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   const allowed = request.mode === "navigate"
-    ? url.pathname === CHECKOUT
+    ? url.pathname === CHECKOUT || url.pathname === BACKUP
     : !url.search && ASSETS.has(url.pathname);
   if (allowed) event.respondWith(fetchShell(request, url.pathname));
 });

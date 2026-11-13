@@ -144,6 +144,18 @@ test("offline bill survives reload and syncs once after another device sells the
     await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toBeVisible();
     expect(await queue()).toEqual([{ payload, state: "pending", error: null }]);
 
+    await page.getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+    await expect(page).toHaveURL(pos + "/checkout/backup");
+    await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+    const [backup] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "ดาวน์โหลดบิลรอส่ง" }).click(),
+    ]);
+    const savedQueue = JSON.parse(await readFile(await backup.path(), "utf8"));
+    expect(savedQueue).toMatchObject({ format: "pos-sale-queue", version: 1, entries: [{ payload }] });
+    await page.getByRole("link", { name: "ขายสินค้า", exact: true }).click();
+    await expect(page.locator("#sale-queue")).toContainText(payload.id);
+
     const priceChange = await request.post(pos + "/products/" + product.id + "/units/"
       + product.base_unit_id + "/price", { data: { price: "32", expected_price: "25" } });
     expect(priceChange.status()).toBe(200);
