@@ -11,6 +11,7 @@ const dateFormat = new Intl.DateTimeFormat("th-TH", {
 let customers = [];
 let customersLoaded = false;
 let pending = restorePending();
+let pendingStored = true;
 let selectedId = pending?.customerId ?? null;
 let selectedDebt = null;
 let detailRequest = 0;
@@ -194,11 +195,12 @@ function restorePending() {
 
 function setPending(request) {
   pending = request;
+  pendingStored = true;
   try {
     if (request) sessionStorage.setItem(storageKey, JSON.stringify(request));
     else sessionStorage.removeItem(storageKey);
   } catch {
-    // Keep the request in the current tab if browser storage is unavailable.
+    pendingStored = !request;
   }
   renderPending();
 }
@@ -210,6 +212,7 @@ function renderPending() {
     button.disabled = locked;
   }
   byId("debt-pending").hidden = !pending || sending;
+  byId("debt-storage-warning").hidden = !pending || pendingStored;
   byId("debt-retry").disabled = sending;
   updateForm();
 }
@@ -270,3 +273,10 @@ byId("debt-retry").addEventListener("click", submitPending);
 renderPending();
 loadCustomers();
 loadDetail();
+
+window.addEventListener("beforeunload", (event) => {
+  if (pending && !pendingStored) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});

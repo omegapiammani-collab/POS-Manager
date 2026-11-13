@@ -287,6 +287,47 @@ test("inventory history shows the Bangkok date around UTC midnight", async ({ pa
   await expect(page.locator("#stock-counts")).toContainText("2026-11-12");
 });
 
+test("warns when a pending repayment cannot be saved and retries the same request", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
+  const sale = await request.post(pos + "/sales", { data: {
+    id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "0", qr: "0", credit: "25" }, customer_id: customer.id, qr_confirmed: false,
+  } });
+  expect(sale.status()).toBe(201);
+  await page.addInitScript(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === sessionStorage && key === "pos-pending-repayment") throw new Error("storage unavailable");
+      return original.call(this, key, value);
+    };
+  });
+  const ids = [];
+  await page.route(`**/customers/${customer.id}/repayments`, async (route) => {
+    ids.push(route.request().postDataJSON().id);
+    if (ids.length === 1) {
+      expect((await route.fetch()).status()).toBe(201);
+      return route.abort("connectionfailed");
+    }
+    return route.continue();
+  });
+  await page.goto(pos + "/debts");
+  await page.getByRole("button", { name: /ลูกค้า ก/ }).click();
+  await page.getByLabel("ยอดชำระ (บาท)").fill("10");
+  await page.getByRole("button", { name: "บันทึกรับชำระ" }).click();
+  await expect(page.locator("#debt-storage-warning")).toContainText("ก่อนรีโหลดหรือปิดแท็บ");
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+  await page.getByRole("button", { name: "ส่งรายการเดิมอีกครั้ง" }).click();
+  await expect(page.locator("#debt-pending")).toBeHidden();
+  expect(ids).toHaveLength(2);
+  expect(ids[0]).toBe(ids[1]);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
+  const debt = await (await request.get(`${pos}/customers/${customer.id}/debt`)).json();
+  expect(debt.outstanding).toBe("15.00");
+  expect(debt.repayments).toHaveLength(1);
+  expect(debt.repayments[0].amount).toBe("10.00");
+});
+
 test("warns when pending inventory actions cannot be saved in session storage", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.addInitScript(() => {
