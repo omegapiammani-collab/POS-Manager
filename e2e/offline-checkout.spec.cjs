@@ -74,6 +74,51 @@ async function downloadCsv(page, label, filename, { touch = false } = {}) {
   return contents.subarray(3).toString("utf8");
 }
 
+for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
+  test("shows offline storage status when persistence is " + scenario, async ({ page, request, pos }) => {
+    await createProduct(request, pos);
+    await page.addInitScript((mode) => {
+      let persistent = false;
+      window.persistenceRequests = 0;
+      Object.defineProperty(navigator.storage, "persisted", {
+        configurable: true, value: mode === "unsupported" ? undefined : async () => persistent,
+      });
+      Object.defineProperty(navigator.storage, "persist", {
+        configurable: true, value: mode === "unsupported" ? undefined : async () => {
+          window.persistenceRequests += 1;
+          if (mode === "rejected") throw new Error("denied");
+          persistent = mode === "granted";
+          return persistent;
+        },
+      });
+    }, scenario);
+    await page.goto(pos + "/checkout");
+    const status = page.locator("#sale-storage-status");
+    const button = page.getByRole("button", { name: "ขอเก็บข้อมูลถาวร" });
+    if (scenario === "unsupported") {
+      await expect(status).toContainText("ไม่รองรับ");
+      await expect(button).toBeHidden();
+    } else {
+      await expect(status).toContainText("ยังไม่ได้รับอนุญาต");
+      expect(await page.evaluate(() => window.persistenceRequests)).toBe(0);
+      await button.click();
+      expect(await page.evaluate(() => window.persistenceRequests)).toBe(1);
+      if (scenario === "granted") {
+        await expect(status).toContainText("อนุญาตให้เก็บข้อมูลถาวรแล้ว");
+        await expect(button).toBeHidden();
+      } else if (scenario === "denied") {
+        await expect(status).toContainText("ยังไม่ได้รับอนุญาต");
+        await expect(button).toBeEnabled();
+      } else {
+        await expect(status).toContainText("ขอเก็บข้อมูลถาวรไม่สำเร็จ");
+        await expect(button).toBeEnabled();
+      }
+    }
+    await sellOne(page);
+    await expect(page.getByRole("dialog")).toHaveAccessibleName("ใบเสร็จรับเงิน");
+  });
+}
+
 test("offline bill survives reload and syncs once after another device sells the last unit",
   async ({ browser, context, page, request, pos }) => {
     const product = await createProduct(request, pos);
