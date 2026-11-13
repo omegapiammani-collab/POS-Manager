@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ลูกหนี้ | POS Manager</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/debts.js"></script>
+</head>
+<body class="debts">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>ลูกหนี้</h1>
+      <nav class="actions" aria-label="เมนู POS">
+        <a class="pos-link" href="/">สินค้าและสต๊อก</a>
+        <a class="pos-link" href="/checkout">ขายสินค้า</a>
+        <a class="pos-link" href="/bills">ประวัติบิล</a>
+        <a class="pos-link" href="/reports">รายงานยอดขาย</a>
+        <a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a>
+        <a class="pos-link" href="/drawer">ตรวจเงินสด</a>
+        <a class="pos-link" href="/backup">สำรองข้อมูล</a>
+      </nav>
+    </div>
+    <div id="debt-pending" class="panel debt-pending" hidden>
+      <p>ยังไม่ได้รับผลยืนยันการชำระ กดส่งรายการเดิมอีกครั้งเพื่อดูผล</p>
+      <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>
+      <p id="debt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
+      <button id="debt-retry" type="button">ส่งรายการเดิมอีกครั้ง</button>
+    </div>
+    <p id="debt-message" class="debt-message" role="status" hidden></p>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="debt-customers-title">
+        <h2 id="debt-customers-title">รายชื่อลูกค้า</h2>
+        <label>ค้นหาลูกค้า<input id="debt-search" type="search" placeholder="ค้นด้วยชื่อลูกค้า"></label>
+        <ul id="debt-customers" class="products"></ul>
+        <p id="debt-customers-state" class="muted" role="status">กำลังโหลดลูกค้า…</p>
+      </section>
+      <section class="panel" aria-labelledby="debt-detail-title">
+        <h2 id="debt-detail-title">รายละเอียดลูกหนี้</h2>
+        <p id="debt-detail-state" class="muted" role="status">เลือกลูกค้าจากรายชื่อเพื่อดูยอดค้างและประวัติชำระ</p>
+        <div id="debt-detail" hidden>
+          <dl class="metrics">
+            <div><dt>ยอดค้างชำระ</dt><dd id="debt-outstanding"></dd></div>
+          </dl>
+          <form id="debt-repayment" hidden>
+            <fieldset id="debt-repayment-fields">
+              <legend>รับชำระหนี้</legend>
+              <p class="muted">ระบบตัดยอดจากบิลที่เก่าที่สุดก่อน หากชำระไม่ครบ ส่วนที่เหลือจะยังคงเป็นยอดค้าง</p>
+              <div class="debt-form-grid">
+                <label>ยอดชำระ (บาท)<input name="amount" inputmode="decimal" type="text" required placeholder="0.00" maxlength="28"></label>
+                <label>วิธีชำระ<select name="method"><option value="cash">เงินสด</option><option value="qr">โอนผ่าน QR</option></select></label>
+              </div>
+              <label id="debt-qr-check" class="debt-check" hidden><input name="confirmed" type="checkbox">ตรวจสอบเงินโอนเข้าบัญชีแล้ว</label>
+              <label>หมายเหตุ (ถ้ามี)<input name="note" maxlength="300"></label>
+              <p id="debt-form-state" class="muted" aria-live="polite"></p>
+              <button id="debt-submit" type="submit">บันทึกรับชำระ</button>
+            </fieldset>
+          </form>
+          <h3>บิลเงินเชื่อ</h3>
+          <ul id="debt-bills" class="debt-records"></ul>
+          <h3>ประวัติรับชำระ</h3>
+          <ul id="debt-history" class="debt-records"></ul>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>สำรองและกู้คืนข้อมูล | POS Manager</title>
+  <link rel="stylesheet" href="/inventory.css">
+  <script src="/offline-store.js" defer></script>
+  <script src="/backup.js" defer></script>
+</head>
+<body class="backup">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>สำรองและกู้คืนข้อมูล</h1>
+      <nav class="actions" aria-label="เมนู POS">
+        <a class="pos-link" href="/">สินค้าและสต๊อก</a>
+        <a class="pos-link" href="/checkout">ขายสินค้า</a>
+        <a class="pos-link" href="/debts">ลูกหนี้</a>
+        <a class="pos-link" href="/bills">ประวัติบิล</a>
+        <a class="pos-link" href="/reports">รายงานยอดขาย</a>
+        <a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a>
+        <a class="pos-link" href="/drawer">ตรวจเงินสด</a>
+      </nav>
+    </div>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="backup-database-title">
+        <h2 id="backup-database-title">ฐานข้อมูลร้าน</h2>
+        <p>ดาวน์โหลดข้อมูลที่บันทึกถึงเซิร์ฟเวอร์แล้ว เช่น สินค้า บิล ลูกหนี้ และค่าใช้จ่าย ต้องเชื่อมต่อเซิร์ฟเวอร์เพื่อดาวน์โหลด เก็บไฟล์ไว้ในที่ที่คุณควบคุมการเข้าถึงได้</p>
+        <div class="actions"><a class="pos-link" href="/database-backup" download>ดาวน์โหลดฐานข้อมูลร้าน</a></div>
+        <h3>กู้คืนเป็นฐานข้อมูลใหม่</h3>
+        <ol class="backup-steps">
+          <li>เปิดเทอร์มินัลในโฟลเดอร์ POS Manager แล้วระบุชื่อไฟล์สำรองและไฟล์ปลายทางใหม่
+            <pre><code>python3 database_backup.py restore BACKUP NEW_DATABASE</code></pre>
+          </li>
+          <li>เปิด POS Manager โดยใช้ฐานข้อมูลที่กู้คืน
+            <pre><code>python3 inventory_api.py --database NEW_DATABASE</code></pre>
+          </li>
+        </ol>
+        <p class="muted">หากเซิร์ฟเวอร์เดิมยังเปิดอยู่ ให้หยุดก่อนเริ่มคำสั่งข้อ 2 หรือเลือกพอร์ตอื่นด้วย <code>--port</code></p>
+      </section>
+      <section class="panel" aria-labelledby="backup-queue-title">
+        <h2 id="backup-queue-title">บิลรอส่งของเบราว์เซอร์นี้</h2>
+        <p>สำรองแยกจากฐานข้อมูลร้านในแต่ละเครื่อง ไฟล์รวมทั้งบิลรอส่งและบิลที่ต้องตรวจสอบ</p>
+        <p id="backup-queue-count" class="muted" role="status">กำลังตรวจรายการในเบราว์เซอร์…</p>
+        <div class="actions"><button id="backup-queue-export" type="button" disabled>ดาวน์โหลดบิลรอส่ง</button></div>
+        <h3>นำเข้าบิลรอส่ง</h3>
+        <form id="backup-queue-import">
+          <label>ไฟล์สำรองบิล (.json)<input id="backup-queue-file" type="file" accept=".json,application/json" required></label>
+          <p id="backup-queue-selected" class="muted"></p>
+          <label class="backup-confirm"><input id="backup-queue-confirm" type="checkbox" required>ยืนยันว่าไฟล์นี้เป็นบิลของฐานข้อมูลร้านที่จะใช้งาน</label>
+          <div class="actions"><button id="backup-queue-submit" type="submit" disabled>นำเข้าบิล</button></div>
+        </form>
+        <p id="backup-queue-message" class="muted" role="status"></p>
+        <p class="muted">เมื่อพร้อมส่งบิล ให้เปิดหน้าขายด้วยฐานข้อมูลร้านที่ตรงกับไฟล์นี้</p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,7 +1,9 @@
 """Inventory foundation. Quantities and costs use exact decimal arithmetic."""
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from uuid import uuid4
 import sqlite3
+
+from stock_shortages import cover_shortages
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -14,6 +16,9 @@ CREATE TABLE IF NOT EXISTS units (
  id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id),
  name TEXT NOT NULL, multiplier TEXT NOT NULL, price TEXT NOT NULL,
  UNIQUE(product_id, name)
+);
+CREATE TABLE IF NOT EXISTS discontinued_products (
+ product_id TEXT PRIMARY KEY REFERENCES products(id)
 );
 CREATE TABLE IF NOT EXISTS receipts (
  id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id),
@@ -62,24 +67,48 @@ def add_unit(db, product_id, name, multiplier, price):
     db.execute('INSERT INTO units VALUES (?, ?, ?, ?, ?)', (unit_id, product_id, name, str(multiplier), str(price)))
     return unit_id
 
-def receive(db, product_id, unit_id, quantity, unit_cost):
+class ReceiptConflict(Exception):
+    pass
+
+
+def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None):
     quantity, unit_cost = number(quantity, positive=True), number(unit_cost)
     db.execute('BEGIN IMMEDIATE')
     try:
+        if receipt_id is not None:
+            previous = db.execute(
+                'SELECT product_id, unit_id, quantity, unit_cost FROM receipts WHERE id = ?', (receipt_id,),
+            ).fetchone()
+            if previous is not None:
+                if (previous[0], previous[1], Decimal(previous[2]), Decimal(previous[3])) != (
+                    product_id, unit_id, quantity, unit_cost,
+                ):
+                    raise ReceiptConflict('Receipt ID already used with different details')
+                db.commit()
+                return receipt_id
         row = db.execute('SELECT p.quantity, p.average_cost, u.multiplier FROM products p JOIN units u ON u.product_id = p.id WHERE p.id = ? AND u.id = ?', (product_id, unit_id)).fetchone()
         if row is None:
             raise ValueError('Product or unit not found')
-        old_quantity = Decimal(row[0])
-        if old_quantity < 0:
-            raise ValueError('Negative stock reconciliation is not implemented')
-        multiplier = Decimal(row[2])
-        added = quantity * multiplier
-        new_quantity = old_quantity + added
-        old_value = old_quantity * Decimal(row[1] or '0')
-        average = (old_value + quantity * unit_cost) / new_quantity
-        receipt_id = str(uuid4())
-        db.execute('INSERT INTO receipts (id, product_id, unit_id, quantity, unit_cost) VALUES (?, ?, ?, ?, ?)', (receipt_id, product_id, unit_id, str(quantity), str(unit_cost)))
-        db.execute('UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?', (str(new_quantity), str(average), product_id))
+        receipt_id = receipt_id or str(uuid4())
+        db.execute(
+            'INSERT INTO receipts (id, product_id, unit_id, quantity, unit_cost) VALUES (?, ?, ?, ?, ?)',
+            (receipt_id, product_id, unit_id, str(quantity), str(unit_cost)),
+        )
+        with localcontext() as context:
+            context.prec = 50
+            old_quantity = Decimal(row[0])
+            multiplier = Decimal(row[2])
+            added = quantity * multiplier
+            new_quantity = old_quantity + added
+            if old_quantity < 0:
+                incoming_cost = unit_cost / multiplier
+                cover_shortages(db, product_id, receipt_id, min(-old_quantity, added), incoming_cost)
+                average = str(incoming_cost) if new_quantity >= 0 else row[1]
+            else:
+                old_value = old_quantity * Decimal(row[1] or '0')
+                average = str((old_value + quantity * unit_cost) / new_quantity)
+        db.execute('UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?',
+                   (str(new_quantity), average, product_id))
         db.commit()
         return receipt_id
     except Exception:

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ค่าใช้จ่ายร้าน | POS Manager</title>
+  <link rel="stylesheet" href="/inventory.css">
+  <script src="/expenses.js" defer></script>
+</head>
+<body class="expenses">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>ค่าใช้จ่ายร้าน</h1>
+      <nav class="actions" aria-label="เมนู POS">
+        <a class="pos-link" href="/">สินค้าและสต๊อก</a>
+        <a class="pos-link" href="/checkout">ขายสินค้า</a>
+        <a class="pos-link" href="/debts">ลูกหนี้</a>
+        <a class="pos-link" href="/bills">ประวัติบิล</a>
+        <a class="pos-link" href="/reports">รายงานยอดขาย</a>
+        <a class="pos-link" href="/drawer">ตรวจเงินสด</a>
+        <a class="pos-link" href="/backup">สำรองข้อมูล</a>
+      </nav>
+    </div>
+    <p id="expense-message" role="status" hidden></p>
+    <div id="expense-pending" class="panel" hidden>
+      <p>ยังไม่ทราบผลการบันทึก ส่งคำขอเดิมอีกครั้งเพื่อตรวจสอบผล</p>
+      <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำข้อมูลคำขอหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>
+      <p id="expense-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นข้อมูลคำขอจะหาย</p>
+      <button type="button" id="expense-retry">ส่งคำขอเดิมอีกครั้ง</button>
+    </div>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="expense-create-title">
+        <h2 id="expense-create-title">บันทึกค่าใช้จ่าย</h2>
+        <form id="expense-create">
+          <fieldset>
+            <label>วันที่จ่าย<input type="date" name="date" required></label>
+            <label>รายการ<input name="description" maxlength="300" required></label>
+            <label>จำนวนเงิน (บาท)<input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+            <label>แหล่งเงิน
+              <select name="source">
+                <option value="cash_drawer">เงินสดในลิ้นชัก</option>
+                <option value="external">จ่ายจากแหล่งอื่น</option>
+              </select>
+            </label>
+            <button class="expense-save" type="submit">บันทึกค่าใช้จ่าย</button>
+          </fieldset>
+        </form>
+      </section>
+      <section class="panel" aria-labelledby="expense-history-title">
+        <h2 id="expense-history-title">ประวัติค่าใช้จ่าย</h2>
+        <form id="expense-filter" class="expense-filters">
+          <label>วันที่เริ่มต้น<input type="date" name="from" required></label>
+          <label>วันที่สิ้นสุด<input type="date" name="to" required></label>
+          <button type="submit" class="secondary">แสดงรายการ</button>
+        </form>
+        <p id="expense-history-status" class="muted" role="status"></p>
+        <ul id="expense-history" class="lines"></ul>
+      </section>
+    </div>
+  </main>
+  <dialog id="expense-void" aria-labelledby="expense-void-title">
+    <form>
+      <h2 id="expense-void-title">ยกเลิกค่าใช้จ่าย</h2>
+      <p id="expense-void-entry" class="muted"></p>
+      <p class="muted">ระบบจะตัดรายการนี้ออกจากรายงานและเก็บเหตุผลในประวัติ</p>
+      <label>เหตุผลที่ยกเลิก<input name="reason" maxlength="300" required></label>
+      <div class="actions">
+        <button type="button" class="secondary" id="expense-void-close">กลับ</button>
+        <button type="submit">ยืนยันยกเลิกค่าใช้จ่าย</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ขายสินค้า | POS Manager</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/offline-store.js"></script>
+  <script defer src="/checkout.js"></script>
+</head>
+<body class="checkout">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title"><h1>ขายสินค้า</h1><nav class="actions" aria-label="เมนู POS"><a class="pos-link" href="/">สินค้าและสต๊อก</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/checkout/backup">สำรองข้อมูล</a></nav></div>
+    <p id="sale-connection" class="sale-message" role="status">กำลังเชื่อมต่อ…</p>
+    <section class="panel sale-pending" aria-labelledby="sale-storage-title">
+      <h2 id="sale-storage-title">พื้นที่เก็บบิลออฟไลน์</h2>
+      <p id="sale-storage-status" class="muted" role="status">กำลังตรวจสอบ…</p>
+      <button id="sale-storage-persist" class="secondary" type="button" hidden>ขอเก็บข้อมูลถาวร</button>
+      <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
+    </section>
+    <section id="sale-pending" class="panel sale-pending" aria-labelledby="sale-queue-title" hidden>
+      <h2 id="sale-queue-title">บิลในเครื่องนี้</h2>
+      <p id="sale-queue-summary" class="muted" role="status"></p>
+      <ul id="sale-queue" class="lines"></ul>
+      <button id="sale-retry" type="button">ส่งบิลที่รออีกครั้ง</button>
+    </section>
+    <p id="sale-message" class="sale-message" role="status" hidden></p>
+    <div class="workspace">
+      <section class="panel" aria-labelledby="sale-products-title">
+        <div class="sale-picker-heading">
+          <h2 id="sale-products-title">เลือกสินค้า</h2>
+          <a class="pos-link sale-cart-jump" href="#sale-cart-title">ไปตะกร้าสินค้า</a>
+        </div>
+        <fieldset id="sale-picker">
+          <p id="sale-products-cached" class="sale-message sale-offline" role="status" hidden>กำลังใช้ข้อมูลสินค้าที่โหลดไว้ ราคาและสถานะขายอาจไม่เป็นปัจจุบัน กรุณาเชื่อมต่อและโหลดข้อมูลล่าสุด</p>
+          <button id="sale-products-refresh" class="secondary" type="button" hidden>โหลดข้อมูลสินค้าล่าสุด</button>
+          <label>ค้นหาสินค้า<input id="sale-search" type="search" placeholder="ค้นด้วยชื่อหรือรหัสสินค้า"></label>
+          <ul id="sale-products" class="sale-list"></ul>
+          <p id="sale-products-state" class="muted" role="status">กำลังโหลดสินค้า…</p>
+        </fieldset>
+      </section>
+      <section class="panel" aria-labelledby="sale-cart-title">
+        <h2 id="sale-cart-title" tabindex="-1">ตะกร้าสินค้า</h2>
+        <fieldset id="sale-cart-fields">
+          <ul id="sale-cart" class="sale-list"></ul>
+          <p id="sale-empty" class="muted">ยังไม่มีสินค้าในตะกร้า</p>
+        </fieldset>
+        <div class="sale-total"><span>ยอดรวม</span><strong id="sale-total">0.00 บาท</strong></div>
+        <form id="sale-payment">
+          <fieldset id="sale-payment-fields">
+            <legend>ชำระเงิน</legend>
+            <div class="sale-payment-grid">
+              <label>เงินสด (บาท)<input name="cash" type="text" inputmode="decimal" placeholder="0.00"></label>
+              <label>โอนผ่าน QR (บาท)<input name="qr" type="text" inputmode="decimal" placeholder="0.00"></label>
+              <label>เงินเชื่อ (บาท)<input name="credit" type="text" inputmode="decimal" placeholder="0.00"></label>
+            </div>
+            <button class="secondary sale-cash-all" id="sale-cash-all" type="button">เงินสดเต็มจำนวน</button>
+            <div id="sale-tender" hidden>
+              <label>เงินสดที่รับ (บาท)<input name="tender" type="text" inputmode="decimal" placeholder="ไม่บังคับ"></label>
+              <p id="sale-change" class="muted" aria-live="polite"></p>
+            </div>
+            <div id="sale-qr" hidden>
+              <button class="secondary sale-cash-all" id="sale-show-qr" type="button">แสดง QR ตามยอดโอน</button>
+              <div id="sale-qr-image" class="sale-qr-image" hidden></div>
+              <p id="sale-qr-state" class="muted" role="status" hidden></p>
+              <label class="sale-check"><input name="qr_confirmed" type="checkbox">ตรวจสอบเงินโอนเข้าแล้ว</label>
+            </div>
+            <div id="sale-credit" hidden>
+              <label>ลูกค้าเงินเชื่อ<select name="customer_id"></select></label>
+              <p id="sale-customer-state" class="muted" hidden>ยังไม่มีข้อมูลลูกค้าในเครื่อง กรุณาเชื่อมต่อก่อนขายเงินเชื่อ</p>
+              <button id="sale-new-customer" class="secondary sale-cash-all" type="button">เพิ่มลูกค้า</button>
+            </div>
+            <p id="sale-balance" class="muted" aria-live="polite"></p>
+            <button id="sale-submit" class="sale-submit" type="submit">ปิดบิล</button>
+          </fieldset>
+        </form>
+      </section>
+    </div>
+  </main>
+  <dialog id="sale-queue-detail" aria-labelledby="sale-queue-detail-title">
+    <h2 id="sale-queue-detail-title">รายละเอียดบิลในเครื่อง</h2>
+    <p class="muted">สถานะและชื่อสินค้า หน่วยขาย และลูกค้าอ้างอิงข้อมูลที่เครื่องโหลดไว้ อาจเปลี่ยนหลังขาย หากไม่พบจะแสดงรหัส</p>
+    <p id="sale-queue-detail-reference"></p>
+    <p id="sale-queue-detail-state"></p>
+    <p id="sale-queue-detail-time"></p>
+    <ul id="sale-queue-detail-items" class="lines"></ul>
+    <p id="sale-queue-detail-total"></p>
+    <ul id="sale-queue-detail-payments" class="lines"></ul>
+    <p id="sale-queue-detail-customer"></p>
+    <button id="sale-queue-detail-close" type="button">ปิด</button>
+  </dialog>
+  <dialog id="sale-abandon" aria-labelledby="sale-abandon-title">
+    <h2 id="sale-abandon-title">ยกเลิกบิลที่รอตรวจสอบ</h2>
+    <p>ระบบจะตรวจสอบกับเซิร์ฟเวอร์และป้องกันการบันทึกบิลเลขนี้ในภายหลัง หากบิลถูกบันทึกแล้ว ระบบจะไม่ยกเลิกบิลให้ กรุณาตรวจสอบการรับเงินหรือคืนเงินกับลูกค้าด้วยตนเอง</p>
+    <p id="sale-abandon-reference"></p>
+    <div class="actions"><button id="sale-abandon-cancel" class="secondary" type="button">กลับ</button><button id="sale-abandon-confirm" type="button">ยืนยันยกเลิกบิลค้าง</button></div>
+  </dialog>
+  <dialog id="sale-negative" aria-labelledby="sale-negative-title">
+    <h2 id="sale-negative-title">ยืนยันขายเมื่อสต๊อกไม่พอ</h2>
+    <p>บิลนี้อาจทำให้สต๊อกติดลบ ระบบจะตรวจราคาขายและสถานะสินค้าล่าสุดก่อนบันทึก โปรดตรวจสอบรายการและยอดชำระ</p>
+    <p id="sale-negative-reference" class="muted"></p>
+    <ul id="sale-negative-items" class="lines"></ul>
+    <ul id="sale-negative-payments" class="lines"></ul>
+    <p id="sale-negative-total"></p>
+    <div class="actions"><button id="sale-negative-cancel" class="secondary" type="button">กลับ</button><button id="sale-negative-confirm" type="button">ยืนยันขายและบันทึกสต๊อกติดลบ</button></div>
+  </dialog>
+  <dialog id="sale-customer" aria-labelledby="sale-customer-title">
+    <form>
+      <h2 id="sale-customer-title">เพิ่มลูกค้า</h2>
+      <label>ชื่อลูกค้า<input name="name" required maxlength="120"></label>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button class="secondary" type="button" data-customer-close>ยกเลิก</button><button>บันทึกลูกค้า</button></div>
+    </form>
+  </dialog>
+  <dialog id="sale-receipt" aria-labelledby="sale-receipt-title">
+    <article>
+      <h2 id="sale-receipt-title">ใบเสร็จรับเงิน</h2>
+      <p id="sale-receipt-state" class="muted" hidden></p>
+      <p id="sale-receipt-id" class="muted"></p>
+      <p id="sale-receipt-date" class="muted"></p>
+      <ul id="sale-receipt-lines" class="lines"></ul>
+      <div class="sale-total"><span>ยอดรวม</span><strong id="sale-receipt-total"></strong></div>
+      <ul id="sale-receipt-payments" class="lines"></ul>
+      <p id="sale-receipt-change" class="muted" hidden></p>
+    </article>
+    <div class="actions sale-receipt-actions">
+      <button id="sale-receipt-close" class="secondary" type="button">ข้ามการพิมพ์</button>
+      <button id="sale-print" type="button">พิมพ์ใบเสร็จ</button>
+    </div>
+  </dialog>
+</body>
+</html>

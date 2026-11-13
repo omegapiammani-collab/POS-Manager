@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>รายงานยอดขาย | POS Manager</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/csv.js"></script>
+  <script defer src="/reports.js"></script>
+</head>
+<body class="reports">
+  <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>รายงานยอดขาย</h1>
+      <nav class="actions" aria-label="เมนู POS">
+        <a class="pos-link" href="/">สินค้าและสต๊อก</a>
+        <a class="pos-link" href="/checkout">ขายสินค้า</a>
+        <a class="pos-link" href="/debts">ลูกหนี้</a>
+        <a class="pos-link" href="/bills">ประวัติบิล</a>
+        <a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a>
+        <a class="pos-link" href="/drawer">ตรวจเงินสด</a>
+        <a class="pos-link" href="/backup">สำรองข้อมูล</a>
+      </nav>
+    </div>
+
+    <section class="panel" aria-labelledby="report-period-title">
+      <h2 id="report-period-title">ช่วงวันที่</h2>
+      <form id="report-filters" class="report-filters">
+        <label>ตั้งแต่วันที่<input type="date" name="from" required></label>
+        <label>ถึงวันที่<input type="date" name="to" required></label>
+        <button type="submit">ดูรายงาน</button>
+      </form>
+      <p class="muted">รายงานใช้วันที่ขายตามเวลาไทย บิลออฟไลน์ใช้เวลาที่บันทึกจากเครื่องขาย ส่วนบิลเก่าที่ไม่มีเวลาขายใช้วันที่เซิร์ฟเวอร์รับข้อมูล บิลทดแทนนับตามวันที่ของบิลเดิม</p>
+      <p id="report-status" class="report-status" role="status"></p>
+    </section>
+
+    <div id="report-results" class="report-results" hidden>
+      <section class="panel" aria-labelledby="report-summary-title">
+        <h2 id="report-summary-title">ภาพรวม</h2>
+        <dl id="report-summary" class="metrics report-metrics"></dl>
+        <p id="report-cost-warning" class="report-warning" hidden></p>
+      </section>
+
+      <section class="panel" aria-labelledby="report-days-title">
+        <div class="actions">
+          <h2 id="report-days-title">ยอดขายรายวัน</h2>
+          <button type="button" class="secondary" id="report-download-days">ดาวน์โหลดรายวัน (CSV)</button>
+        </div>
+        <p id="report-days-empty" class="muted" hidden>ไม่มียอดขายหรือค่าใช้จ่ายในช่วงที่เลือก</p>
+        <div id="report-days-wrap" class="report-table-wrap" role="region" tabindex="0" aria-labelledby="report-days-title" hidden>
+          <table class="report-table">
+            <thead>
+              <tr><th scope="col">วันที่</th><th scope="col">บิล</th><th scope="col">ยอดขาย (บาท)</th><th scope="col">เงินสด (บาท)</th><th scope="col">โอน (บาท)</th><th scope="col">เงินเชื่อ (บาท)</th><th scope="col">ต้นทุนขาย (บาท)</th><th scope="col">กำไรขั้นต้น (บาท)</th><th scope="col">ค่าใช้จ่าย (บาท)</th><th scope="col">กำไรหลังหักค่าใช้จ่าย (บาท)</th></tr>
+            </thead>
+            <tbody id="report-days"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="report-products-title">
+        <div class="actions">
+          <h2 id="report-products-title">ยอดขายตามสินค้า</h2>
+          <button type="button" class="secondary" id="report-download-products">ดาวน์โหลดรายสินค้า (CSV)</button>
+        </div>
+        <p id="report-products-empty" class="muted" hidden>ไม่มีสินค้าที่ขายในช่วงที่เลือก</p>
+        <div id="report-products-wrap" class="report-table-wrap" role="region" tabindex="0" aria-labelledby="report-products-title" hidden>
+          <table class="report-table">
+            <thead>
+              <tr><th scope="col">สินค้า</th><th scope="col">จำนวนขาย</th><th scope="col">ยอดขาย (บาท)</th><th scope="col">ต้นทุนขาย (บาท)</th><th scope="col">กำไรขั้นต้น (บาท)</th></tr>
+            </thead>
+            <tbody id="report-products"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
