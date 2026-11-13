@@ -275,7 +275,7 @@ loadCustomers();
 loadDetail();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending && !pendingStored) {
+  if (pending) {
     event.preventDefault();
     event.returnValue = "";
   }

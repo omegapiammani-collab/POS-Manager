@@ -355,6 +355,7 @@ function setPendingReceipt(value) {
     receiptStored = !value;
   }
   byId("receipt-pending").hidden = !value;
+  byId("receipt-pending-close-warning").hidden = !value;
   byId("receipt-storage-warning").hidden = !value || receiptStored;
 }
 function openPendingReceipt() {
@@ -443,6 +444,7 @@ function setPendingCount(pending) {
     countStored = !pending;
   }
   byId("stock-count-pending").hidden = !pending;
+  byId("count-pending-close-warning").hidden = !pending;
   byId("count-storage-warning").hidden = !pending || countStored;
 }
 
@@ -471,6 +473,7 @@ function updateCountControls() {
 
 function openCount(product, pending = null) {
   countProduct = product;
+  byId("count-pending-close-warning").hidden = !pending;
   countForm.reset();
   byId("stock-count-product").textContent = product.name;
   byId("stock-count-before").textContent = "ยอดในระบบก่อนปรับ " + format(product.quantity) + " " + product.base_unit;
@@ -572,7 +575,7 @@ refresh().catch(() => {
 });
 
 window.addEventListener("beforeunload", (event) => {
-  if ((pendingReceipt && !receiptStored) || (pendingCount && !countStored)) {
+  if (pendingReceipt || pendingCount) {
     event.preventDefault();
     event.returnValue = "";
   }

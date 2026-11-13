@@ -415,6 +415,29 @@ test("warns when drawer request cannot be stored and safely retries after a lost
   expect(drawer.expected_cash).toBe("120.00");
 });
 
+test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, pos }) => {
+  const id = randomUUID();
+  const cases = [
+    { path: "/", state: "#receipt-pending", storage: "pos-pending-receipt", setter: "setPendingReceipt", value: { productId: id, payload: { id } } },
+    { path: "/", state: "#stock-count-pending", storage: "pos-pending-stock-count", setter: "setPendingCount", value: { product: { id }, payload: { id } } },
+    { path: "/debts", state: "#debt-pending", storage: "pos-pending-repayment", setter: "setPending", value: { customerId: id, payload: { id } } },
+    { path: "/bills", state: "#bill-pending", storage: "pos-pending-correction", setter: "setPending", value: { saleId: id, payload: { id } } },
+    { path: "/expense-entry", state: "#expense-pending", storage: "pos-pending-expense", setter: "savePending", value: { path: "/expenses", payload: { id } } },
+    { path: "/drawer", state: "#drawer-pending", storage: "pos-pending-drawer", setter: "setPending", value: { action: "open", payload: { id, date: "2026-11-13" } } },
+  ];
+  for (const entry of cases) {
+    await page.goto(pos + entry.path);
+    await page.evaluate(({ setter, value }) => window[setter](value), entry);
+    await expect(page.locator(entry.state)).toBeVisible();
+    await expect(page.locator(entry.state)).toContainText("รีโหลดแท็บเดิมได้");
+    expect(await page.evaluate((key) => Boolean(sessionStorage.getItem(key)), entry.storage)).toBe(true);
+    expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+    await page.evaluate((setter) => window[setter](null), entry.setter);
+    await expect(page.locator(entry.state)).toBeHidden();
+    expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
+  }
+});
+
 test("warns when a pending repayment cannot be saved and retries the same request", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
@@ -527,11 +550,14 @@ test("retries a received stock request after its response is lost", async ({ pag
   await dialog.locator('input[name="unit_cost"]').fill("10");
   await dialog.getByRole("button", { name: "บันทึกรับสินค้า" }).click();
   await expect(dialog.locator(".error")).toContainText("ยังไม่ทราบผล");
+  await expect(dialog.locator("#receipt-pending-close-warning")).toContainText("รีโหลดแท็บเดิมได้");
+  page.once("dialog", (prompt) => prompt.accept());
   await page.reload();
   await page.getByRole("button", { name: "ตรวจสอบรายการรับสินค้าที่ค้าง" }).click();
   await expect(dialog.locator("#receipt-product")).toContainText("น้ำดื่ม");
   await dialog.getByRole("button", { name: "บันทึกรับสินค้า" }).click();
   await expect(dialog).toBeHidden();
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
   const products = await (await request.get(pos + "/products")).json();
   expect(products.find(({ id }) => id === product.id).quantity).toBe("3");
   const receipts = await (await request.get(pos + "/products/" + product.id + "/receipts")).json();

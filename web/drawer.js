@@ -257,7 +257,7 @@ updateControls();
 loadDrawer();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending && !pendingStored) {
+  if (pending) {
     event.preventDefault();
     event.returnValue = "";
   }

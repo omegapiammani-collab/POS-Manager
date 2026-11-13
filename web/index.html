@@ -14,9 +14,10 @@
   <main class="frame">
     <div class="page-title"><h1>สินค้าและสต๊อก</h1><div class="actions"><a class="pos-link" href="/checkout">ขายสินค้า</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/backup">สำรองข้อมูล</a><button data-open="product">+ เพิ่มสินค้า</button></div></div>
     <p id="notice" role="status" hidden></p>
-    <div id="receipt-pending" hidden><button type="button" class="secondary" id="retry-receipt">ตรวจสอบรายการรับสินค้าที่ค้าง</button><p id="receipt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p></div>
+    <div id="receipt-pending" hidden><button type="button" class="secondary" id="retry-receipt">ตรวจสอบรายการรับสินค้าที่ค้าง</button><p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p><p id="receipt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p></div>
     <div id="stock-count-pending" hidden>
       <button type="button" class="secondary" id="retry-stock-count">ตรวจสอบผลการปรับสต๊อกที่ค้าง</button>
+      <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>
       <p id="count-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
     </div>
     <div class="workspace">
@@ -106,6 +107,7 @@
       <label>จำนวนที่รับ<input name="quantity" type="number" required min="0.000001" max="1000000000" step="0.000001"></label>
       <label>ราคาทุนต่อหน่วยที่รับ (บาท)<input name="unit_cost" type="number" required min="0" max="1000000000" step="0.000001"></label>
       <p class="error" role="alert" hidden></p>
+      <p id="receipt-pending-close-warning" hidden>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>
       <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกรับสินค้า</button></div>
     </form>
   </dialog>
@@ -119,6 +121,7 @@
       <label id="stock-count-cost-label">ต้นทุนต่อหน่วยสต๊อก (บาท)<input name="unit_cost" type="number" min="0" max="1000000000" step="0.000001"></label>
       <p class="muted" id="stock-count-cost-help"></p>
       <p class="error" role="alert" hidden></p>
+      <p id="count-pending-close-warning" hidden>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>
       <div class="actions"><button type="button" class="secondary" data-close>ปิด</button><button id="submit-stock-count">บันทึกยอดตรวจนับ</button></div>
     </form>
   </dialog>

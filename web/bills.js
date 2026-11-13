@@ -509,6 +509,7 @@ function renderPending() {
   const locked = Boolean(pending) || sending;
   byId("bill-fields").disabled = locked;
   byId("bill-pending").hidden = !pending || sending;
+  byId("bill-pending-close-warning").hidden = !pending;
   byId("bill-storage-warning").hidden = !pending || pendingStored;
   byId("bill-dialog-storage-warning").hidden = !pending || pendingStored;
   byId("bill-retry").disabled = sending;
@@ -647,7 +648,7 @@ renderPending();
 loadBills();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending && !pendingStored) {
+  if (pending) {
     event.preventDefault();
     event.returnValue = "";
   }
