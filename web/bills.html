@@ -47,7 +47,10 @@
           <ul id="bill-payments" class="lines"></ul>
           <p id="bill-customer" class="muted" hidden></p>
           <p id="bill-reason" class="muted" hidden></p>
-          <div id="bill-related" class="actions bill-actions"></div>
+          <div class="actions bill-actions">
+            <button id="bill-reprint" class="secondary" type="button">พิมพ์ใบเสร็จ</button>
+            <div id="bill-related" class="actions"></div>
+          </div>
           <div id="bill-actions" class="actions bill-actions" hidden>
             <button id="bill-edit" type="button">แก้ไขบิล</button>
             <button id="bill-void" class="secondary" type="button">ยกเลิกบิล</button>
@@ -56,6 +59,20 @@
       </section>
     </div>
   </main>
+  <dialog id="bill-receipt" aria-labelledby="bill-receipt-title">
+    <h2 id="bill-receipt-title">พิมพ์ใบเสร็จย้อนหลัง</h2>
+    <p id="bill-receipt-voided" hidden>ยกเลิกแล้ว</p>
+    <p id="bill-receipt-reference" class="muted"></p>
+    <p id="bill-receipt-date" class="muted"></p>
+    <p id="bill-receipt-customer" class="muted" hidden></p>
+    <ul id="bill-receipt-items" class="lines"></ul>
+    <p id="bill-receipt-total" class="bill-total"></p>
+    <ul id="bill-receipt-payments" class="lines"></ul>
+    <div class="actions bill-receipt-actions">
+      <button id="bill-receipt-close" class="secondary" type="button">ปิด</button>
+      <button id="bill-receipt-print" type="button">พิมพ์ใบเสร็จ</button>
+    </div>
+  </dialog>
   <dialog id="bill-correction" aria-labelledby="bill-correction-title">
     <form>
       <h2 id="bill-correction-title"></h2>

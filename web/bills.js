@@ -1,5 +1,6 @@
 const byId = (id) => document.getElementById(id);
 const dialog = byId("bill-correction");
+const receipt = byId("bill-receipt");
 const form = dialog.querySelector("form");
 const fields = form.elements;
 const methods = { cash: "เงินสด", qr: "โอนผ่าน QR", credit: "เงินเชื่อ" };
@@ -147,6 +148,36 @@ function line(left, right) {
   return row;
 }
 
+function paymentLines(payments) {
+  return Object.entries(methods).flatMap(([method, label]) => {
+    const amount = decimal(payments[method], 2, true);
+    return amount > 0n ? [line(label, money(amount))] : [];
+  });
+}
+
+function openReceipt() {
+  const bill = currentBill();
+  if (!bill) return;
+  byId("bill-receipt-voided").hidden = bill.status !== "voided";
+  byId("bill-receipt-reference").textContent = "เลขอ้างอิง " + bill.id;
+  byId("bill-receipt-date").textContent = dateText(bill.sold_at ?? bill.created_at);
+  const customer = byId("bill-receipt-customer");
+  customer.textContent = bill.customer_name ? "ลูกค้า " + bill.customer_name : "";
+  customer.hidden = !bill.customer_name;
+  byId("bill-receipt-items").replaceChildren(...bill.items.map((item) => {
+    const row = line(item.name, moneyText(item.total));
+    const price = decimal(item.unit_price, 2, true);
+    const unitPrice = price === null ? numberFormat.format(item.unit_price) + " บาท" : money(price);
+    row.firstElementChild.append(element("small",
+      quantityString(item.quantity) + " " + item.unit_name + " × " + unitPrice
+    ));
+    return row;
+  }));
+  byId("bill-receipt-total").textContent = "ยอดรวม " + moneyText(bill.total);
+  byId("bill-receipt-payments").replaceChildren(...paymentLines(bill.payments));
+  receipt.showModal();
+}
+
 function renderDetail() {
   const bill = currentBill();
   byId("bill-detail").hidden = !bill;
@@ -178,9 +209,7 @@ function renderDetail() {
     return details;
   }));
   byId("bill-total").textContent = "ยอดรวม " + moneyText(bill.total);
-  byId("bill-payments").replaceChildren(...Object.entries(methods).flatMap(([method, label]) =>
-    decimal(bill.payments[method], 2, true) > 0n ? [line(label, moneyText(bill.payments[method]))] : []
-  ));
+  byId("bill-payments").replaceChildren(...paymentLines(bill.payments));
   byId("bill-customer").textContent = "ลูกค้า " + (bill.customer_name ?? "");
   byId("bill-customer").hidden = !bill.customer_name;
   const reason = byId("bill-reason");
@@ -203,6 +232,7 @@ function renderDetail() {
     related.append(button);
   }
   byId("bill-actions").hidden = voided;
+  byId("bill-reprint").disabled = sending || opening;
   for (const id of ["bill-edit", "bill-void"]) byId(id).disabled = Boolean(pending) || sending || opening;
 }
 
@@ -487,6 +517,9 @@ async function submitPending() {
 }
 
 byId("bill-search").addEventListener("input", renderList);
+byId("bill-reprint").addEventListener("click", openReceipt);
+byId("bill-receipt-close").addEventListener("click", () => receipt.close());
+byId("bill-receipt-print").addEventListener("click", () => window.print());
 byId("bill-edit").addEventListener("click", () => openCorrection(true));
 byId("bill-void").addEventListener("click", () => openCorrection(false));
 byId("bill-close").addEventListener("click", () => dialog.close());

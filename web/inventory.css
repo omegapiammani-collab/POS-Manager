@@ -86,6 +86,11 @@ dialog .error { margin-top: 12px; padding: 8px; }
   .checkout > header, .checkout > main, .checkout .sale-receipt-actions { display: none; }
   .checkout #sale-receipt[open] { position: static; margin: 0; border: 0; width: 100%; max-height: none; overflow: visible; }
   .checkout #sale-receipt::backdrop { display: none; }
+  :root:has(#bill-receipt[open]) { background: white; color: black; }
+  .bills:has(#bill-receipt[open]) > :not(#bill-receipt), .bill-receipt-actions { display: none; }
+  #bill-receipt[open] { position: static; margin: 0; border: 0; width: 100%; max-width: none; max-height: none; overflow: visible; padding: 0; }
+  #bill-receipt::backdrop { display: none; }
+  #bill-receipt .lines li { break-inside: avoid; }
 }
 .checkout .sale-qr-image img { display: block; width: min(220px, 100%); margin: 12px auto; }
 
@@ -114,6 +119,9 @@ dialog .error { margin-top: 12px; padding: 8px; }
 .bills .bill-pending button, .bills .bill-actions, .bills .bill-spaced { margin-top: 12px; }
 .bills .bill-total, .bills .bill-money-change { margin-block: 12px; padding: 12px; background: #f3f6f8; border-radius: 9px; }
 .bills .bill-total { font-weight: 700; }
+#bill-receipt { overflow-wrap: anywhere; }
+#bill-receipt-items small { display: block; margin-top: 3px; }
+#bill-receipt-voided { margin-top: 10px; font-weight: 700; }
 .bills .bill-money-change { white-space: pre-line; }
 .bills #bill-reference, .bills #bill-correction-ref { overflow-wrap: anywhere; }
 .bills #bill-correction { width: min(620px, calc(100% - 24px)); }

@@ -1,4 +1,5 @@
 const { spawn } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
 const { once } = require("node:events");
 const { mkdtemp, readFile, rm } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -240,4 +241,69 @@ test("edits inventory and uses the new price at checkout", async ({ page, reques
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "ใบเสร็จรับเงิน" })).toContainText("32.00");
+});
+
+test("reprints original receipt values and labels a voided bill", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.addInitScript(() => {
+    window.printCount = 0;
+    window.print = () => { window.printCount += 1; };
+  });
+  await page.goto(pos + "/checkout");
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+
+  const history = await request.get(pos + "/sale-history");
+  expect(history.ok()).toBe(true);
+  const [bill] = await history.json();
+  const edit = await request.post(`${pos}/products/${product.id}/edit`, {
+    data: {
+      code: "W01", name: "น้ำแร่", minimum_quantity: "0",
+      expected: { code: "W01", name: "น้ำดื่ม", minimum_quantity: "0" },
+    },
+  });
+  expect(edit.ok()).toBe(true);
+  const price = await request.post(`${pos}/products/${product.id}/units/${product.base_unit_id}/price`, {
+    data: { price: "32", expected_price: "25" },
+  });
+  expect(price.ok()).toBe(true);
+
+  const openReceipt = async () => {
+    await page.locator("#bill-list").getByRole("button", { name: new RegExp(bill.id) }).click();
+    await page.getByRole("button", { name: "พิมพ์ใบเสร็จ", exact: true }).click();
+  };
+  const receipt = page.getByRole("dialog", { name: "พิมพ์ใบเสร็จย้อนหลัง" });
+  const print = receipt.getByRole("button", { name: "พิมพ์ใบเสร็จ", exact: true });
+
+  await page.goto(pos + "/bills");
+  await openReceipt();
+  await expect(receipt).toContainText(bill.id);
+  await expect(receipt).toContainText("น้ำดื่ม");
+  await expect(receipt.locator("#bill-receipt-items small")).toContainText("× 25.00 บาท");
+  await expect(receipt.locator("#bill-receipt-total")).toHaveText("ยอดรวม 25.00 บาท");
+  await expect(receipt).toContainText("เงินสด");
+  await expect(receipt).not.toContainText("น้ำแร่");
+  await expect(receipt).not.toContainText("32.00");
+  await expect(receipt.getByText("ยกเลิกแล้ว", { exact: true })).toBeHidden();
+
+  await page.emulateMedia({ media: "print" });
+  await expect(page.locator("body > header")).toBeHidden();
+  await expect(page.locator("body > main")).toBeHidden();
+  await expect(receipt).toBeVisible();
+  await expect(print).toBeHidden();
+  await page.emulateMedia({ media: null });
+  await print.click();
+  expect(await page.evaluate(() => window.printCount)).toBe(1);
+
+  const correction = await request.post(`${pos}/sales/${bill.id}/corrections`, {
+    data: { id: randomUUID(), reason: "ยกเลิกบิลทดสอบ" },
+  });
+  expect(correction.status()).toBe(201);
+  await page.reload();
+  await openReceipt();
+  await expect(receipt.getByText("ยกเลิกแล้ว", { exact: true })).toBeVisible();
+  await expect(receipt).toContainText("น้ำดื่ม");
+  await expect(receipt).toContainText("25.00");
+  await print.click();
+  expect(await page.evaluate(() => window.printCount)).toBe(1);
 });
