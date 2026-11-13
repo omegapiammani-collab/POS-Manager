@@ -199,7 +199,7 @@ function updatePayment() {
   let tenderInvalid = false;
   if (tenderField && tenderSection && change) {
     tenderSection.hidden = !(paid.cash > 0n);
-    if (tenderSection.hidden) tenderField.value = "";
+    if (paid.cash === 0n) tenderField.value = "";
     const text = tenderField.value.trim();
     const tender = text ? boundedDecimal(text, 2, false, 10n ** 22n) : null;
     tenderInvalid = Boolean(text) && (tender === null || tender < paid.cash);

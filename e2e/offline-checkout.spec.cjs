@@ -137,6 +137,7 @@ test("calculates cash change and keeps only net cash in the bill", async ({ page
   expect(bill.payments.cash).toBe("25.00");
   await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
   await context.setOffline(true);
+  await expect(page.locator("#sale-connection")).toContainText("ออฟไลน์");
   await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
   await page.locator('input[name="cash"]').fill("10");
   await page.locator('input[name="qr"]').fill("15");
@@ -144,6 +145,7 @@ test("calculates cash change and keeps only net cash in the bill", async ({ page
   await tender.fill("20");
   await expect(page.locator("#sale-change")).toHaveText("เงินทอน 10.00 บาท");
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveAccessibleName("หลักฐานการขายจากเครื่องนี้");
   const [queued] = await page.evaluate(() => window.PosOffline.list());
   expect(queued.payload.payments).toEqual({ cash: "10.00", qr: "15.00", credit: "0.00" });
   expect(queued.payload).not.toHaveProperty("tender");
