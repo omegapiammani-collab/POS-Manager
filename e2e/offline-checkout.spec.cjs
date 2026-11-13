@@ -318,6 +318,7 @@ test("warns when a pending repayment cannot be saved and retries the same reques
   await expect(page.locator("#debt-storage-warning")).toContainText("ก่อนรีโหลดหรือปิดแท็บ");
   expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
   await page.getByRole("button", { name: "ส่งรายการเดิมอีกครั้ง" }).click();
+  await expect(page.locator("#debt-message")).toContainText("บันทึกรับชำระ 10.00 บาท แล้ว");
   await expect(page.locator("#debt-pending")).toBeHidden();
   expect(ids).toHaveLength(2);
   expect(ids[0]).toBe(ids[1]);
