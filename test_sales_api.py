@@ -136,13 +136,40 @@ class SalesApiTests(unittest.TestCase):
         self.assertTrue(all(status in (200, 201) for status, _ in (first, second)))
         self.assertEqual(first[1], second[1])
         self.assertEqual(self.stock()["W01"], Decimal("23"))
-
         changed = deepcopy(sale)
         changed["items"][0]["quantity"] = "2"
         changed["payments"]["cash"] = "50"
         self.assertEqual(self.request("/sales", changed)[0], 409)
         self.assertEqual(self.request(f"/sales/{sale['id']}"), (200, first[1]))
         self.assertEqual(self.stock()["W01"], Decimal("23"))
+
+    def test_confirmed_online_shortage_checks_price_and_availability_and_replays_once(self):
+        sale = self.sale([self.line(self.eggs, "3", "5")], cash="15")
+        self.assertEqual(self.request("/sales", sale)[1]["code"], "insufficient_stock")
+        self.assertEqual(self.stock()["E01"], Decimal("2"))
+        self.assertEqual(self.request("/sales/allow-negative", {**sale, "sold_at": "2020-01-01T00:00:00.000Z"})[0], 400)
+        self.assertEqual(self.request("/sales/allow-negative", {**sale, "offline": True})[0], 400)
+        price_path = f"/products/{self.eggs['id']}/units/{self.eggs['base_unit_id']}/price"
+        self.assertEqual(self.request(price_path, {"price": "6", "expected_price": "5"})[0], 200)
+        self.assertEqual(self.request("/sales/allow-negative", sale)[1]["code"], "price_changed")
+        self.assertEqual(self.stock()["E01"], Decimal("2"))
+        self.assertEqual(self.request(price_path, {"price": "5", "expected_price": "6"})[0], 200)
+        availability = f"/products/{self.eggs['id']}/availability"
+        self.assertEqual(self.request(availability, {"available": False})[0], 200)
+        self.assertEqual(self.request("/sales/allow-negative", sale)[1]["code"], "item_unavailable")
+        self.assertEqual(self.stock()["E01"], Decimal("2"))
+        self.assertEqual(self.request(availability, {"available": True})[0], 200)
+        status, result = self.request("/sales/allow-negative", sale)
+        self.assertEqual(status, 201)
+        self.assertEqual(Decimal(result["stock_shortages"][0]["remaining"]), Decimal("1"))
+        self.assertEqual(self.stock()["E01"], Decimal("-1"))
+        self.assertEqual(self.request("/sales/allow-negative", sale), (200, result))
+        self.assertEqual(self.request("/sales", sale), (200, result))
+        changed = deepcopy(sale)
+        changed["items"][0]["quantity"] = "4"
+        changed["payments"]["cash"] = "20"
+        self.assertEqual(self.request("/sales/allow-negative", changed)[1]["code"], "idempotency_conflict")
+        self.assertEqual(self.stock()["E01"], Decimal("-1"))
 
     def test_concurrent_distinct_sales_cannot_both_sell_last_stock(self):
         first_sale = self.sale([self.line(self.eggs, "2", "5")], cash="10")

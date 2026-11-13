@@ -223,13 +223,13 @@ def offline_sale_time(data, *, offline):
     return value
 
 
-def checkout(db, data, *, allow_negative=False):
+def checkout(db, data, *, allow_negative=False, offline=False):
     validated = validate_checkout(data)
-    sold_at = offline_sale_time(data, offline=allow_negative)
+    sold_at = offline_sale_time(data, offline=offline)
     with db:
         db.execute("BEGIN IMMEDIATE")
         return checkout_in_transaction(
-            db, validated, allow_negative=allow_negative, sold_at=sold_at, check_availability=True,
+            db, validated, allow_negative=allow_negative or offline, sold_at=sold_at, check_availability=True,
         )
 
 

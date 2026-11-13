@@ -26,6 +26,7 @@ let queueRequest = 0;
 let queueProblem = false;
 let productsRequest = 0;
 let customersRequest = 0;
+let negativePayload = null;
 const store = window.PosOffline;
 
 function element(tag, text, className) {
@@ -371,6 +372,14 @@ async function showQueue() {
       retry.setAttribute("aria-label", "ลองส่งบิล " + payload.id + " อีกครั้ง");
       retry.addEventListener("click", () => retryQueue(payload.id));
       row.append(retry);
+      if (!payload.offline && error === saleErrors.insufficient_stock && byId("sale-negative")) {
+        const confirm = element("button", "ขายต่อแม้สต๊อกไม่พอ", "secondary");
+        confirm.type = "button";
+        confirm.disabled = syncing || staging;
+        confirm.setAttribute("aria-label", "ขายบิล " + payload.id + " แม้สต๊อกไม่พอ");
+        confirm.addEventListener("click", () => openNegativeConfirmation(payload));
+        row.append(confirm);
+      }
     }
     return row;
   }));
@@ -450,10 +459,10 @@ const saleErrors = {
   idempotency_conflict: "เลขอ้างอิงนี้ถูกใช้แล้ว กรุณาตรวจสอบบิลก่อนปิดบิลใหม่",
 };
 
-async function syncSale(payload) {
+async function syncSale(payload, allowNegative = false) {
   let sale;
   try {
-    sale = await api(payload.offline ? "/offline-sales" : "/sales", payload);
+    sale = await api(allowNegative ? "/sales/allow-negative" : payload.offline ? "/offline-sales" : "/sales", payload);
   } catch (failure) {
     if (![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
     const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
@@ -468,6 +477,52 @@ async function syncSale(payload) {
   }
   return { state: "synced", sale };
 }
+
+function openNegativeConfirmation(payload) {
+  if (syncing || staging || payload.offline) return;
+  negativePayload = payload;
+  byId("sale-negative-reference").textContent = "เลขบิล " + payload.id;
+  byId("sale-negative-items").replaceChildren(...payload.items.map((item) => {
+    const product = products.find(({ id }) => id === item.product_id);
+    const unit = product?.units.find(({ id }) => id === item.unit_id);
+    return element("li", (product?.name ?? item.product_id) + " · " + (unit?.name ?? item.unit_id)
+      + " × " + item.quantity + " · ราคา " + item.expected_unit_price + " บาท");
+  }));
+  byId("sale-negative-payments").replaceChildren(...paymentMethods.map((method) =>
+    element("li", paymentLabels[method] + " · " + money(scaledDecimal(payload.payments[method], 2, true) ?? 0n))));
+  const total = paymentMethods.reduce((sum, method) => sum + (scaledDecimal(payload.payments[method], 2, true) ?? 0n), 0n);
+  byId("sale-negative-total").textContent = "ยอดชำระ " + money(total);
+  byId("sale-negative").showModal();
+}
+
+byId("sale-negative-cancel")?.addEventListener("click", () => byId("sale-negative").close());
+byId("sale-negative-confirm")?.addEventListener("click", async () => {
+  const payload = negativePayload;
+  if (!payload || syncing || staging) return;
+  syncing = true;
+  byId("sale-negative").close();
+  try {
+    await showQueue();
+    const result = await syncSale(payload, true);
+    if (result.state === "synced") {
+      const shortage = hasStockShortage(result.sale);
+      status(shortage ? "บันทึกบิลแล้ว · ตรวจสอบสต๊อกติดลบที่หน้าสินค้าและสต๊อก" : "บันทึกบิลแล้ว", shortage);
+      loadProducts();
+      showReceipt(result.sale);
+    } else if (result.state === "conflict") {
+      status("บิลยังต้องตรวจสอบ · " + result.reason, true);
+    } else {
+      status("ยังไม่ทราบผล กรุณาตรวจสอบและยืนยันส่งบิลเดิมอีกครั้ง", true);
+    }
+  } catch {
+    status("จัดการคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบบิลเดิมก่อนลองอีกครั้ง", true);
+  } finally {
+    syncing = false;
+    negativePayload = null;
+    await showQueue();
+    flushRequestedSync();
+  }
+});
 
 async function syncQueue(onlyId) {
   if (syncing || staging) return;

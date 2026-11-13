@@ -273,6 +273,48 @@ test("blocks a product paused after it was placed in the cart", async ({ page, c
   await expect(page.locator("#sale-empty")).toBeVisible();
 });
 
+test("owner confirms an online shortage and retries the same sale after a lost response", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const attempts = [];
+  await page.route("**/sales/allow-negative", async (route) => {
+    attempts.push(route.request().postDataJSON());
+    if (attempts.length === 1) {
+      expect((await route.fetch()).status()).toBe(201);
+      return route.abort("connectionfailed");
+    }
+    return route.continue();
+  });
+  await page.goto(pos + "/checkout");
+  const add = page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true });
+  await add.click();
+  await add.click();
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).click();
+  await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  await expect(page.locator("#sale-message")).toContainText("สินค้าคงเหลือไม่พอ");
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const confirmButton = page.getByRole("button", { name: /ขายบิล .* แม้สต๊อกไม่พอ/ });
+  await confirmButton.click();
+  const dialog = page.getByRole("dialog", { name: "ยืนยันขายเมื่อสต๊อกไม่พอ" });
+  await expect(dialog).toContainText("น้ำดื่ม");
+  await expect(dialog).toContainText("50.00 บาท");
+  await dialog.getByRole("button", { name: "กลับ", exact: true }).click();
+  expect(attempts).toHaveLength(0);
+  await confirmButton.click();
+  await dialog.getByRole("button", { name: "ยืนยันขายและบันทึกสต๊อกติดลบ" }).click();
+  await expect(page.locator("#sale-message")).toContainText("ยังไม่ทราบผล");
+  await confirmButton.click();
+  await dialog.getByRole("button", { name: "ยืนยันขายและบันทึกสต๊อกติดลบ" }).click();
+  await expect(page.locator("#sale-message")).toContainText("บันทึกบิลแล้ว");
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toEqual(attempts[0]);
+  await expect(page.locator("#sale-pending")).toBeHidden();
+  const sales = await (await request.get(pos + "/sale-history")).json();
+  expect(sales).toHaveLength(1);
+  expect(sales[0].id).toBe(attempts[0].id);
+  const products = await (await request.get(pos + "/products")).json();
+  expect(Number(products.find(({ id }) => id === product.id).quantity)).toBe(-1);
+});
+
 test("inventory history shows the Bangkok date around UTC midnight", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.route(`**/products/${product.id}/receipts`, (route) => route.fulfill({ json: [

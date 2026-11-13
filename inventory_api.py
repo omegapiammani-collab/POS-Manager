@@ -250,8 +250,11 @@ class InventoryHandler(BaseHTTPRequestHandler):
         if parts == ["stock-shortages"] and self.command == "GET":
             return 200, list_stock_shortages(db)
 
-        if parts in (["sales"], ["offline-sales"]) and self.command == "POST":
-            created, sale = checkout(db, self.read_json(), allow_negative=parts == ["offline-sales"])
+        if parts in (["sales"], ["offline-sales"], ["sales", "allow-negative"]) and self.command == "POST":
+            data = self.read_json()
+            if parts == ["sales", "allow-negative"] and ("offline" in data or "sold_at" in data):
+                raise ValueError("Stock override is only for online sales")
+            created, sale = checkout(db, data, allow_negative=parts == ["sales", "allow-negative"], offline=parts == ["offline-sales"])
             return (201 if created else 200), sale
 
         if len(parts) == 2 and parts[0] == "sales" and self.command == "GET":

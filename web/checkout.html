@@ -79,6 +79,15 @@
       </section>
     </div>
   </main>
+  <dialog id="sale-negative" aria-labelledby="sale-negative-title">
+    <h2 id="sale-negative-title">ยืนยันขายเมื่อสต๊อกไม่พอ</h2>
+    <p>บิลนี้อาจทำให้สต๊อกติดลบ ระบบจะตรวจราคาขายและสถานะสินค้าล่าสุดก่อนบันทึก โปรดตรวจสอบรายการและยอดชำระ</p>
+    <p id="sale-negative-reference" class="muted"></p>
+    <ul id="sale-negative-items" class="lines"></ul>
+    <ul id="sale-negative-payments" class="lines"></ul>
+    <p id="sale-negative-total"></p>
+    <div class="actions"><button id="sale-negative-cancel" class="secondary" type="button">กลับ</button><button id="sale-negative-confirm" type="button">ยืนยันขายและบันทึกสต๊อกติดลบ</button></div>
+  </dialog>
   <dialog id="sale-customer" aria-labelledby="sale-customer-title">
     <form>
       <h2 id="sale-customer-title">เพิ่มลูกค้า</h2>
