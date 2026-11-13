@@ -97,8 +97,8 @@ function displayDecimal(value) {
   return formatter.format(Number(value));
 }
 
-function lineTotal(item) {
-  const quantity = boundedDecimal(item.quantity, 6);
+function lineTotal(item, allowQuantityExponent = false) {
+  const quantity = boundedDecimal(item.quantity, 6, allowQuantityExponent);
   const price = boundedDecimal(item.unit.price, 6, true);
   if (!quantity || price === null) return null;
   // Two six-decimal values yield twelve decimals. Round each line to a satang.
@@ -366,6 +366,13 @@ async function showQueue() {
     title.append(element("small", payload.id),
       element("small", state === "conflict" ? error || "ต้องตรวจสอบ" : "รอส่งข้อมูล"));
     row.append(title);
+    if (byId("sale-queue-detail")) {
+      const details = element("button", "ดูรายละเอียด", "secondary");
+      details.type = "button";
+      details.setAttribute("aria-label", "ดูรายละเอียดบิล " + payload.id);
+      details.addEventListener("click", () => showQueuedSale(payload, state, error));
+      row.append(details);
+    }
     if (state === "conflict") {
       const retry = element("button", "ลองส่งอีกครั้ง", "secondary");
       retry.type = "button";
@@ -398,6 +405,35 @@ async function showQueue() {
     return row;
   }));
 }
+
+function showQueuedSale(payload, state, error) {
+  byId("sale-queue-detail-reference").textContent = "เลขบิล " + payload.id;
+  byId("sale-queue-detail-state").textContent = state === "conflict" ? "ต้องตรวจสอบ · " + (error || "ไม่ทราบสาเหตุ") : "รอส่งข้อมูล";
+  const time = payload.sold_at ? new Date(payload.sold_at) : null;
+  byId("sale-queue-detail-time").textContent = time && Number.isFinite(time.getTime())
+    ? "เวลาขาย (เวลาไทย) " + new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(time)
+    : "ไม่มีเวลาขายที่บันทึกในบิลค้าง";
+  byId("sale-queue-detail-items").replaceChildren(...payload.items.map((item) => {
+    const product = products.find(({ id }) => id === item.product_id);
+    const unit = product?.units.find(({ id }) => id === item.unit_id);
+    const amount = lineTotal({ quantity: item.quantity, unit: { price: item.expected_unit_price } }, true);
+    const row = element("li");
+    row.append(element("span", (product?.name ?? item.product_id) + " · " + (unit?.name ?? item.unit_id)
+      + " × " + displayDecimal(item.quantity) + " · ราคาที่บันทึก " + displayDecimal(item.expected_unit_price) + " บาท"),
+      element("strong", amount === null ? "ตรวจสอบจำนวนหรือราคา" : money(amount)));
+    return row;
+  }));
+  const paid = paymentMethods.map((method) => scaledDecimal(payload.payments[method], 2, true));
+  const total = paid.includes(null) ? null : paid.reduce((sum, amount) => sum + amount, 0n);
+  byId("sale-queue-detail-total").textContent = "ยอดชำระรวม " + (total === null ? "ตรวจสอบยอดในไฟล์สำรอง" : money(total));
+  byId("sale-queue-detail-payments").replaceChildren(...paymentMethods.map((method, index) =>
+    element("li", paymentLabels[method] + " · " + (paid[index] === null ? "ตรวจสอบยอดในไฟล์สำรอง" : money(paid[index])))));
+  byId("sale-queue-detail-customer").textContent = "ลูกค้า " + (payload.customer_id
+    ? customers.find(({ id }) => id === payload.customer_id)?.name ?? payload.customer_id : "ไม่ระบุ");
+  byId("sale-queue-detail").showModal();
+}
+
+byId("sale-queue-detail-close")?.addEventListener("click", () => byId("sale-queue-detail").close());
 
 async function migrateLegacy() {
   if (!legacyPending) return;

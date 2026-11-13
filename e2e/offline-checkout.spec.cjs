@@ -273,6 +273,55 @@ test("blocks a product paused after it was placed in the cart", async ({ page, c
   await expect(page.locator("#sale-empty")).toBeVisible();
 });
 
+test("shows queued sale details offline using captured prices and safe name fallbacks", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  expect((await request.post(`${pos}/products/${product.id}/edit`, { data: {
+    code: "W01", name: "น้ำแร่", minimum_quantity: "0", expected: { code: "W01", name: "น้ำดื่ม", minimum_quantity: "0" },
+  } })).status()).toBe(200);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  await context.setOffline(true);
+  const missingProduct = randomUUID(), missingUnit = randomUUID(), customer = randomUUID();
+  const offline = { id: randomUUID(), offline: true, sold_at: "2026-11-12T17:00:00.000Z",
+    items: [
+      { product_id: product.id, unit_id: product.base_unit_id, quantity: "1.5", expected_unit_price: "25.005" },
+      { product_id: missingProduct, unit_id: missingUnit, quantity: "2e0", expected_unit_price: "3e0" },
+    ], payments: { cash: "30", qr: "3.51", credit: "10" }, customer_id: customer, qr_confirmed: true };
+  const online = { id: randomUUID(), items: [offline.items[0]],
+    payments: { cash: "37.51", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await page.evaluate(async ({ offline, online }) => {
+    await window.PosOffline.put(offline);
+    await window.PosOffline.update(offline.id, "conflict", "ราคาต้องตรวจสอบ");
+    await window.PosOffline.put(online);
+    await window.showQueue();
+  }, { offline, online });
+  const before = await page.evaluate(() => window.PosOffline.list());
+  await page.getByRole("button", { name: `ดูรายละเอียดบิล ${offline.id}` }).click();
+  const detail = page.getByRole("dialog", { name: "รายละเอียดบิลในเครื่อง" });
+  await expect(detail).toContainText("ข้อมูลที่เครื่องโหลดไว้");
+  await expect(detail).toContainText("ราคาต้องตรวจสอบ");
+  await expect(detail).toContainText("น้ำแร่");
+  await expect(detail).toContainText("25.005 บาท");
+  await expect(detail).toContainText("37.51 บาท");
+  await expect(detail).toContainText(missingProduct);
+  await expect(detail).toContainText(missingUnit);
+  await expect(detail).toContainText("6.00 บาท");
+  await expect(detail).toContainText(customer);
+  await expect(detail).toContainText("ยอดชำระรวม 43.51 บาท");
+  await expect(detail).toContainText("เงินสด · 30.00 บาท");
+  await expect(detail).toContainText("โอนผ่าน QR · 3.51 บาท");
+  await expect(detail).toContainText("เงินเชื่อ · 10.00 บาท");
+  const expectedTime = await page.evaluate(() => new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date("2026-11-12T17:00:00.000Z")));
+  await expect(detail.locator("#sale-queue-detail-time")).toContainText(expectedTime);
+  await detail.getByRole("button", { name: "ปิด", exact: true }).click();
+  await page.getByRole("button", { name: `ดูรายละเอียดบิล ${online.id}` }).click();
+  await expect(detail.locator("#sale-queue-detail-time")).toHaveText("ไม่มีเวลาขายที่บันทึกในบิลค้าง");
+  await expect(detail.locator("#sale-queue-detail-customer")).toHaveText("ลูกค้า ไม่ระบุ");
+  await detail.getByRole("button", { name: "ปิด", exact: true }).click();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(before);
+});
+
 test("abandons a conflicting queued sale only after server confirmation, even if the response is lost", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   let attempts = 0;

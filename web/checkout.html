@@ -79,6 +79,18 @@
       </section>
     </div>
   </main>
+  <dialog id="sale-queue-detail" aria-labelledby="sale-queue-detail-title">
+    <h2 id="sale-queue-detail-title">รายละเอียดบิลในเครื่อง</h2>
+    <p class="muted">สถานะและชื่อสินค้า หน่วยขาย และลูกค้าอ้างอิงข้อมูลที่เครื่องโหลดไว้ อาจเปลี่ยนหลังขาย หากไม่พบจะแสดงรหัส</p>
+    <p id="sale-queue-detail-reference"></p>
+    <p id="sale-queue-detail-state"></p>
+    <p id="sale-queue-detail-time"></p>
+    <ul id="sale-queue-detail-items" class="lines"></ul>
+    <p id="sale-queue-detail-total"></p>
+    <ul id="sale-queue-detail-payments" class="lines"></ul>
+    <p id="sale-queue-detail-customer"></p>
+    <button id="sale-queue-detail-close" type="button">ปิด</button>
+  </dialog>
   <dialog id="sale-abandon" aria-labelledby="sale-abandon-title">
     <h2 id="sale-abandon-title">ยกเลิกบิลที่รอตรวจสอบ</h2>
     <p>ระบบจะตรวจสอบกับเซิร์ฟเวอร์และป้องกันการบันทึกบิลเลขนี้ในภายหลัง หากบิลถูกบันทึกแล้ว ระบบจะไม่ยกเลิกบิลให้ กรุณาตรวจสอบการรับเงินหรือคืนเงินกับลูกค้าด้วยตนเอง</p>
