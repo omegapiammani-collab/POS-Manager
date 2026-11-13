@@ -168,6 +168,9 @@ test("warns when the product catalog is cached until a server refresh succeeds",
 
 test("confirms a changed cart price only after a fresh recheck", async ({ page, context, request, pos }) => {
   const product = await createProduct(request, pos);
+  expect((await request.post(`${pos}/products/${product.id}/receipts`, {
+    data: { unit_id: product.base_unit_id, quantity: "1", unit_cost: "12" },
+  })).ok()).toBe(true);
   await page.goto(pos + "/checkout");
   await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
   await page.getByLabel("จำนวน น้ำดื่ม ขวด").fill("2");
