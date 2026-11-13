@@ -8,6 +8,7 @@ const maxWhole = 1000000000n;
 const formatter = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 });
 const cart = new Map();
 let products = [];
+let catalogLoaded = false;
 let customers = [];
 let legacyPending = restorePending();
 let staging = false;
@@ -689,14 +690,29 @@ async function loadProducts() {
     if (request !== productsRequest) return;
     if (!Array.isArray(data)) throw new Error("Missing products");
     products = data;
+    catalogLoaded = true;
+    setCatalogStale(!fresh || navigator.onLine === false);
     renderProducts();
     if (fresh) saveSnapshot("products", data);
   } catch {
     if (request !== productsRequest) return;
-    byId("sale-products-state").textContent = "ยังไม่มีข้อมูลสินค้าในเครื่อง กรุณาเปิดหน้านี้ขณะออนไลน์";
-    byId("sale-products-state").hidden = false;
+    setCatalogStale(catalogLoaded);
+    if (!catalogLoaded) {
+      byId("sale-products-state").textContent = "ยังไม่มีข้อมูลสินค้าในเครื่อง กรุณาเปิดหน้านี้ขณะออนไลน์";
+      byId("sale-products-state").hidden = false;
+    }
   }
 }
+
+function setCatalogStale(stale) {
+  // The cached shell can temporarily be older than the script during an update.
+  const warning = byId("sale-products-cached");
+  const refresh = byId("sale-products-refresh");
+  if (warning) warning.hidden = !stale;
+  if (refresh) refresh.hidden = !stale;
+}
+
+byId("sale-products-refresh")?.addEventListener("click", loadProducts);
 
 async function loadCustomers() {
   const request = ++customersRequest;
@@ -758,6 +774,7 @@ window.addEventListener("offline", () => {
   clearTimeout(retryTimer);
   retryTimer = null;
   setConnected(false);
+  setCatalogStale(catalogLoaded);
 });
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js", { scope: "/checkout" })

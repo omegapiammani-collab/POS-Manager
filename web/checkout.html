@@ -34,6 +34,8 @@
           <a class="pos-link sale-cart-jump" href="#sale-cart-title">ไปตะกร้าสินค้า</a>
         </div>
         <fieldset id="sale-picker">
+          <p id="sale-products-cached" class="sale-message sale-offline" role="status" hidden>กำลังใช้ข้อมูลสินค้าที่โหลดไว้ ราคาและสถานะขายอาจไม่เป็นปัจจุบัน กรุณาเชื่อมต่อและโหลดข้อมูลล่าสุด</p>
+          <button id="sale-products-refresh" class="secondary" type="button" hidden>โหลดข้อมูลสินค้าล่าสุด</button>
           <label>ค้นหาสินค้า<input id="sale-search" type="search" placeholder="ค้นด้วยชื่อหรือรหัสสินค้า"></label>
           <ul id="sale-products" class="sale-list"></ul>
           <p id="sale-products-state" class="muted" role="status">กำลังโหลดสินค้า…</p>

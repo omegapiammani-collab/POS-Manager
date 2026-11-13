@@ -119,6 +119,53 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("warns when the product catalog is cached until a server refresh succeeds", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  const warning = page.locator("#sale-products-cached");
+  const refresh = page.getByRole("button", { name: "โหลดข้อมูลสินค้าล่าสุด" });
+  await expect(warning).toBeHidden();
+  await context.setOffline(true);
+  await expect(warning).toContainText("ราคาและสถานะขายอาจไม่เป็นปัจจุบัน");
+  await page.reload();
+  await expect(warning).toBeVisible();
+  await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toBeVisible();
+  await page.route("**/products", (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+  await context.setOffline(false);
+  await expect(warning).toBeVisible();
+  await Promise.all([
+    page.waitForResponse((response) => response.url() === pos + "/products" && response.status() === 503),
+    refresh.click(),
+  ]);
+  await expect(warning).toBeVisible();
+  await page.unroute("**/products");
+  await refresh.click();
+  await expect(warning).toBeHidden();
+  await expect(refresh).toBeHidden();
+
+  // If storage itself fails, keep the already displayed catalog and warn about it.
+  await page.evaluate(() => {
+    window.failedSnapshotReads = 0;
+    window.PosOffline.getSnapshot = async () => {
+      window.failedSnapshotReads++;
+      throw new Error("storage unavailable");
+    };
+  });
+  await page.route("**/products", (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+  await context.setOffline(true);
+  await expect(warning).toBeVisible();
+  await context.setOffline(false);
+  await Promise.all([
+    page.waitForResponse((response) => response.url() === pos + "/products" && response.status() === 503),
+    refresh.click(),
+  ]);
+  await expect.poll(() => page.evaluate(() => window.failedSnapshotReads)).toBeGreaterThan(0);
+  await expect(warning).toBeVisible();
+  await expect(page.locator("#sale-products-state")).toBeHidden();
+  await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toBeVisible();
+});
+
 test("inventory history shows the Bangkok date around UTC midnight", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.route(`**/products/${product.id}/receipts`, (route) => route.fulfill({ json: [
