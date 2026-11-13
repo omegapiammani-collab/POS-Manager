@@ -119,6 +119,35 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/");
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  let lost = false;
+  await page.route("**/receipts", async (route) => {
+    if (route.request().method() === "POST" && !lost) {
+      lost = true;
+      expect((await route.fetch()).status()).toBe(201);
+      await route.abort("connectionfailed");
+    } else await route.continue();
+  });
+  await page.getByRole("button", { name: "รับสินค้า", exact: true }).click();
+  const dialog = page.locator("#receipt");
+  await dialog.locator('input[name="quantity"]').fill("2");
+  await dialog.locator('input[name="unit_cost"]').fill("10");
+  await dialog.getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(dialog.locator(".error")).toContainText("ยังไม่ทราบผล");
+  await page.reload();
+  await page.getByRole("button", { name: "ตรวจสอบรายการรับสินค้าที่ค้าง" }).click();
+  await expect(dialog.locator("#receipt-product")).toContainText("น้ำดื่ม");
+  await dialog.getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(dialog).toBeHidden();
+  const products = await (await request.get(pos + "/products")).json();
+  expect(products.find(({ id }) => id === product.id).quantity).toBe("3");
+  const receipts = await (await request.get(pos + "/products/" + product.id + "/receipts")).json();
+  expect(receipts).toHaveLength(2);
+});
+
 test("filters inventory by stock and availability together with search", async ({ page, request, pos }) => {
   const create = async (code, name) => {
     const response = await request.post(pos + "/products", {

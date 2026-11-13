@@ -67,14 +67,29 @@ def add_unit(db, product_id, name, multiplier, price):
     db.execute('INSERT INTO units VALUES (?, ?, ?, ?, ?)', (unit_id, product_id, name, str(multiplier), str(price)))
     return unit_id
 
-def receive(db, product_id, unit_id, quantity, unit_cost):
+class ReceiptConflict(Exception):
+    pass
+
+
+def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None):
     quantity, unit_cost = number(quantity, positive=True), number(unit_cost)
     db.execute('BEGIN IMMEDIATE')
     try:
+        if receipt_id is not None:
+            previous = db.execute(
+                'SELECT product_id, unit_id, quantity, unit_cost FROM receipts WHERE id = ?', (receipt_id,),
+            ).fetchone()
+            if previous is not None:
+                if (previous[0], previous[1], Decimal(previous[2]), Decimal(previous[3])) != (
+                    product_id, unit_id, quantity, unit_cost,
+                ):
+                    raise ReceiptConflict('Receipt ID already used with different details')
+                db.commit()
+                return receipt_id
         row = db.execute('SELECT p.quantity, p.average_cost, u.multiplier FROM products p JOIN units u ON u.product_id = p.id WHERE p.id = ? AND u.id = ?', (product_id, unit_id)).fetchone()
         if row is None:
             raise ValueError('Product or unit not found')
-        receipt_id = str(uuid4())
+        receipt_id = receipt_id or str(uuid4())
         db.execute(
             'INSERT INTO receipts (id, product_id, unit_id, quantity, unit_cost) VALUES (?, ?, ?, ?, ?)',
             (receipt_id, product_id, unit_id, str(quantity), str(unit_cost)),

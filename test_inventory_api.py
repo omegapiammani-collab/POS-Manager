@@ -70,6 +70,18 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(self.request("/products", {"code": 1})[0], 400)
         self.assertEqual(self.request("/products/missing/receipts")[0], 404)
 
+    def test_receipt_replay_updates_stock_once(self):
+        _, product = self.request("/products", {
+            "code": "W01", "name": "น้ำ", "base_unit": "ขวด", "price": "15",
+        })
+        path = "/products/" + product["id"] + "/receipts"
+        receipt = {"id": str(uuid4()), "unit_id": product["base_unit_id"], "quantity": "2", "unit_cost": "10"}
+        self.assertEqual(self.request(path, receipt), (201, {"id": receipt["id"]}))
+        self.assertEqual(self.request(path, {**receipt, "quantity": "2.0"}), (201, {"id": receipt["id"]}))
+        self.assertEqual(self.request(path, {**receipt, "quantity": "3"})[0], 409)
+        self.assertEqual(self.request("/products")[1][0]["quantity"], "2")
+        self.assertEqual(len(self.request(path)[1]), 1)
+
     def test_product_availability_and_offline_replay(self):
         _, product = self.request("/products", {
             "code": "W01", "name": "น้ำ", "base_unit": "ขวด", "price": "15",

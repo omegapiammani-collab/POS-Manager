@@ -15,7 +15,7 @@ from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawe
 from database_backup import copy_database
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
-from inventory import add_product, add_unit, connect, number, receive
+from inventory import ReceiptConflict, add_product, add_unit, connect, number, receive
 from payment_qr import PaymentQrUnavailable, payment_qr_svg
 from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
@@ -322,6 +322,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
         receipt_id = receive(
             db, product_id, required_text(data, "unit_id"),
             decimal_field(data, "quantity", positive=True), decimal_field(data, "unit_cost"),
+            uuid_field(data["id"], "id") if "id" in data else None,
         )
         return 201, {"id": receipt_id}
 
@@ -341,6 +342,8 @@ class InventoryHandler(BaseHTTPRequestHandler):
             with closing(connect(self.database)) as db:
                 db.row_factory = sqlite3.Row
                 status, body = self.dispatch(db, route)
+        except ReceiptConflict:
+            return self.send_json(409, {"error": "Receipt ID already used", "code": "idempotency_conflict"})
         except PaymentQrUnavailable as exc:
             status, body = 503, {"error": str(exc)}
         except (CustomerNotFound, SaleNotFound) as exc:

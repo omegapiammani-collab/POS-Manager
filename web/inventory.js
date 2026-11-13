@@ -17,6 +17,7 @@ async function api(path, data) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   } : undefined;
+  if (options) options.signal = AbortSignal.timeout(15000);
   const response = await fetch(path, options);
   if (response.ok) return response.json();
   const { code } = await response.json().catch(() => ({}));
@@ -214,11 +215,18 @@ byId("toggle-availability").addEventListener("click", async () => {
 document.querySelectorAll("[data-open]").forEach((button) => {
   button.addEventListener("click", () => {
     const dialog = byId(button.dataset.open);
+    if (dialog.id === "receipt" && pendingReceipt) {
+      openPendingReceipt();
+      return;
+    }
     const form = dialog.querySelector("form");
     form.reset();
     form.querySelector(".error").hidden = true;
     if (dialog.id === "receipt") {
+      form.querySelectorAll("input, select").forEach((field) => { field.disabled = false; });
       const product = products.find((entry) => entry.id === selectedId);
+      receiptProduct = product;
+      byId("receipt-product").textContent = product.name + " · " + product.code;
       const options = product.units.map((unit) => {
         const option = element("option", unit.name);
         option.value = unit.id;
@@ -251,7 +259,6 @@ byId("open-product-edit").addEventListener("click", () => {
 const actions = {
   product: { path: () => "/products", success: "เพิ่มสินค้าแล้ว" },
   unit: { path: () => productPath(selectedId) + "/units", success: "เพิ่มหน่วยขายแล้ว" },
-  receipt: { path: () => productPath(selectedId) + "/receipts", success: "บันทึกรับสินค้าแล้ว" },
   "product-edit": {
     path: () => productPath(editingProduct.id) + "/edit",
     payload: (data) => ({ ...data, expected: editingProduct.expected }),
@@ -266,7 +273,7 @@ const actions = {
   },
 };
 
-document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
+document.querySelectorAll("dialog:not(#stock-count):not(#receipt)").forEach((dialog) => {
   const form = dialog.querySelector("form");
   const buttons = [...form.querySelectorAll("button")];
   const error = form.querySelector(".error");
@@ -315,6 +322,80 @@ document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
       buttons.forEach((button) => { button.disabled = false; });
     }
   });
+});
+
+const receiptDialog = byId("receipt");
+const receiptForm = receiptDialog.querySelector("form");
+const receiptError = receiptForm.querySelector(".error");
+let pendingReceipt = null;
+let savingReceipt = false;
+let receiptProduct = null;
+try {
+  const saved = JSON.parse(sessionStorage.getItem("pos-pending-receipt"));
+  if (typeof saved?.productId === "string" && typeof saved.payload?.id === "string") pendingReceipt = saved;
+} catch {
+  // Retain requests in memory when session storage is unavailable.
+}
+function setPendingReceipt(value) {
+  pendingReceipt = value;
+  try {
+    if (value) sessionStorage.setItem("pos-pending-receipt", JSON.stringify(value));
+    else sessionStorage.removeItem("pos-pending-receipt");
+  } catch {
+    // The request remains available in this tab.
+  }
+  byId("receipt-pending").hidden = !value;
+}
+function openPendingReceipt() {
+  byId("receipt-product").textContent = pendingReceipt.productName ?? pendingReceipt.productId;
+  receiptForm.elements.unit_id.replaceChildren(new Option(pendingReceipt.unitName, pendingReceipt.payload.unit_id));
+  for (const name of ["quantity", "unit_cost"]) receiptForm.elements[name].value = pendingReceipt.payload[name];
+  receiptForm.querySelectorAll("input, select").forEach((field) => { field.disabled = true; });
+  receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล";
+  receiptError.hidden = false;
+  receiptDialog.showModal();
+}
+setPendingReceipt(pendingReceipt);
+byId("retry-receipt").addEventListener("click", () => {
+  if (pendingReceipt && !receiptDialog.open) openPendingReceipt();
+});
+receiptForm.querySelector("[data-close]").addEventListener("click", () => receiptDialog.close());
+receiptDialog.addEventListener("cancel", (event) => { if (savingReceipt) event.preventDefault(); });
+receiptForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (savingReceipt) return;
+  if (!pendingReceipt) {
+    const product = receiptProduct;
+    if (!product) return;
+    const payload = Object.fromEntries(new FormData(receiptForm));
+    payload.id = crypto.randomUUID();
+    const unitName = receiptForm.elements.unit_id.selectedOptions[0].textContent;
+    setPendingReceipt({ productId: product.id, productName: product.name + " · " + product.code, unitName, payload });
+  }
+  savingReceipt = true;
+  const buttons = receiptForm.querySelectorAll("button");
+  buttons.forEach((button) => { button.disabled = true; });
+  receiptForm.querySelectorAll("input, select").forEach((field) => { field.disabled = true; });
+  try {
+    await api(productPath(pendingReceipt.productId) + "/receipts", pendingReceipt.payload);
+    setPendingReceipt(null);
+    receiptDialog.close();
+    notice("บันทึกรับสินค้าแล้ว");
+    try { await refresh(); } catch { notice("บันทึกแล้ว แต่โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้า", true); }
+  } catch (failure) {
+    if (failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429) {
+      setPendingReceipt(null);
+      receiptDialog.close();
+      notice("บันทึกรับสินค้าไม่สำเร็จ กรุณาเลือกสินค้าและตรวจสอบข้อมูลก่อนบันทึกอีกครั้ง", true);
+      return;
+    } else {
+      receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล";
+    }
+    receiptError.hidden = false;
+  } finally {
+    savingReceipt = false;
+    buttons.forEach((button) => { button.disabled = false; });
+  }
 });
 
 const countDialog = byId("stock-count");
