@@ -9,6 +9,7 @@ const formatter = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 });
 const cart = new Map();
 let products = [];
 let catalogLoaded = false;
+let confirmingPrice = false;
 let customers = [];
 let legacyPending = restorePending();
 let staging = false;
@@ -160,7 +161,7 @@ function renderCart() {
     const title = element("div", item.product.name);
     title.append(element("small", item.unit.name + " · " + displayDecimal(item.unit.price) + " บาท"));
     if (item.issue) title.append(element("small", item.issue === "price"
-      ? "ราคาเปลี่ยนแล้ว กรุณาเอาออกและเพิ่มสินค้าอีกครั้ง"
+      ? "ราคาเปลี่ยนแล้ว กรุณาตรวจสอบและยืนยันราคาล่าสุด หรือเอาสินค้าออก"
       : "สินค้านี้พักขายหรือหน่วยขายไม่พร้อมใช้ กรุณาเอาออกจากตะกร้า", "error"));
     const label = element("label", "จำนวน");
     const input = element("input");
@@ -179,7 +180,20 @@ function renderCart() {
       cart.delete(item.unit.id);
       renderCart();
     });
-    row.append(title, label, remove);
+    row.append(title, label);
+    if (item.issue === "price") {
+      const latestProduct = products.find((entry) => entry.id === item.product.id);
+      const latestUnit = latestProduct?.units.find((entry) => entry.id === item.unit.id);
+      if (latestUnit) {
+        const accept = element("button", "ใช้ราคาล่าสุด " + displayDecimal(latestUnit.price) + " บาท", "secondary");
+        accept.type = "button";
+        accept.disabled = confirmingPrice || staging;
+        accept.setAttribute("aria-label", "ใช้ราคาล่าสุด " + item.product.name + " " + item.unit.name + " " + displayDecimal(latestUnit.price) + " บาท");
+        accept.addEventListener("click", () => acceptLatestPrice(item, latestUnit.price));
+        row.append(accept);
+      }
+    }
+    row.append(remove);
     return row;
   }));
   byId("sale-empty").hidden = cart.size !== 0;
@@ -223,7 +237,7 @@ function updatePayment() {
   else balance.textContent = "ยอดชำระครบ";
 
   byId("sale-cash-all").disabled = !cart.size || total === null;
-  byId("sale-submit").disabled = staging || !cart.size || [...cart.values()].some((item) => item.issue) || difference !== 0n || tenderInvalid
+  byId("sale-submit").disabled = staging || confirmingPrice || !cart.size || [...cart.values()].some((item) => item.issue) || difference !== 0n || tenderInvalid
     || (paid.credit > 0n && !payment.customer_id.value)
     || (paid.qr > 0n && !payment.qr_confirmed.checked);
 }
@@ -690,7 +704,7 @@ async function loadProducts() {
   const request = ++productsRequest;
   try {
     const { data, fresh } = await cachedRead("products", "/products");
-    if (request !== productsRequest) return;
+    if (request !== productsRequest) return false;
     if (!Array.isArray(data)) throw new Error("Missing products");
     products = data;
     catalogLoaded = true;
@@ -706,6 +720,7 @@ async function loadProducts() {
       renderCart();
     }
     if (fresh) saveSnapshot("products", data);
+    return fresh && navigator.onLine !== false;
   } catch {
     if (request !== productsRequest) return;
     setCatalogStale(catalogLoaded);
@@ -713,6 +728,34 @@ async function loadProducts() {
       byId("sale-products-state").textContent = "ยังไม่มีข้อมูลสินค้าในเครื่อง กรุณาเปิดหน้านี้ขณะออนไลน์";
       byId("sale-products-state").hidden = false;
     }
+    return false;
+  }
+}
+
+async function acceptLatestPrice(item, shownPrice) {
+  if (confirmingPrice || staging) return;
+  confirmingPrice = true;
+  renderCart();
+  try {
+    const fresh = await loadProducts();
+    if (!fresh) {
+      status("โหลดราคาล่าสุดไม่สำเร็จ กรุณาลองอีกครั้ง", true);
+      return;
+    }
+    if (cart.get(item.unit.id) !== item || item.issue !== "price") return;
+    const product = products.find((entry) => entry.id === item.product.id);
+    const unit = product?.units.find((entry) => entry.id === item.unit.id);
+    if (!unit || boundedDecimal(unit.price, 6, true) !== boundedDecimal(shownPrice, 6, true)) {
+      status("ราคาเปลี่ยนอีกครั้ง กรุณาตรวจสอบราคาล่าสุดก่อนยืนยัน", true);
+      return;
+    }
+    item.product = product;
+    item.unit = unit;
+    item.issue = null;
+    status("อัปเดตราคาแล้ว กรุณาตรวจสอบยอดชำระ");
+  } finally {
+    confirmingPrice = false;
+    renderCart();
   }
 }
 

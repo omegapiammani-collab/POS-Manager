@@ -166,26 +166,42 @@ test("warns when the product catalog is cached until a server refresh succeeds",
   await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toBeVisible();
 });
 
-test("warns about a changed price in the cart after reconnecting", async ({ page, context, request, pos }) => {
+test("confirms a changed cart price only after a fresh recheck", async ({ page, context, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/checkout");
   await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await page.getByLabel("จำนวน น้ำดื่ม ขวด").fill("2");
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
   await context.setOffline(true);
-  const change = await request.post(`${pos}/products/${product.id}/units/${product.base_unit_id}/price`, {
+  expect((await request.post(`${pos}/products/${product.id}/units/${product.base_unit_id}/price`, {
     data: { price: "32", expected_price: "25" },
-  });
-  expect(change.ok()).toBe(true);
+  })).ok()).toBe(true);
   await context.setOffline(false);
   await expect(page.locator("#sale-cart")).toContainText("ราคาเปลี่ยนแล้ว");
+  const accept32 = page.getByRole("button", { name: "ใช้ราคาล่าสุด น้ำดื่ม ขวด 32 บาท" });
+  await expect(accept32).toBeVisible();
   await expect(page.getByRole("button", { name: "ปิดบิล", exact: true })).toBeDisabled();
-  await expect(page.locator("#sale-total")).toContainText("25.00");
-  await page.getByRole("button", { name: "เอา น้ำดื่ม ขวด ออก" }).click();
-  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
-  await expect(page.locator("#sale-total")).toContainText("32.00");
+  await page.route("**/products", (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+  await accept32.click();
+  await expect(page.locator("#sale-message")).toContainText("โหลดราคาล่าสุดไม่สำเร็จ");
+  await expect(page.locator("#sale-total")).toContainText("50.00");
+  await expect(page.getByRole("button", { name: "ปิดบิล", exact: true })).toBeDisabled();
+  await page.unroute("**/products");
+  expect((await request.post(`${pos}/products/${product.id}/units/${product.base_unit_id}/price`, {
+    data: { price: "36", expected_price: "32" },
+  })).ok()).toBe(true);
+  await accept32.click();
+  await expect(page.locator("#sale-message")).toContainText("ราคาเปลี่ยนอีกครั้ง");
+  await expect(page.locator("#sale-total")).toContainText("50.00");
+  await page.getByRole("button", { name: "ใช้ราคาล่าสุด น้ำดื่ม ขวด 36 บาท" }).click();
+  await expect(page.locator("#sale-total")).toContainText("72.00");
+  await expect(page.getByLabel("จำนวน น้ำดื่ม ขวด")).toHaveValue("2");
+  await expect(page.locator("#sale-balance")).toContainText("22.00");
+  await expect(page.getByRole("button", { name: "ปิดบิล", exact: true })).toBeDisabled();
+  expect((await (await request.get(pos + "/sale-history")).json())).toHaveLength(0);
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "ใบเสร็จรับเงิน" })).toContainText("32.00");
+  await expect(page.getByRole("dialog", { name: "ใบเสร็จรับเงิน" })).toContainText("72.00");
 });
 
 test("blocks a product paused after it was placed in the cart", async ({ page, context, request, pos }) => {
