@@ -14,9 +14,10 @@
   <main class="frame">
     <div class="page-title"><h1>สินค้าและสต๊อก</h1><div class="actions"><a class="pos-link" href="/checkout">ขายสินค้า</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/backup">สำรองข้อมูล</a><button data-open="product">+ เพิ่มสินค้า</button></div></div>
     <p id="notice" role="status" hidden></p>
-    <div id="receipt-pending" hidden><button type="button" class="secondary" id="retry-receipt">ตรวจสอบรายการรับสินค้าที่ค้าง</button></div>
+    <div id="receipt-pending" hidden><button type="button" class="secondary" id="retry-receipt">ตรวจสอบรายการรับสินค้าที่ค้าง</button><p id="receipt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p></div>
     <div id="stock-count-pending" hidden>
       <button type="button" class="secondary" id="retry-stock-count">ตรวจสอบผลการปรับสต๊อกที่ค้าง</button>
+      <p id="count-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
     </div>
     <div class="workspace">
       <section class="panel" aria-labelledby="list-title">

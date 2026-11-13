@@ -336,6 +336,7 @@ const receiptDialog = byId("receipt");
 const receiptForm = receiptDialog.querySelector("form");
 const receiptError = receiptForm.querySelector(".error");
 let pendingReceipt = null;
+let receiptStored = true;
 let savingReceipt = false;
 let receiptProduct = null;
 try {
@@ -346,20 +347,23 @@ try {
 }
 function setPendingReceipt(value) {
   pendingReceipt = value;
+  receiptStored = true;
   try {
     if (value) sessionStorage.setItem("pos-pending-receipt", JSON.stringify(value));
     else sessionStorage.removeItem("pos-pending-receipt");
   } catch {
-    // The request remains available in this tab.
+    receiptStored = !value;
   }
   byId("receipt-pending").hidden = !value;
+  byId("receipt-storage-warning").hidden = !value || receiptStored;
 }
 function openPendingReceipt() {
   byId("receipt-product").textContent = pendingReceipt.productName ?? pendingReceipt.productId;
   receiptForm.elements.unit_id.replaceChildren(new Option(pendingReceipt.unitName, pendingReceipt.payload.unit_id));
   for (const name of ["quantity", "unit_cost"]) receiptForm.elements[name].value = pendingReceipt.payload[name];
   receiptForm.querySelectorAll("input, select").forEach((field) => { field.disabled = true; });
-  receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล";
+  receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล"
+    + (receiptStored ? "" : " · เก็บรายการค้างไม่ได้ ห้ามรีโหลดหรือปิดแท็บก่อนส่งรายการเดิม");
   receiptError.hidden = false;
   receiptDialog.showModal();
 }
@@ -397,7 +401,8 @@ receiptForm.addEventListener("submit", async (event) => {
       notice("บันทึกรับสินค้าไม่สำเร็จ กรุณาเลือกสินค้าและตรวจสอบข้อมูลก่อนบันทึกอีกครั้ง", true);
       return;
     } else {
-      receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล";
+      receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล"
+    + (receiptStored ? "" : " · เก็บรายการค้างไม่ได้ ห้ามรีโหลดหรือปิดแท็บก่อนส่งรายการเดิม");
     }
     receiptError.hidden = false;
   } finally {
@@ -414,6 +419,7 @@ const countClose = countForm.querySelector("[data-close]");
 const countFields = [...countForm.querySelectorAll("input")];
 const countStorageKey = "pos-pending-stock-count";
 let pendingCount = restorePendingCount();
+let countStored = true;
 let countProduct = null;
 let savingCount = false;
 
@@ -429,17 +435,20 @@ function restorePendingCount() {
 
 function setPendingCount(pending) {
   pendingCount = pending;
+  countStored = true;
   try {
     if (pending) sessionStorage.setItem(countStorageKey, JSON.stringify(pending));
     else sessionStorage.removeItem(countStorageKey);
   } catch {
-    // The same request can still be retried while the page remains open.
+    countStored = !pending;
   }
   byId("stock-count-pending").hidden = !pending;
+  byId("count-storage-warning").hidden = !pending || countStored;
 }
 
 function countMessage(message) {
-  countError.textContent = message;
+  countError.textContent = message + (message && pendingCount && !countStored
+    ? " · เก็บรายการค้างไม่ได้ ห้ามรีโหลดหรือปิดแท็บก่อนส่งรายการเดิม" : "");
   countError.hidden = !message;
 }
 
@@ -560,4 +569,11 @@ countForm.addEventListener("submit", async (event) => {
 byId("stock-count-pending").hidden = !pendingCount;
 refresh().catch(() => {
   byId("list-state").textContent = "โหลดสินค้าไม่สำเร็จ กรุณารีเฟรชหน้า";
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if ((pendingReceipt && !receiptStored) || (pendingCount && !countStored)) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
 });

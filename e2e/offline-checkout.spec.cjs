@@ -287,6 +287,58 @@ test("inventory history shows the Bangkok date around UTC midnight", async ({ pa
   await expect(page.locator("#stock-counts")).toContainText("2026-11-12");
 });
 
+test("warns when pending inventory actions cannot be saved in session storage", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.addInitScript(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) throw new Error("storage unavailable");
+      return original.call(this, key, value);
+    };
+  });
+  await page.goto(pos + "/");
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  let receipts = 0, counts = 0;
+  const ids = { receipts: [], counts: [] };
+  await page.route(`**/products/${product.id}/**`, async (route) => {
+    const url = route.request().url();
+    if (route.request().method() !== "POST") return route.continue();
+    const kind = url.endsWith("/receipts") ? "receipts" : url.endsWith("/stock-counts") ? "counts" : null;
+    if (!kind) return route.continue();
+    ids[kind].push(route.request().postDataJSON().id);
+    const attempt = kind === "receipts" ? ++receipts : ++counts;
+    if (attempt === 1) {
+      expect((await route.fetch()).status()).toBe(201);
+      return route.abort("connectionfailed");
+    }
+    return route.continue();
+  });
+  await page.getByRole("button", { name: "รับสินค้า", exact: true }).click();
+  const receipt = page.locator("#receipt");
+  await receipt.locator('[name="quantity"]').fill("2");
+  await receipt.locator('[name="unit_cost"]').fill("10");
+  await receipt.getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(receipt.locator(".error")).toContainText("ห้ามรีโหลด");
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+  await receipt.getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(receipt).toBeHidden();
+  expect(ids.receipts[0]).toBe(ids.receipts[1]);
+  await page.getByRole("button", { name: "ปรับยอดจากการตรวจนับ" }).click();
+  const count = page.locator("#stock-count");
+  await count.locator('[name="counted_quantity"]').fill("2");
+  await count.locator('[name="reason"]').fill("ตรวจนับ");
+  await count.getByRole("button", { name: "บันทึกยอดตรวจนับ" }).click();
+  await expect(count.locator(".error")).toContainText("ห้ามรีโหลด");
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+  await count.getByRole("button", { name: "ส่งรายการเดิมอีกครั้ง" }).click();
+  await expect(count).toBeHidden();
+  expect(ids.counts[0]).toBe(ids.counts[1]);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
+  const products = await (await request.get(pos + "/products")).json();
+  expect(products.find(({ id }) => id === product.id).quantity).toBe("2");
+  expect(await (await request.get(`${pos}/products/${product.id}/stock-counts`)).json()).toHaveLength(1);
+});
+
 test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/");
