@@ -27,6 +27,7 @@ let queueProblem = false;
 let productsRequest = 0;
 let customersRequest = 0;
 let negativePayload = null;
+let abandonPayload = null;
 const store = window.PosOffline;
 
 function element(tag, text, className) {
@@ -372,6 +373,19 @@ async function showQueue() {
       retry.setAttribute("aria-label", "ลองส่งบิล " + payload.id + " อีกครั้ง");
       retry.addEventListener("click", () => retryQueue(payload.id));
       row.append(retry);
+      if (byId("sale-abandon")) {
+        const abandon = element("button", "ยกเลิกบิลค้าง", "secondary");
+        abandon.type = "button";
+        abandon.disabled = syncing || staging;
+        abandon.setAttribute("aria-label", "ยกเลิกบิลค้าง " + payload.id);
+        abandon.addEventListener("click", () => {
+          if (syncing || staging) return;
+          abandonPayload = payload;
+          byId("sale-abandon-reference").textContent = "เลขบิล " + payload.id;
+          byId("sale-abandon").showModal();
+        });
+        row.append(abandon);
+      }
       if (!payload.offline && error === saleErrors.insufficient_stock && byId("sale-negative")) {
         const confirm = element("button", "ขายต่อแม้สต๊อกไม่พอ", "secondary");
         confirm.type = "button";
@@ -457,7 +471,33 @@ const saleErrors = {
   insufficient_stock: "สินค้าคงเหลือไม่พอ กรุณาตรวจสอบจำนวนในตะกร้า",
   item_unavailable: "สินค้าหรือหน่วยขายบางรายการไม่พร้อมขาย กรุณาตรวจสอบตะกร้า",
   idempotency_conflict: "เลขอ้างอิงนี้ถูกใช้แล้ว กรุณาตรวจสอบบิลก่อนปิดบิลใหม่",
+  sale_abandoned: "บิลนี้ถูกยกเลิกแล้ว กรุณายกเลิกบิลค้างออกจากเครื่อง",
 };
+
+byId("sale-abandon-cancel")?.addEventListener("click", () => byId("sale-abandon").close());
+byId("sale-abandon-confirm")?.addEventListener("click", async () => {
+  const payload = abandonPayload;
+  if (!payload || syncing || staging) return;
+  syncing = true;
+  byId("sale-abandon").close();
+  try {
+    await showQueue();
+    await api("/sales/" + encodeURIComponent(payload.id) + "/abandon", {});
+    await store.remove(payload.id);
+    status("ยกเลิกบิลค้างแล้ว สามารถเริ่มบิลใหม่ได้");
+  } catch (error) {
+    if (error.code === "sale_already_recorded") {
+      status("บิลนี้บันทึกแล้ว กรุณาส่งบิลเดิมอีกครั้งเพื่อตรวจสอบผล", true);
+    } else {
+      status("ยังยืนยันการยกเลิกไม่ได้ บิลยังอยู่ในเครื่อง กรุณาลองอีกครั้ง", true);
+    }
+  } finally {
+    syncing = false;
+    abandonPayload = null;
+    await showQueue();
+    flushRequestedSync();
+  }
+});
 
 async function syncSale(payload, allowNegative = false) {
   let sale;

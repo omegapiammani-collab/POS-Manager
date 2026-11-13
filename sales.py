@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS sales (
     customer_id TEXT REFERENCES customers(id),
     customer_name TEXT
 );
+CREATE TABLE IF NOT EXISTS abandoned_sales (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TABLE IF NOT EXISTS offline_sale_times (
     sale_id TEXT PRIMARY KEY REFERENCES sales(id),
     sold_at TEXT NOT NULL
@@ -233,6 +237,16 @@ def checkout(db, data, *, allow_negative=False, offline=False):
         )
 
 
+def abandon_sale(db, sale_id):
+    sale_id = uuid_field(sale_id, "id")
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("SELECT 1 FROM sales WHERE id = ?", (sale_id,)).fetchone():
+            raise SaleConflict("sale_already_recorded", "This sale has already been recorded")
+        db.execute("INSERT OR IGNORE INTO abandoned_sales (id) VALUES (?)", (sale_id,))
+        return {"id": sale_id, "abandoned": True}
+
+
 def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None, check_availability=False):
     if not db.in_transaction:
         raise RuntimeError("Checkout requires a transaction")
@@ -243,6 +257,9 @@ def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None
         if saved[0] != request_hash:
             raise SaleConflict("idempotency_conflict", "This sale ID was already used")
         return False, read_sale(db, sale_id)
+
+    if db.execute("SELECT 1 FROM abandoned_sales WHERE id = ?", (sale_id,)).fetchone():
+        raise SaleConflict("sale_abandoned", "This sale ID was abandoned")
 
     if check_availability and sold_at is None:
         for product_id, _, _, _ in items:

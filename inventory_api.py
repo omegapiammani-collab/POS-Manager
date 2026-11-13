@@ -20,7 +20,7 @@ from payment_qr import PaymentQrUnavailable, payment_qr_svg
 from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
 )
-from sales import SALES_SCHEMA, SaleConflict, add_customer, checkout, customer_list, read_sale, uuid_field
+from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checkout, customer_list, read_sale, uuid_field
 from sales_reports import sales_report
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
@@ -246,6 +246,10 @@ class InventoryHandler(BaseHTTPRequestHandler):
             sale_id = uuid_field(parts[1], "id")
             created, correction = correct_sale(db, sale_id, self.read_json())
             return (201 if created else 200), correction
+
+        if len(parts) == 3 and parts[0] == "sales" and parts[2] == "abandon" and self.command == "POST":
+            self.read_json()
+            return 200, abandon_sale(db, parts[1])
 
         if parts == ["stock-shortages"] and self.command == "GET":
             return 200, list_stock_shortages(db)

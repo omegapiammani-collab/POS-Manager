@@ -184,6 +184,37 @@ class SalesApiTests(unittest.TestCase):
         for sale, (status, _) in zip((first_sale, second_sale), results):
             self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 200 if status == 201 else 404)
 
+    def test_abandoned_sale_is_idempotent_and_blocked_on_all_checkout_routes(self):
+        sale = self.sale([self.line(self.eggs, "1", "5")], cash="5")
+        path = f"/sales/{sale['id']}/abandon"
+        self.assertEqual(self.request(path, {}), (200, {"id": sale["id"], "abandoned": True}))
+        self.assertEqual(self.request(path, {}), (200, {"id": sale["id"], "abandoned": True}))
+        for route, payload in (("/sales", sale), ("/sales/allow-negative", sale),
+                               ("/offline-sales", {**sale, "offline": True, "sold_at": "2020-01-01T00:00:00.000Z"})):
+            with self.subTest(route=route):
+                status, body = self.request(route, payload)
+                self.assertEqual((status, body["code"]), (409, "sale_abandoned"))
+        self.assertEqual(self.stock()["E01"], Decimal("2"))
+        self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 404)
+
+    def test_abandon_races_with_sale_and_never_removes_a_recorded_bill(self):
+        sale = self.sale([self.line(self.eggs, "1", "5")], cash="5")
+        path = f"/sales/{sale['id']}/abandon"
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            sale_future = executor.submit(self.request, "/sales", sale)
+            abandon_future = executor.submit(self.request, path, {})
+            recorded, abandoned = sale_future.result(), abandon_future.result()
+        if recorded[0] == 201:
+            self.assertEqual((abandoned[0], abandoned[1]["code"]), (409, "sale_already_recorded"))
+            self.assertEqual(self.request(path, {})[1]["code"], "sale_already_recorded")
+            self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 200)
+            self.assertEqual(self.stock()["E01"], Decimal("1"))
+        else:
+            self.assertEqual((recorded[0], recorded[1]["code"]), (409, "sale_abandoned"))
+            self.assertEqual(abandoned[0], 200)
+            self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 404)
+            self.assertEqual(self.stock()["E01"], Decimal("2"))
+
     def test_rejects_cart_when_stock_is_insufficient_for_any_item(self):
         sale = self.sale(
             [self.line(self.water, "1", "25"), self.line(self.eggs, "3", "5")], cash="40",

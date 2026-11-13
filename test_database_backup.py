@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from uuid import uuid4
 
 from inventory_api import make_server
@@ -124,6 +125,34 @@ class DatabaseBackupTests(unittest.TestCase):
         result = self.restore(backup, target)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(target.read_bytes(), original)
+
+    def test_backup_restores_abandoned_sale_guard_and_legacy_database_still_opens(self):
+        product = self.request("/products", {"code": "W01", "name": "น้ำ", "base_unit": "ขวด", "price": "10"})
+        sale_id = str(uuid4())
+        sale = {"id": sale_id, "items": [{"product_id": product["id"], "unit_id": product["base_unit_id"],
+                 "quantity": "1", "expected_unit_price": "10"}],
+                "payments": {"cash": "10", "qr": "0", "credit": "0"}, "customer_id": None, "qr_confirmed": False}
+        req = Request(self.origin + f"/sales/{sale_id}/abandon", data=b"{}", headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        backup = self.download()
+        restored = self.directory / "abandoned-restored.sqlite3"
+        self.assertEqual(self.restore(backup, restored).returncode, 0)
+        origin = self.start_server(restored)
+        req = Request(origin + "/offline-sales", data=json.dumps(sale).encode(), headers={"Content-Type": "application/json"})
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(req, timeout=5)
+        self.assertEqual(raised.exception.code, 409)
+        self.assertEqual(json.load(raised.exception)["code"], "sale_abandoned")
+        legacy = self.directory / "legacy.sqlite3"
+        legacy.write_bytes(backup.read_bytes())
+        with sqlite3.connect(legacy) as db:
+            db.execute("DROP TABLE abandoned_sales")
+        legacy_restored = self.directory / "legacy-restored.sqlite3"
+        self.assertEqual(self.restore(legacy, legacy_restored).returncode, 0)
+        self.start_server(legacy_restored)
+        with sqlite3.connect(legacy_restored) as db:
+            self.assertIsNotNone(db.execute("SELECT name FROM sqlite_schema WHERE name='abandoned_sales'").fetchone())
 
     def test_restore_rejects_corrupt_and_unrelated_sqlite_without_creating_target(self):
         corrupt = self.directory / "corrupt.sqlite3"

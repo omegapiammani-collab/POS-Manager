@@ -273,6 +273,66 @@ test("blocks a product paused after it was placed in the cart", async ({ page, c
   await expect(page.locator("#sale-empty")).toBeVisible();
 });
 
+test("abandons a conflicting queued sale only after server confirmation, even if the response is lost", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  let attempts = 0;
+  await page.route("**/sales/*/abandon", async (route) => {
+    attempts++;
+    if (attempts === 1) {
+      expect((await route.fetch()).status()).toBe(200);
+      return route.abort("connectionfailed");
+    }
+    return route.continue();
+  });
+  await page.goto(pos + "/checkout");
+  const add = page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true });
+  await add.click();
+  await add.click();
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).click();
+  await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  await expect(page.locator("#sale-message")).toContainText("สินค้าคงเหลือไม่พอ");
+  const [queued] = await page.evaluate(() => window.PosOffline.list());
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const abandon = page.getByRole("button", { name: `ยกเลิกบิลค้าง ${queued.payload.id}` });
+  const dialog = page.getByRole("dialog", { name: "ยกเลิกบิลที่รอตรวจสอบ" });
+  await abandon.click();
+  await dialog.getByRole("button", { name: "กลับ", exact: true }).click();
+  expect(attempts).toBe(0);
+  await abandon.click();
+  await dialog.getByRole("button", { name: "ยืนยันยกเลิกบิลค้าง" }).click();
+  await expect(page.locator("#sale-message")).toContainText("ยังยืนยันการยกเลิกไม่ได้");
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
+  await abandon.click();
+  await dialog.getByRole("button", { name: "ยืนยันยกเลิกบิลค้าง" }).click();
+  await expect(page.locator("#sale-message")).toContainText("ยกเลิกบิลค้างแล้ว");
+  await expect(page.locator("#sale-pending")).toBeHidden();
+  expect(attempts).toBe(2);
+  expect((await request.post(pos + "/sales", { data: queued.payload })).status()).toBe(409);
+  expect(await (await request.get(pos + "/sale-history")).json()).toHaveLength(0);
+  expect(Number((await (await request.get(pos + "/products")).json())[0].quantity)).toBe(1);
+  expect(product.id).toBe(queued.payload.items[0].product_id);
+});
+
+test("does not abandon or delete a queue entry if the sale was already recorded", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const sale = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  expect((await request.post(pos + "/sales", { data: sale })).status()).toBe(201);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  await page.evaluate(async (payload) => {
+    await window.PosOffline.put(payload);
+    await window.PosOffline.update(payload.id, "conflict", "ต้องตรวจสอบ");
+  }, sale);
+  await page.reload();
+  await page.getByRole("button", { name: `ยกเลิกบิลค้าง ${sale.id}` }).click();
+  await page.getByRole("dialog", { name: "ยกเลิกบิลที่รอตรวจสอบ" }).getByRole("button", { name: "ยืนยันยกเลิกบิลค้าง" }).click();
+  await expect(page.locator("#sale-message")).toContainText("บิลนี้บันทึกแล้ว");
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
+  expect((await request.get(pos + "/sales/" + sale.id)).status()).toBe(200);
+});
+
 test("owner confirms an online shortage and retries the same sale after a lost response", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   const attempts = [];

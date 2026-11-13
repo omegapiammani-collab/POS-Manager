@@ -79,6 +79,12 @@
       </section>
     </div>
   </main>
+  <dialog id="sale-abandon" aria-labelledby="sale-abandon-title">
+    <h2 id="sale-abandon-title">ยกเลิกบิลที่รอตรวจสอบ</h2>
+    <p>ระบบจะตรวจสอบกับเซิร์ฟเวอร์และป้องกันการบันทึกบิลเลขนี้ในภายหลัง หากบิลถูกบันทึกแล้ว ระบบจะไม่ยกเลิกบิลให้ กรุณาตรวจสอบการรับเงินหรือคืนเงินกับลูกค้าด้วยตนเอง</p>
+    <p id="sale-abandon-reference"></p>
+    <div class="actions"><button id="sale-abandon-cancel" class="secondary" type="button">กลับ</button><button id="sale-abandon-confirm" type="button">ยืนยันยกเลิกบิลค้าง</button></div>
+  </dialog>
   <dialog id="sale-negative" aria-labelledby="sale-negative-title">
     <h2 id="sale-negative-title">ยืนยันขายเมื่อสต๊อกไม่พอ</h2>
     <p>บิลนี้อาจทำให้สต๊อกติดลบ ระบบจะตรวจราคาขายและสถานะสินค้าล่าสุดก่อนบันทึก โปรดตรวจสอบรายการและยอดชำระ</p>
