@@ -432,7 +432,13 @@ async function syncQueue(onlyId) {
     for (const entry of await store.list()) {
       if (stagedDuringSync.has(entry.payload.id)) continue;
       if (onlyId ? entry.payload.id !== onlyId : entry.state !== "pending") continue;
-      const result = await syncSale(entry.payload);
+      let result = await syncSale(entry.payload);
+      if (result.state === "pending" && navigator.onLine !== false) {
+        // The online event can arrive before the network can carry requests.
+        // Reuse the queued identifier if the server accepted the first attempt.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (navigator.onLine !== false) result = await syncSale(entry.payload);
+      }
       if (result.state === "synced") {
         synced++;
         if (hasStockShortage(result.sale)) shortages++;

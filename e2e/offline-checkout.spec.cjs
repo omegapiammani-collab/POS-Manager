@@ -30,6 +30,7 @@ const test = base.extend({
       const match = /^Inventory API: (http:\/\/127\.0\.0\.1:\d+)$/.exec(line);
       if (!match) throw new Error("Unexpected POS server startup output: " + line);
       await use(match[1]);
+      if (test.info().status !== test.info().expectedStatus) console.error(stderr);
     } finally {
       server.kill();
       try {
@@ -96,6 +97,11 @@ test("offline bill survives reload and syncs once after another device sells the
       await otherContext.close();
     }
 
+    page.on("requestfailed", (request) => {
+      if (request.url().endsWith("/offline-sales")) {
+        console.error("Offline sale request failed:", request.failure()?.errorText);
+      }
+    });
     await context.setOffline(false);
     await expect(page.locator("#sale-message")).toContainText("สต๊อกติดลบ 1 บิล");
     await expect(page.locator("#sale-pending")).toBeHidden();
