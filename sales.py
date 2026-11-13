@@ -1,7 +1,9 @@
 """Local checkout and customer credit origination."""
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP, localcontext
 import hashlib
 import json
+import re
 from uuid import UUID, uuid4
 
 from inventory import number
@@ -22,6 +24,10 @@ CREATE TABLE IF NOT EXISTS sales (
     credit TEXT NOT NULL,
     customer_id TEXT REFERENCES customers(id),
     customer_name TEXT
+);
+CREATE TABLE IF NOT EXISTS offline_sale_times (
+    sale_id TEXT PRIMARY KEY REFERENCES sales(id),
+    sold_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sale_items (
     sale_id TEXT NOT NULL REFERENCES sales(id),
@@ -63,8 +69,9 @@ def add_customer(db, name):
 
 def read_sale(db, sale_id, *, include_item_ids=False):
     row = db.execute(
-        "SELECT id, created_at, total, cash, qr, credit, customer_id, customer_name "
-        "FROM sales WHERE id = ?", (sale_id,),
+        "SELECT s.id, s.created_at, s.total, s.cash, s.qr, s.credit, "
+        "s.customer_id, s.customer_name, t.sold_at "
+        "FROM sales s LEFT JOIN offline_sale_times t ON t.sale_id = s.id WHERE s.id = ?", (sale_id,),
     ).fetchone()
     if row is None:
         return None
@@ -88,6 +95,8 @@ def read_sale(db, sale_id, *, include_item_ids=False):
         "customer_name": row[7],
     }
 
+    if row[8] is not None:
+        sale["sold_at"] = row[8]
     shortages = sale_shortages(db, sale_id)
     if shortages:
         sale["stock_shortages"] = shortages
@@ -145,7 +154,7 @@ def validate_checkout(data):
     return sale_id, items, payments, customer_id, qr_confirmed
 
 
-def checkout_hash(items, payments, customer_id, qr_confirmed):
+def checkout_hash(items, payments, customer_id, qr_confirmed, *, sold_at=None):
     def decimal_string(value):
         return format(value.normalize(), "f")
 
@@ -156,6 +165,8 @@ def checkout_hash(items, payments, customer_id, qr_confirmed):
         "customer_id": customer_id,
         "qr_confirmed": qr_confirmed,
     }
+    if sold_at is not None:
+        canonical["sold_at"] = sold_at
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
 
@@ -193,18 +204,35 @@ def prepare_items(db, items, *, allow_negative):
     return stock, details, total, shortages
 
 
+def offline_sale_time(data, *, offline):
+    if "sold_at" not in data:
+        return None
+    if not offline:
+        raise ValueError("Sale time may only be supplied for offline sales")
+    value = data["sold_at"]
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", value,
+    ):
+        raise ValueError("Use a UTC sale timestamp with milliseconds")
+    moment = datetime.fromisoformat(value[:-1] + "+00:00")
+    if moment > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise ValueError("Offline sale time is ahead of the server clock")
+    return value
+
+
 def checkout(db, data, *, allow_negative=False):
     validated = validate_checkout(data)
+    sold_at = offline_sale_time(data, offline=allow_negative)
     with db:
         db.execute("BEGIN IMMEDIATE")
-        return checkout_in_transaction(db, validated, allow_negative=allow_negative)
+        return checkout_in_transaction(db, validated, allow_negative=allow_negative, sold_at=sold_at)
 
 
-def checkout_in_transaction(db, validated, *, allow_negative=False):
+def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None):
     if not db.in_transaction:
         raise RuntimeError("Checkout requires a transaction")
     sale_id, items, payments, customer_id, qr_confirmed = validated
-    request_hash = checkout_hash(items, payments, customer_id, qr_confirmed)
+    request_hash = checkout_hash(items, payments, customer_id, qr_confirmed, sold_at=sold_at)
     saved = db.execute("SELECT request_hash FROM sales WHERE id = ?", (sale_id,)).fetchone()
     if saved is not None:
         if saved[0] != request_hash:
@@ -230,6 +258,8 @@ def checkout_in_transaction(db, validated, *, allow_negative=False):
              *(str(payments[method].quantize(CENT)) for method in PAYMENT_METHODS),
              customer_id, customer_name),
         )
+    if sold_at is not None:
+        db.execute("INSERT INTO offline_sale_times (sale_id, sold_at) VALUES (?, ?)", (sale_id, sold_at))
     db.executemany(
         "INSERT INTO sale_items (sale_id, position, product_id, unit_id, name, unit_name, "
         "quantity, unit_price, total, multiplier, base_unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

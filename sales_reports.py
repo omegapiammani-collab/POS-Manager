@@ -10,9 +10,9 @@ CENT = Decimal("0.01")
 ZERO = Decimal(0)
 REPORT_SALES = """
 WITH RECURSIVE bill_dates(id, business_date) AS (
-    SELECT s.id, date(s.created_at, '+7 hours')
-    FROM sales s
-    WHERE date(s.created_at, '+7 hours') BETWEEN ? AND ?
+    SELECT s.id, date(COALESCE(t.sold_at, s.created_at), '+7 hours')
+    FROM sales s LEFT JOIN offline_sale_times t ON t.sale_id = s.id
+    WHERE date(COALESCE(t.sold_at, s.created_at), '+7 hours') BETWEEN ? AND ?
       AND NOT EXISTS (SELECT 1 FROM sale_corrections c WHERE c.replacement_id = s.id)
     UNION ALL
     SELECT c.replacement_id, b.business_date

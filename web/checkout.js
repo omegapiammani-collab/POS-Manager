@@ -343,7 +343,7 @@ async function migrateLegacy() {
 function localReceipt(payload) {
   return {
     ...payload,
-    created_at: new Date().toISOString(),
+    created_at: payload.sold_at ?? new Date().toISOString(),
     total: moneyString(cartTotal()),
     customer_name: customers.find(({ id }) => id === payload.customer_id)?.name,
     items: [...cart.values()].map((item) => ({
@@ -366,9 +366,10 @@ function showReceipt(sale, state = "synced") {
   if (shortage) byId("sale-receipt-state").textContent = "ส่งบิลแล้ว · ตรวจสอบสต๊อกติดลบที่หน้าสินค้าและสต๊อก";
   byId("sale-receipt-state").hidden = !temporary && !shortage;
   byId("sale-receipt-id").textContent = "เลขอ้างอิง " + sale.id;
-  const timestamp = new Date(sale.created_at.replace(" ", "T"));
+  const soldAt = sale.sold_at ?? sale.created_at;
+  const timestamp = new Date(soldAt.replace(" ", "T"));
   byId("sale-receipt-date").textContent = Number.isNaN(timestamp.getTime())
-    ? sale.created_at
+    ? soldAt
     : new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(timestamp);
   byId("sale-receipt-lines").replaceChildren(...sale.items.map((item) => {
     const row = element("li");
@@ -472,7 +473,7 @@ paymentForm.addEventListener("submit", async (event) => {
   const paid = amounts();
   const payload = {
     id: crypto.randomUUID(),
-    ...((!connected || navigator.onLine === false) ? { offline: true } : {}),
+    ...((!connected || navigator.onLine === false) ? { offline: true, sold_at: new Date().toISOString() } : {}),
     items: [...cart.values()].map(({ product, unit, quantity }) => ({
       product_id: product.id,
       unit_id: unit.id,

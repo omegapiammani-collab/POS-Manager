@@ -148,17 +148,25 @@
     return scaled;
   }
 
+  function validSaleTime(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+      || value.startsWith("0000-")) return false;
+    const time = new Date(value);
+    return Number.isFinite(time.getTime()) && time.toISOString() === value;
+  }
+
   function validatedImportEntry(entry) {
     if (!hasFields(entry, ["payload", "state", "error"]) || !STATES.has(entry.state)
       || (entry.error !== null && (typeof entry.error !== "string" || entry.error.length > 1000))) {
       throw new TypeError("Invalid offline queue entry");
     }
     const { payload, state, error } = entry;
-    if (!hasFields(payload, ["id", "items", "payments", "customer_id", "qr_confirmed"], ["offline"])
+    if (!hasFields(payload, ["id", "items", "payments", "customer_id", "qr_confirmed"], ["offline", "sold_at"])
       || !Array.isArray(payload.items) || !payload.items.length
       || !hasFields(payload.payments, ["cash", "qr", "credit"])
       || typeof payload.qr_confirmed !== "boolean"
-      || (Object.hasOwn(payload, "offline") && typeof payload.offline !== "boolean")) {
+      || (Object.hasOwn(payload, "offline") && typeof payload.offline !== "boolean")
+      || (Object.hasOwn(payload, "sold_at") && (payload.offline !== true || !validSaleTime(payload.sold_at)))) {
       throw new TypeError("Invalid offline sale");
     }
     const id = saleId(payload.id);

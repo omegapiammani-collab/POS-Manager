@@ -52,7 +52,8 @@ def sale_history(db):
             for sale_id, replacement_id, reason, excess, action in db.execute(
                 "SELECT s.id, c.replacement_id, c.reason, c.excess, c.excess_action "
                 "FROM sales s LEFT JOIN sale_corrections c ON c.sale_id = s.id "
-                "ORDER BY s.created_at DESC, s.id DESC",
+                "LEFT JOIN offline_sale_times t ON t.sale_id = s.id "
+                "ORDER BY COALESCE(t.sold_at, s.created_at) DESC, s.id DESC",
             )
         ]
 

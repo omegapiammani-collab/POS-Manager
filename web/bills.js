@@ -124,7 +124,7 @@ function renderList() {
     button.type = "button";
     button.disabled = Boolean(pending) || sending || opening;
     button.setAttribute("aria-pressed", String(selectedId === bill.id));
-    const title = element("span", dateText(bill.created_at));
+    const title = element("span", dateText(bill.sold_at ?? bill.created_at));
     title.append(element("small", bill.id));
     const total = element("span", moneyText(bill.total));
     if (bill.status === "voided") total.append(element("small", "ยกเลิกแล้ว", "low"));
@@ -154,7 +154,7 @@ function renderDetail() {
   if (!bill) return;
   const voided = bill.status === "voided";
   byId("bill-reference").textContent = "เลขอ้างอิง " + bill.id;
-  byId("bill-meta").textContent = dateText(bill.created_at) + (voided ? " · ยกเลิกแล้ว" : " · บิลปกติ");
+  byId("bill-meta").textContent = dateText(bill.sold_at ?? bill.created_at) + (voided ? " · ยกเลิกแล้ว" : " · บิลปกติ");
   byId("bill-items").replaceChildren(...bill.items.map((item) =>
     line(item.name + " × " + numberFormat.format(Number(item.quantity)) + " " + item.unit_name, moneyText(item.total))
   ));

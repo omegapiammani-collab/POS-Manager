@@ -29,8 +29,8 @@ CREATE INDEX IF NOT EXISTS drawer_movements_by_date ON drawer_movements(date);
 """
 
 CASH_SALES = """
-SELECT cash FROM sales s
-WHERE date(s.created_at, '+7 hours') = ?
+SELECT s.cash FROM sales s LEFT JOIN offline_sale_times t ON t.sale_id = s.id
+WHERE date(COALESCE(t.sold_at, s.created_at), '+7 hours') = ?
   AND NOT EXISTS (SELECT 1 FROM sale_corrections c WHERE c.replacement_id = s.id)
 """
 
