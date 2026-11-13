@@ -193,6 +193,20 @@ function updatePayment() {
   const paid = amounts();
   const invalid = Object.values(paid).includes(null);
   const difference = total === null || invalid ? null : total - paid.cash - paid.qr - paid.credit;
+  const tenderField = payment.tender;
+  const tenderSection = byId("sale-tender");
+  const change = byId("sale-change");
+  let tenderInvalid = false;
+  if (tenderField && tenderSection && change) {
+    tenderSection.hidden = !(paid.cash > 0n);
+    if (tenderSection.hidden) tenderField.value = "";
+    const text = tenderField.value.trim();
+    const tender = text ? boundedDecimal(text, 2, false, 10n ** 22n) : null;
+    tenderInvalid = Boolean(text) && (tender === null || tender < paid.cash);
+    change.textContent = !text ? "" : tender === null
+      ? "กรอกเงินสดที่รับเป็นตัวเลขทศนิยมไม่เกิน 2 ตำแหน่ง"
+      : tender < paid.cash ? "เงินสดที่รับน้อยกว่ายอดเงินสดที่ชำระ" : "เงินทอน " + money(tender - paid.cash);
+  }
   byId("sale-total").textContent = total === null ? "ตรวจสอบจำนวนสินค้า" : money(total);
   byId("sale-qr").hidden = !(paid.qr > 0n);
   byId("sale-credit").hidden = !(paid.credit > 0n);
@@ -205,7 +219,7 @@ function updatePayment() {
   else balance.textContent = "ยอดชำระครบ";
 
   byId("sale-cash-all").disabled = !cart.size || total === null;
-  byId("sale-submit").disabled = staging || !cart.size || difference !== 0n
+  byId("sale-submit").disabled = staging || !cart.size || difference !== 0n || tenderInvalid
     || (paid.credit > 0n && !payment.customer_id.value)
     || (paid.qr > 0n && !payment.qr_confirmed.checked);
 }
@@ -373,7 +387,7 @@ function hasStockShortage(sale) {
   return sale?.stock_shortages?.some(({ remaining }) => Number(remaining) > 0) ?? false;
 }
 
-function showReceipt(sale, state = "synced") {
+function showReceipt(sale, state = "synced", change = null) {
   const temporary = state !== "synced";
   byId("sale-receipt-title").textContent = temporary ? "หลักฐานการขายจากเครื่องนี้" : "ใบเสร็จรับเงิน";
   byId("sale-receipt-state").textContent = state === "conflict"
@@ -404,6 +418,11 @@ function showReceipt(sale, state = "synced") {
     row.append(element("span", label), element("span", money(amount)));
     return [row];
   }));
+  const changeLine = byId("sale-receipt-change");
+  if (changeLine) {
+    changeLine.hidden = change === null;
+    changeLine.textContent = change === null ? "" : "เงินทอน " + money(change);
+  }
   byId("sale-receipt").showModal();
 }
 
@@ -493,6 +512,9 @@ paymentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (staging || byId("sale-submit").disabled) return;
   const paid = amounts();
+  const tenderText = payment.tender?.value.trim() ?? "";
+  const tender = tenderText ? boundedDecimal(tenderText, 2, false, 10n ** 22n) : null;
+  const change = tender === null ? null : tender - paid.cash;
   const payload = {
     id: crypto.randomUUID(),
     ...((!connected || navigator.onLine === false) ? { offline: true, sold_at: new Date().toISOString() } : {}),
@@ -531,7 +553,7 @@ paymentForm.addEventListener("submit", async (event) => {
     } else {
       status("บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล");
     }
-    showReceipt(result.sale ?? receipt, result.state);
+    showReceipt(result.sale ?? receipt, result.state, change);
   } catch {
     if (staged) {
       cart.clear();
@@ -539,7 +561,7 @@ paymentForm.addEventListener("submit", async (event) => {
       clearQr();
       renderCart();
       status("บันทึกบิลในเครื่องแล้ว · ตรวจสอบคิวก่อนส่งอีกครั้ง", true);
-      showReceipt(receipt, "pending");
+      showReceipt(receipt, "pending", change);
     } else {
       status("บันทึกบิลในเครื่องไม่สำเร็จ กรุณาลองอีกครั้ง", true);
     }

@@ -55,6 +55,10 @@
               <label>เงินเชื่อ (บาท)<input name="credit" type="text" inputmode="decimal" placeholder="0.00"></label>
             </div>
             <button class="secondary sale-cash-all" id="sale-cash-all" type="button">เงินสดเต็มจำนวน</button>
+            <div id="sale-tender" hidden>
+              <label>เงินสดที่รับ (บาท)<input name="tender" type="text" inputmode="decimal" placeholder="ไม่บังคับ"></label>
+              <p id="sale-change" class="muted" aria-live="polite"></p>
+            </div>
             <div id="sale-qr" hidden>
               <button class="secondary sale-cash-all" id="sale-show-qr" type="button">แสดง QR ตามยอดโอน</button>
               <div id="sale-qr-image" class="sale-qr-image" hidden></div>
@@ -90,6 +94,7 @@
       <ul id="sale-receipt-lines" class="lines"></ul>
       <div class="sale-total"><span>ยอดรวม</span><strong id="sale-receipt-total"></strong></div>
       <ul id="sale-receipt-payments" class="lines"></ul>
+      <p id="sale-receipt-change" class="muted" hidden></p>
     </article>
     <div class="actions sale-receipt-actions">
       <button id="sale-receipt-close" class="secondary" type="button">ข้ามการพิมพ์</button>

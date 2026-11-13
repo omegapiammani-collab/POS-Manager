@@ -119,6 +119,36 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("calculates cash change and keeps only net cash in the bill", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
+  const tender = page.getByRole("textbox", { name: "เงินสดที่รับ (บาท)" });
+  await tender.fill("20");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  await expect(page.locator("#sale-change")).toContainText("น้อยกว่า");
+  await tender.fill("100");
+  await expect(page.locator("#sale-change")).toHaveText("เงินทอน 75.00 บาท");
+  await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  await expect(page.locator("#sale-receipt-change")).toHaveText("เงินทอน 75.00 บาท");
+  const [bill] = await (await request.get(pos + "/sale-history")).json();
+  expect(bill.payments.cash).toBe("25.00");
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  await context.setOffline(true);
+  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await page.locator('input[name="cash"]').fill("10");
+  await page.locator('input[name="qr"]').fill("15");
+  await page.getByLabel("ตรวจสอบเงินโอนเข้าแล้ว").check();
+  await tender.fill("20");
+  await expect(page.locator("#sale-change")).toHaveText("เงินทอน 10.00 บาท");
+  await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  const [queued] = await page.evaluate(() => window.PosOffline.list());
+  expect(queued.payload.payments).toEqual({ cash: "10.00", qr: "15.00", credit: "0.00" });
+  expect(queued.payload).not.toHaveProperty("tender");
+});
+
 test("adds exact product codes from search online and offline", async ({ page, context, request, pos }) => {
   const product = await createProduct(request, pos);
   const unit = await request.post(pos + "/products/" + product.id + "/units", {
