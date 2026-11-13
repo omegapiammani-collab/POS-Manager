@@ -251,3 +251,22 @@ class SaleCorrectionsApiTests(unittest.TestCase):
         before = self.snapshot()
         self.expect(409, self.correction_path(sale), self.correction(action="apply"))
         self.assertEqual(self.snapshot(), before)
+
+    def test_apply_excess_uses_offline_sale_time(self):
+        original = self.sell(credit=55, customer=self.customer)
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-10-01T00:00:00.000Z", original["id"]))
+            db.commit()
+        self.repay(55)
+        online = self.sell(credit=40, customer=self.customer)
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-11-02T00:00:00.000Z", online["id"]))
+            db.commit()
+        data = self.sale(credit=40, customer=self.customer)
+        data.update(offline=True, sold_at="2026-11-01T17:00:00.000Z")
+        offline = self.created("/offline-sales", data)
+        self.created(self.correction_path(original), self.correction(action="apply"))
+        paid = {bill["id"]: Decimal(bill["paid"]) for bill in self.debt()["bills"]}
+        self.assertEqual(paid, {offline["id"]: Decimal(40), online["id"]: Decimal(15)})

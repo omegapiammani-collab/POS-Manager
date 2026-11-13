@@ -167,7 +167,7 @@ def choose_destinations(db, original, replacement, paid, action, expected_excess
         return destinations, excess, action
 
     remaining = excess
-    for bill_id, _, credit, bill_paid in bill_balances(db, customer_id):
+    for bill_id, _, credit, bill_paid, _ in bill_balances(db, customer_id):
         if bill_id in (original["id"], replacement_id):
             continue
         amount = min(remaining, credit - bill_paid)

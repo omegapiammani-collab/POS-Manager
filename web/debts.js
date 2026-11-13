@@ -112,7 +112,7 @@ function renderDetail(debt) {
     const row = element("li");
     row.append(
       recordHeading("ค้างชำระ", bill.outstanding),
-      element("small", dateText(bill.created_at) + " · บิล " + bill.id),
+      element("small", dateText(bill.sold_at ?? bill.created_at) + " · บิล " + bill.id),
       element("small", "ยอดเชื่อ " + money(bill.credit) + " · ชำระแล้ว " + money(bill.paid))
     );
     return row;

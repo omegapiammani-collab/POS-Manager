@@ -30,6 +30,15 @@ class CustomerNotFound(Exception):
     pass
 
 
+# Legacy SQLite timestamps can use a space instead of T. Normalize before
+# comparing so both forms sort by instant; preserve deterministic ID ties.
+# Timestamps produced by this application have millisecond precision.
+SALE_TIME_ORDER = (
+    "COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(t.sold_at, s.created_at)), "
+    "COALESCE(t.sold_at, s.created_at)), s.id"
+)
+
+
 def satang(value):
     return int(Decimal(value) * 100)
 
@@ -57,16 +66,17 @@ def bill_balances(db, customer_id):
         paid[sale_id] += satang(amount)
 
     bills = []
-    for sale_id, created_at, credit in db.execute(
-        "SELECT s.id, s.created_at, s.credit FROM sales s "
+    for sale_id, created_at, credit, sold_at in db.execute(
+        "SELECT s.id, s.created_at, s.credit, t.sold_at FROM sales s "
+        "LEFT JOIN offline_sale_times t ON t.sale_id = s.id "
         "WHERE s.customer_id = ? "
         "AND NOT EXISTS (SELECT 1 FROM sale_corrections c WHERE c.sale_id = s.id) "
-        "ORDER BY s.created_at, s.id",
+        f"ORDER BY {SALE_TIME_ORDER}",
         (customer_id,),
     ):
         credit = satang(credit)
         if credit > 0:
-            bills.append((sale_id, created_at, credit, paid[sale_id]))
+            bills.append((sale_id, created_at, credit, paid[sale_id], sold_at))
     return bills
 
 
@@ -88,7 +98,8 @@ def repayment_allocations(db, customer_id):
         "SELECT a.repayment_id, a.sale_id, a.amount FROM debt_allocations a "
         "JOIN debt_repayments r ON r.id = a.repayment_id "
         "JOIN sales s ON s.id = a.sale_id "
-        "WHERE r.customer_id = ? ORDER BY s.created_at, s.id",
+        "LEFT JOIN offline_sale_times t ON t.sale_id = s.id "
+        f"WHERE r.customer_id = ? ORDER BY {SALE_TIME_ORDER}",
         (customer_id,),
     ):
         allocations[repayment_id].append({"sale_id": sale_id, "amount": amount})
@@ -134,16 +145,17 @@ def customer_debt(db, customer_id):
     return {
         "id": customer_id,
         "name": name,
-        "outstanding": baht(sum(credit - paid for _, _, credit, paid in bills)),
+        "outstanding": baht(sum(credit - paid for _, _, credit, paid, _ in bills)),
         "bills": [
             {
                 "id": sale_id,
                 "created_at": created_at,
+                "sold_at": sold_at,
                 "credit": baht(credit),
                 "paid": baht(paid),
                 "outstanding": baht(credit - paid),
             }
-            for sale_id, created_at, credit, paid in bills
+            for sale_id, created_at, credit, paid, sold_at in bills
         ],
         "repayments": repayments,
     }
@@ -174,7 +186,9 @@ def read_repayment(db, repayment_id):
         {"sale_id": sale_id, "amount": amount}
         for sale_id, amount in db.execute(
             "SELECT a.sale_id, a.amount FROM debt_allocations a "
-            "JOIN sales s ON s.id = a.sale_id WHERE a.repayment_id = ? ORDER BY s.created_at, s.id",
+            "JOIN sales s ON s.id = a.sale_id "
+            "LEFT JOIN offline_sale_times t ON t.sale_id = s.id "
+            f"WHERE a.repayment_id = ? ORDER BY {SALE_TIME_ORDER}",
             (repayment_id,),
         )
     ]
@@ -198,7 +212,7 @@ def record_repayment(db, customer_id, data):
         require_customer(db, customer_id)
         remaining = amount
         allocations = []
-        for sale_id, _, credit, paid in bill_balances(db, customer_id):
+        for sale_id, _, credit, paid, _ in bill_balances(db, customer_id):
             applied = min(remaining, credit - paid)
             if applied > 0:
                 allocations.append((repayment_id, sale_id, baht(applied)))

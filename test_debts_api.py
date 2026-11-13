@@ -22,6 +22,7 @@ class DebtApiTests(unittest.TestCase):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         database = Path(directory.name) / "debts.sqlite3"
+        self.database = database
 
         # Create sales in the schema used before repayments were introduced.
         with closing(connect(database)) as db:
@@ -136,6 +137,72 @@ class DebtApiTests(unittest.TestCase):
         self.assertEqual(len(settled["repayments"]), 2)
         self.assertIn(result, settled["repayments"])
         self.assertEqual(self.balances()[self.customer["id"]], 0)
+
+    def test_offline_sale_uses_sold_time_for_future_fifo_without_rewriting_payments(self):
+        # Bangkok midnight separates these instants; the offline sale is synced later.
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-11-01T16:59:59.999Z", self.bill_ids[0]))
+            db.commit()
+        previous = self.repayment("10")
+        status, original = self.repay(previous)
+        self.assertEqual(status, 201)
+        offline = self.sale(self.customer, "100")
+        offline.update(offline=True, sold_at="2026-11-01T17:00:00.000Z")
+        status, sale = self.request("/offline-sales", offline)
+        self.assertEqual(status, 201, sale)
+
+        debt = self.debt()
+        self.assertEqual([bill["id"] for bill in debt["bills"]],
+                         [self.bill_ids[0], sale["id"], self.bill_ids[1]])
+        self.assertIsNone(debt["bills"][0]["sold_at"])
+        self.assertEqual(debt["bills"][1]["sold_at"], offline["sold_at"])
+        self.assertIn(original, debt["repayments"])
+        status, payment = self.repay(self.repayment("50"))
+        self.assertEqual(status, 201, payment)
+        self.assertEqual(payment["allocations"], [
+            {"sale_id": self.bill_ids[0], "amount": "30.00"},
+            {"sale_id": sale["id"], "amount": "20.00"},
+        ])
+        self.assertEqual(self.repay(previous), (200, original))
+        self.assertIn(original, self.debt()["repayments"])
+
+    def test_fifo_uses_sale_id_to_break_equal_timestamp_ties(self):
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-11-01 17:00:00", self.bill_ids[0]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-11-01T17:00:00.000Z", self.bill_ids[1]))
+            db.commit()
+        status, payment = self.repay(self.repayment("1"))
+        self.assertEqual(status, 201)
+        self.assertEqual(payment["allocations"][0]["sale_id"], min(self.bill_ids))
+
+    def test_fifo_compares_legacy_and_offline_times_on_same_utc_day(self):
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-11-01 18:00:00", self.bill_ids[0]))
+            db.execute("INSERT INTO offline_sale_times (sale_id, sold_at) VALUES (?, ?)",
+                       (self.bill_ids[1], "2026-11-01T17:00:00.001Z"))
+            db.commit()
+        debt = self.debt()
+        self.assertEqual([bill["id"] for bill in debt["bills"]],
+                         [self.bill_ids[1], self.bill_ids[0]])
+        status, payment = self.repay(self.repayment("1"))
+        self.assertEqual(status, 201)
+        self.assertEqual(payment["allocations"][0]["sale_id"], self.bill_ids[1])
+
+    def test_fifo_preserves_millisecond_order_before_id_tiebreak(self):
+        later, earlier = sorted(self.bill_ids)
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?",
+                       ("2026-11-01 17:00:00", earlier))
+            db.execute("INSERT INTO offline_sale_times (sale_id, sold_at) VALUES (?, ?)",
+                       (later, "2026-11-01T17:00:00.001Z"))
+            db.commit()
+        status, payment = self.repay(self.repayment("1"))
+        self.assertEqual(status, 201)
+        self.assertEqual(payment["allocations"][0]["sale_id"], earlier)
 
     def test_overpayment_and_invalid_requests_are_atomic(self):
         before = self.debt()

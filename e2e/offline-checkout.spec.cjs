@@ -74,6 +74,28 @@ async function downloadCsv(page, label, filename, { touch = false } = {}) {
   return contents.subarray(3).toString("utf8");
 }
 
+test("debt history shows the offline sale time in Bangkok", async ({ page, pos }) => {
+  const soldAt = "2026-11-01T17:00:00.000Z";
+  const createdAt = "2026-11-05T05:00:00.000Z";
+  await page.route("**/customer-debts", (route) => route.fulfill({ json: [
+    { id: "customer", name: "ลูกค้า ก", outstanding: "20.00" },
+  ] }));
+  await page.route("**/customers/customer/debt", (route) => route.fulfill({ json: {
+    id: "customer", name: "ลูกค้า ก", outstanding: "20.00", repayments: [], bills: [
+      { id: "offline", created_at: createdAt, sold_at: soldAt, credit: "10.00", paid: "0.00", outstanding: "10.00" },
+      { id: "legacy", created_at: createdAt, credit: "10.00", paid: "0.00", outstanding: "10.00" },
+    ],
+  } }));
+  await page.goto(pos + "/debts");
+  await page.getByRole("button", { name: /ลูกค้า ก/ }).click();
+  const expected = await page.evaluate(([sold, created]) => {
+    const format = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" });
+    return [format.format(new Date(sold)), format.format(new Date(created))];
+  }, [soldAt, createdAt]);
+  await expect(page.locator("#debt-bills li").nth(0)).toContainText(expected[0]);
+  await expect(page.locator("#debt-bills li").nth(1)).toContainText(expected[1]);
+});
+
 for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   test("shows offline storage status when persistence is " + scenario, async ({ page, request, pos }) => {
     await createProduct(request, pos);
