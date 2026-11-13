@@ -119,6 +119,39 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("owner pauses and reactivates a product across checkout and offline reload", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/");
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await page.getByRole("button", { name: "พักขาย", exact: true }).click();
+  await expect(page.locator("#availability")).toHaveText("สถานะ พักขาย");
+  await expect(page.locator("#products")).toContainText("พักขาย");
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  const search = page.getByRole("searchbox", { name: "ค้นหาสินค้า" });
+  await search.fill("W01");
+  await search.press("Enter");
+  await expect(search).toHaveValue("W01");
+  await expect(page.locator("#sale-empty")).toBeVisible();
+  await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด" })).toHaveCount(0);
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.locator("#sale-connection")).toContainText("ออฟไลน์");
+  await search.fill("W01");
+  await search.press("Enter");
+  await expect(page.locator("#sale-empty")).toBeVisible();
+  await context.setOffline(false);
+  await page.goto(pos + "/");
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await page.getByRole("button", { name: "เปิดขายอีกครั้ง" }).click();
+  await expect(page.locator("#availability")).toHaveText("สถานะ พร้อมขาย");
+  await page.goto(pos + "/checkout");
+  await search.fill("W01");
+  await search.press("Enter");
+  await expect(page.getByRole("textbox", { name: "จำนวน น้ำดื่ม ขวด" })).toHaveValue("1");
+});
+
 test("calculates cash change and keeps only net cash in the bill", async ({ page, context, request, pos }) => {
   await createProduct(request, pos);
   await page.goto(pos + "/checkout");

@@ -29,12 +29,13 @@
         <div id="detail" hidden>
           <p id="code" class="muted"></p>
           <p id="minimum-quantity" class="muted"></p>
+          <p id="availability" class="muted"></p>
           <p id="stock-shortage" class="muted" role="status" hidden></p>
           <dl class="metrics">
             <div><dt>คงเหลือ</dt><dd id="quantity"></dd></div>
             <div><dt>ต้นทุนเฉลี่ย</dt><dd id="average"></dd></div>
           </dl>
-          <div class="actions"><button data-open="receipt">รับสินค้า</button><button type="button" class="secondary" id="open-product-edit">แก้ไขสินค้า</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button><button type="button" class="secondary" id="open-stock-count">ปรับยอดจากการตรวจนับ</button></div>
+          <div class="actions"><button data-open="receipt">รับสินค้า</button><button type="button" class="secondary" id="open-product-edit">แก้ไขสินค้า</button><button type="button" class="secondary" id="toggle-availability">พักขาย</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button><button type="button" class="secondary" id="open-stock-count">ปรับยอดจากการตรวจนับ</button></div>
           <h3>หน่วยขาย</h3>
           <ul id="units" class="lines"></ul>
           <h3>ประวัติรับสินค้า</h3>

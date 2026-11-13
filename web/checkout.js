@@ -114,9 +114,9 @@ function cartTotal() {
 function renderProducts() {
   const query = byId("sale-search").value.trim().toLowerCase();
   const list = byId("sale-products");
-  const matches = products.filter((product) =>
+  const matches = products.filter((product) => product.available !== false && (
     product.name.toLowerCase().includes(query) || product.code.toLowerCase().includes(query)
-  );
+  ));
   list.replaceChildren(...matches.map((product) => {
     const row = element("li");
     const buttons = element("div", undefined, "sale-unit-buttons");
@@ -600,9 +600,10 @@ byId("sale-search").addEventListener("keydown", (event) => {
   const search = event.currentTarget;
   const code = search.value.trim();
   if (!code) return;
-  let matches = products.filter((product) => product.code.trim() === code);
+  const available = products.filter((product) => product.available !== false);
+  let matches = available.filter((product) => product.code.trim() === code);
   if (!matches.length) {
-    matches = products.filter((product) => product.code.trim().toLowerCase() === code.toLowerCase());
+    matches = available.filter((product) => product.code.trim().toLowerCase() === code.toLowerCase());
   }
   if (matches.length !== 1) return;
   const product = matches[0];

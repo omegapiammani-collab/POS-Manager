@@ -5,6 +5,7 @@ let selectedId = null;
 let historyRequest = 0;
 let editingProduct;
 let editingUnit;
+let changingAvailability = false;
 
 const format = (value) => numberFormat.format(Number(value));
 const productPath = (id) => "/products/" + encodeURIComponent(id);
@@ -51,6 +52,7 @@ function renderList() {
     button.setAttribute("aria-pressed", String(product.id === selectedId));
     const name = element("span", product.name);
     name.append(element("small", product.code));
+    if (product.available === false) name.append(element("small", "พักขาย"));
     const stock = element("span", format(product.quantity) + " " + product.base_unit);
     if (product.low_stock) {
       const low = element("small", Number(product.quantity) < 0 ? "สต๊อกติดลบ" : "ใกล้หมด");
@@ -87,6 +89,9 @@ async function renderDetail() {
   byId("detail-title").textContent = product?.name ?? "รายละเอียดสินค้า";
   if (!product) return;
   byId("code").textContent = product.code;
+  byId("availability").textContent = product.available === false ? "สถานะ พักขาย" : "สถานะ พร้อมขาย";
+  byId("toggle-availability").textContent = product.available === false ? "เปิดขายอีกครั้ง" : "พักขาย";
+  byId("toggle-availability").disabled = changingAvailability;
   byId("minimum-quantity").textContent =
     "แจ้งเตือนเมื่อเหลือไม่เกิน " + format(product.minimum_quantity) + " " + product.base_unit;
   const negative = Number(product.quantity) < 0;
@@ -153,6 +158,32 @@ async function refresh() {
 }
 
 byId("search").addEventListener("input", renderList);
+byId("toggle-availability").addEventListener("click", async () => {
+  const product = products.find((entry) => entry.id === selectedId);
+  if (!product || changingAvailability) return;
+  const desired = product.available === false;
+  changingAvailability = true;
+  byId("toggle-availability").disabled = true;
+  notice("");
+  try {
+    const result = await api(productPath(product.id) + "/availability", { available: desired });
+    product.available = result.available;
+    try {
+      await refresh();
+    } catch {
+      renderList();
+      await renderDetail();
+      notice("บันทึกสถานะแล้ว แต่โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้า", true);
+      return;
+    }
+    notice(desired ? "เปิดขายสินค้าแล้ว" : "พักขายสินค้าแล้ว");
+  } catch {
+    notice("บันทึกสถานะไม่สำเร็จ กรุณาตรวจสอบการเชื่อมต่อและรีเฟรชหน้า", true);
+  } finally {
+    changingAvailability = false;
+    byId("toggle-availability").disabled = false;
+  }
+});
 document.querySelectorAll("[data-open]").forEach((button) => {
   button.addEventListener("click", () => {
     const dialog = byId(button.dataset.open);
