@@ -138,6 +138,7 @@ test("owner pauses and reactivates a product across checkout and offline reload"
   await context.setOffline(true);
   await page.reload();
   await expect(page.locator("#sale-connection")).toContainText("ออฟไลน์");
+  await expect(page.locator("#sale-products-state")).toHaveText("ยังไม่มีสินค้า");
   await search.fill("W01");
   await search.press("Enter");
   await expect(page.locator("#sale-empty")).toBeVisible();
@@ -147,6 +148,7 @@ test("owner pauses and reactivates a product across checkout and offline reload"
   await page.getByRole("button", { name: "เปิดขายอีกครั้ง" }).click();
   await expect(page.locator("#availability")).toHaveText("สถานะ พร้อมขาย");
   await page.goto(pos + "/checkout");
+  await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด" })).toBeVisible();
   await search.fill("W01");
   await search.press("Enter");
   await expect(page.getByRole("textbox", { name: "จำนวน น้ำดื่ม ขวด" })).toHaveValue("1");

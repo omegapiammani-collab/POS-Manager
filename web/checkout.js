@@ -600,13 +600,13 @@ byId("sale-search").addEventListener("keydown", (event) => {
   const search = event.currentTarget;
   const code = search.value.trim();
   if (!code) return;
-  const available = products.filter((product) => product.available !== false);
-  let matches = available.filter((product) => product.code.trim() === code);
+  let matches = products.filter((product) => product.code.trim() === code);
   if (!matches.length) {
-    matches = available.filter((product) => product.code.trim().toLowerCase() === code.toLowerCase());
+    matches = products.filter((product) => product.code.trim().toLowerCase() === code.toLowerCase());
   }
   if (matches.length !== 1) return;
   const product = matches[0];
+  if (product.available === false) return;
   const unit = product.units.find((entry) => entry.name === product.base_unit);
   if (!unit) return;
   addItem(product, unit);

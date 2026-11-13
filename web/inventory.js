@@ -168,6 +168,8 @@ byId("toggle-availability").addEventListener("click", async () => {
   try {
     const result = await api(productPath(product.id) + "/availability", { available: desired });
     product.available = result.available;
+    const current = products.find((entry) => entry.id === product.id);
+    if (current) current.available = result.available;
     try {
       await refresh();
     } catch {
