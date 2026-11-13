@@ -182,8 +182,7 @@ function renderCart() {
     });
     row.append(title, label);
     if (item.issue === "price") {
-      const latestProduct = products.find((entry) => entry.id === item.product.id);
-      const latestUnit = latestProduct?.units.find((entry) => entry.id === item.unit.id);
+      const latestUnit = item.priceUnit;
       if (latestUnit) {
         const accept = element("button", "ใช้ราคาล่าสุด " + displayDecimal(latestUnit.price) + " บาท", "secondary");
         accept.type = "button";
@@ -716,6 +715,7 @@ async function loadProducts() {
         const unit = product?.units.find((entry) => entry.id === item.unit.id);
         item.issue = !product || product.available === false || !unit ? "unavailable"
           : boundedDecimal(unit.price, 6, true) !== boundedDecimal(item.unit.price, 6, true) ? "price" : null;
+        item.priceUnit = item.issue === "price" ? unit : null;
       }
       renderCart();
     }
@@ -752,6 +752,7 @@ async function acceptLatestPrice(item, shownPrice) {
     item.product = product;
     item.unit = unit;
     item.issue = null;
+    item.priceUnit = null;
     status("อัปเดตราคาแล้ว กรุณาตรวจสอบยอดชำระ");
   } finally {
     confirmingPrice = false;
