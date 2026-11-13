@@ -166,6 +166,45 @@ test("warns when the product catalog is cached until a server refresh succeeds",
   await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toBeVisible();
 });
 
+test("warns about a changed price in the cart after reconnecting", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
+  await context.setOffline(true);
+  const change = await request.post(`${pos}/products/${product.id}/units/${product.base_unit_id}/price`, {
+    data: { price: "32", expected_price: "25" },
+  });
+  expect(change.ok()).toBe(true);
+  await context.setOffline(false);
+  await expect(page.locator("#sale-cart")).toContainText("ราคาเปลี่ยนแล้ว");
+  await expect(page.getByRole("button", { name: "ปิดบิล", exact: true })).toBeDisabled();
+  await expect(page.locator("#sale-total")).toContainText("25.00");
+  await page.getByRole("button", { name: "เอา น้ำดื่ม ขวด ออก" }).click();
+  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await expect(page.locator("#sale-total")).toContainText("32.00");
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
+  await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "ใบเสร็จรับเงิน" })).toContainText("32.00");
+});
+
+test("blocks a product paused after it was placed in the cart", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
+  await context.setOffline(true);
+  expect((await request.post(`${pos}/products/${product.id}/availability`, {
+    data: { available: false },
+  })).ok()).toBe(true);
+  await context.setOffline(false);
+  await expect(page.locator("#sale-cart")).toContainText("สินค้านี้พักขาย");
+  await expect(page.getByRole("button", { name: "ปิดบิล", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "เอา น้ำดื่ม ขวด ออก" }).click();
+  await expect(page.locator("#sale-empty")).toBeVisible();
+});
+
 test("inventory history shows the Bangkok date around UTC midnight", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.route(`**/products/${product.id}/receipts`, (route) => route.fulfill({ json: [

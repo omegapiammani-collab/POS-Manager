@@ -159,6 +159,9 @@ function renderCart() {
     const row = element("li", undefined, "sale-cart-row");
     const title = element("div", item.product.name);
     title.append(element("small", item.unit.name + " · " + displayDecimal(item.unit.price) + " บาท"));
+    if (item.issue) title.append(element("small", item.issue === "price"
+      ? "ราคาเปลี่ยนแล้ว กรุณาเอาออกและเพิ่มสินค้าอีกครั้ง"
+      : "สินค้านี้พักขายหรือหน่วยขายไม่พร้อมใช้ กรุณาเอาออกจากตะกร้า", "error"));
     const label = element("label", "จำนวน");
     const input = element("input");
     input.inputMode = "decimal";
@@ -220,7 +223,7 @@ function updatePayment() {
   else balance.textContent = "ยอดชำระครบ";
 
   byId("sale-cash-all").disabled = !cart.size || total === null;
-  byId("sale-submit").disabled = staging || !cart.size || difference !== 0n || tenderInvalid
+  byId("sale-submit").disabled = staging || !cart.size || [...cart.values()].some((item) => item.issue) || difference !== 0n || tenderInvalid
     || (paid.credit > 0n && !payment.customer_id.value)
     || (paid.qr > 0n && !payment.qr_confirmed.checked);
 }
@@ -693,6 +696,15 @@ async function loadProducts() {
     catalogLoaded = true;
     setCatalogStale(!fresh || navigator.onLine === false);
     renderProducts();
+    if (fresh && navigator.onLine !== false) {
+      for (const item of cart.values()) {
+        const product = data.find((entry) => entry.id === item.product.id);
+        const unit = product?.units.find((entry) => entry.id === item.unit.id);
+        item.issue = !product || product.available === false || !unit ? "unavailable"
+          : boundedDecimal(unit.price, 6, true) !== boundedDecimal(item.unit.price, 6, true) ? "price" : null;
+      }
+      renderCart();
+    }
     if (fresh) saveSnapshot("products", data);
   } catch {
     if (request !== productsRequest) return;
