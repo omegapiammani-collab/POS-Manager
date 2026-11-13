@@ -576,9 +576,12 @@ byId("sale-search").addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.isComposing || staging) return;
   event.preventDefault();
   const search = event.currentTarget;
-  const code = search.value.trim().toLowerCase();
+  const code = search.value.trim();
   if (!code) return;
-  const matches = products.filter((product) => product.code.trim().toLowerCase() === code);
+  let matches = products.filter((product) => product.code.trim() === code);
+  if (!matches.length) {
+    matches = products.filter((product) => product.code.trim().toLowerCase() === code.toLowerCase());
+  }
   if (matches.length !== 1) return;
   const product = matches[0];
   const unit = product.units.find((entry) => entry.name === product.base_unit);
