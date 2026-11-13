@@ -4,6 +4,7 @@ const receipt = byId("bill-receipt");
 const form = dialog.querySelector("form");
 const fields = form.elements;
 const filters = byId("bill-filters");
+const downloadButton = byId("bill-download");
 const methods = { cash: "เงินสด", qr: "โอนผ่าน QR", credit: "เงินเชื่อ" };
 const excessActions = {
   refund_cash: "บันทึกคืนเงินสด",
@@ -19,6 +20,7 @@ const businessDateFormat = new Intl.DateTimeFormat("sv-SE", {
   year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Bangkok",
 });
 let bills = [];
+let displayedBills = [];
 let catalog = new Map();
 let customers = [];
 let pending = restorePending();
@@ -76,6 +78,11 @@ function moneyText(value) {
 function dateText(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : dateFormat.format(date);
+}
+
+function businessDay(bill) {
+  const date = new Date(bill.sold_at ?? bill.created_at);
+  return Number.isNaN(date.getTime()) ? "" : businessDateFormat.format(date);
 }
 
 function message(text, error = false) {
@@ -137,11 +144,11 @@ function renderList(clearSelection = false) {
       return false;
     }
     if (!from && !to) return true;
-    const date = new Date(bill.sold_at ?? bill.created_at);
-    if (Number.isNaN(date.getTime())) return false;
-    const day = businessDateFormat.format(date);
-    return (!from || day >= from) && (!to || day <= to);
+    const day = businessDay(bill);
+    return day && (!from || day >= from) && (!to || day <= to);
   });
+  displayedBills = matches;
+  downloadButton.disabled = listState !== "ready" || !matches.length || Boolean(pending) || sending;
   if (clearSelection && !pending && selectedId && !matches.some((bill) => bill.id === selectedId)) {
     selectedId = null;
     message("");
@@ -171,6 +178,26 @@ function renderList(clearSelection = false) {
   else if (listState === "loading") state.textContent = "กำลังโหลดบิล…";
   else if (invalidRange) state.textContent = "วันที่เริ่มต้นต้องไม่อยู่หลังวันที่สิ้นสุด";
   else state.textContent = query || from || to || status || payment ? "ไม่พบบิลที่ตรงกับตัวกรอง" : "ยังไม่มีบิล";
+}
+
+function downloadBills() {
+  if (downloadButton.disabled) return;
+  const { cell, download } = window.PosCsv;
+  const amount = (value) => {
+    const cents = decimal(value, 2, true);
+    return cents === null ? "" : amountString(cents);
+  };
+  const headers = [
+    "เลขอ้างอิง", "วันที่ขาย", "สถานะบิล", "ลูกค้า", "ยอดรวม (บาท)",
+    "เงินสด (บาท)", "โอนผ่าน QR (บาท)", "เงินเชื่อ (บาท)", "เลขบิลทดแทน",
+  ];
+  const rows = displayedBills.map((bill) => [
+    bill.id, businessDay(bill), bill.status === "voided" ? "ยกเลิกแล้ว" : "บิลปกติ",
+    cell(bill.customer_name, true), amount(bill.total),
+    amount(bill.payments.cash), amount(bill.payments.qr), amount(bill.payments.credit),
+    bill.replacement_id ?? "",
+  ]);
+  download("bill-history.csv", [headers, ...rows]);
 }
 
 function line(left, right) {
@@ -553,6 +580,7 @@ async function submitPending() {
 
 filters.addEventListener("input", () => renderList(true));
 filters.addEventListener("submit", (event) => event.preventDefault());
+downloadButton.addEventListener("click", downloadBills);
 byId("bill-filter-clear").addEventListener("click", () => {
   filters.reset();
   renderList(true);

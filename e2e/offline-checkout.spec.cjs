@@ -62,10 +62,11 @@ async function sellOne(page) {
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
 }
 
-async function downloadCsv(page, label, filename) {
+async function downloadCsv(page, label, filename, { touch = false } = {}) {
+  const button = page.getByRole("button", { name: label, exact: true });
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("button", { name: label, exact: true }).tap(),
+    touch ? button.tap() : button.click(),
   ]);
   expect(download.suggestedFilename()).toBe(filename);
   const contents = await readFile(await download.path());
@@ -202,11 +203,11 @@ for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 
           const from = await page.locator('#report-filters input[name="from"]').inputValue();
           const to = await page.locator('#report-filters input[name="to"]').inputValue();
           const dateRange = `${from}-to-${to}`;
-          const dailyCsv = await downloadCsv(page, "ดาวน์โหลดรายวัน (CSV)", `sales-daily-${dateRange}.csv`);
+          const dailyCsv = await downloadCsv(page, "ดาวน์โหลดรายวัน (CSV)", `sales-daily-${dateRange}.csv`, { touch: true });
           expect(dailyCsv).toMatch(/^(?:วันที่|"วันที่"),/);
           expect(dailyCsv).toMatch(/(?:^|,)("?)25\.00\1(?:,|\r?$)/m);
 
-          const productCsv = await downloadCsv(page, "ดาวน์โหลดรายสินค้า (CSV)", `sales-products-${dateRange}.csv`);
+          const productCsv = await downloadCsv(page, "ดาวน์โหลดรายสินค้า (CSV)", `sales-products-${dateRange}.csv`, { touch: true });
           expect(productCsv).toMatch(/^(?:สินค้า|"สินค้า"),/);
           expect(productCsv).toMatch(/(?:^|,)("?)25\.00\1(?:,|\r?$)/m);
           expect(productCsv).toMatch(/(?:^|,)("?)'=1\+1\1(?:,|\r?$)/m);
@@ -379,13 +380,13 @@ test("filters bill history by inclusive Bangkok sale dates and status", async ({
   await expect(rows.first()).toContainText(online.id);
 });
 
-test("filters bill history by payment method including split payments", async ({ page, request, pos }) => {
+test("filters bill history by payment method and exports matching bills", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   const restock = await request.post(`${pos}/products/${product.id}/receipts`, {
     data: { unit_id: product.base_unit_id, quantity: "4", unit_cost: "12" },
   });
   expect(restock.status()).toBe(201);
-  const customerName = "ลูกค้าเงินเชื่อทดสอบ";
+  const customerName = '=ลูกค้า,"ทดสอบ"';
   const createdCustomer = await request.post(pos + "/customers", { data: { name: customerName } });
   expect(createdCustomer.status()).toBe(201);
   const customer = await createdCustomer.json();
@@ -420,6 +421,9 @@ test("filters bill history by payment method including split payments", async ({
   const status = page.getByLabel("สถานะบิล", { exact: true });
   const to = page.getByLabel("ถึงวันที่", { exact: true });
   const search = page.getByRole("searchbox", { name: "ค้นหาบิล" });
+  const exportLabel = "ดาวน์โหลด CSV";
+  const exportButton = page.getByRole("button", { name: exportLabel, exact: true });
+  const csvHeader = "เลขอ้างอิง,วันที่ขาย,สถานะบิล,ลูกค้า,ยอดรวม (บาท),เงินสด (บาท),โอนผ่าน QR (บาท),เงินเชื่อ (บาท),เลขบิลทดแทน";
   const expectBills = async (...bills) => {
     await expect(rows).toHaveCount(bills.length);
     for (const bill of bills) await expect(rows.filter({ hasText: bill.id })).toBeVisible();
@@ -436,15 +440,27 @@ test("filters bill history by payment method including split payments", async ({
   await expectBills(splitBill, voidedBill);
   await status.selectOption("voided");
   await expectBills(voidedBill);
+  const voidedCsv = await downloadCsv(page, exportLabel, "bill-history.csv");
+  expect(voidedCsv.trimEnd().split(/\r?\n/)).toEqual([
+    csvHeader,
+    `${voidedBill.id},2025-06-15,ยกเลิกแล้ว,,25.00,15.00,10.00,0.00,`,
+  ]);
   await to.fill("2025-06-14");
   await expectBills();
+  await expect(exportButton).toBeDisabled();
   await status.selectOption("active");
   await search.fill(customerName);
   await expectBills(splitBill);
+  const splitCsv = await downloadCsv(page, exportLabel, "bill-history.csv");
+  expect(splitCsv.trimEnd().split(/\r?\n/)).toEqual([
+    csvHeader,
+    `${splitBill.id},2025-06-14,บิลปกติ,"'=ลูกค้า,""ทดสอบ""",25.00,5.00,10.00,10.00,`,
+  ]);
   await search.fill(cashBill.id);
   await expectBills();
 
   await page.getByRole("button", { name: "ล้างตัวกรอง", exact: true }).click();
   await expect(payment).toHaveValue("");
   await expectBills(cashBill, qrBill, creditBill, splitBill, voidedBill);
+  await expect(exportButton).toBeEnabled();
 });

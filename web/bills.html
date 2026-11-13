@@ -6,6 +6,7 @@
   <title>ประวัติบิล | POS Manager</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/csv.js"></script>
   <script defer src="/bills.js"></script>
 </head>
 <body class="bills">
@@ -51,7 +52,10 @@
             <option value="credit">เงินเชื่อ</option>
             <option value="mixed">ชำระหลายวิธี</option>
           </select>
-          <button class="secondary bill-spaced" type="button" id="bill-filter-clear">ล้างตัวกรอง</button>
+          <div class="actions bill-actions">
+            <button class="secondary" type="button" id="bill-filter-clear">ล้างตัวกรอง</button>
+            <button class="secondary" type="button" id="bill-download" disabled>ดาวน์โหลด CSV</button>
+          </div>
         </form>
         <ul id="bill-list" class="products"></ul>
         <p id="bill-list-state" class="muted" role="status">กำลังโหลดบิล…</p>

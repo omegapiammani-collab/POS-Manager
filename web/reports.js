@@ -127,31 +127,17 @@ const productColumns = [
   ["ยอดขาย (บาท)", "revenue"], ["ต้นทุนขาย (บาท)", "cost"], ["กำไรขั้นต้น (บาท)", "gross_profit"],
 ];
 
-function csvCell(value, userText = false) {
-  let cell = String(value ?? "");
-  // Protect spreadsheet users when product names or units resemble formulas.
-  if (userText && /^[\s\u0000-\u001f]*[=+\-@＝＋－＠]|^[\t\r\n]/u.test(cell)) cell = "'" + cell;
-  return /[",\r\n]/.test(cell) ? '"' + cell.replaceAll('"', '""') + '"' : cell;
-}
-
 function downloadReport(group, fileType, columns) {
   if (!displayedReport || results.hidden) return;
   const { from, to } = displayedReport;
-  const headers = [...columns.map(([title]) => csvCell(title)),
+  const { cell, download } = window.PosCsv;
+  const headers = [...columns.map(([title]) => cell(title)),
     "วันเริ่มต้น", "วันสิ้นสุด", "บิลรอปรับต้นทุน", "บิลขาดข้อมูลต้นทุน", "สถานะต้นทุน"];
   const rows = displayedReport[group].map((row) => [
-    ...columns.map(([, field, userText]) => csvCell(row[field], userText)),
-    from, to, row.pending_cost_bills, row.unknown_cost_bills, csvCell(costLabel(row)),
-  ].join(","));
-  const contents = "\uFEFF" + [headers.join(","), ...rows].join("\r\n") + "\r\n";
-  const url = URL.createObjectURL(new Blob([contents], { type: "text/csv;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "sales-" + fileType + "-" + from + "-to-" + to + ".csv";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+    ...columns.map(([, field, userText]) => cell(row[field], userText)),
+    from, to, row.pending_cost_bills, row.unknown_cost_bills, cell(costLabel(row)),
+  ]);
+  download("sales-" + fileType + "-" + from + "-to-" + to + ".csv", [headers, ...rows]);
 }
 
 byId("report-download-days").addEventListener("click", () => downloadReport("days", "daily", dailyColumns));
