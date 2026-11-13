@@ -23,7 +23,10 @@
     <p id="sale-message" class="sale-message" role="status" hidden></p>
     <div class="workspace">
       <section class="panel" aria-labelledby="sale-products-title">
-        <h2 id="sale-products-title">เลือกสินค้า</h2>
+        <div class="sale-picker-heading">
+          <h2 id="sale-products-title">เลือกสินค้า</h2>
+          <a class="pos-link sale-cart-jump" href="#sale-cart-title">ไปตะกร้าสินค้า</a>
+        </div>
         <fieldset id="sale-picker">
           <label>ค้นหาสินค้า<input id="sale-search" type="search" placeholder="ค้นด้วยชื่อหรือรหัสสินค้า"></label>
           <ul id="sale-products" class="sale-list"></ul>
@@ -31,7 +34,7 @@
         </fieldset>
       </section>
       <section class="panel" aria-labelledby="sale-cart-title">
-        <h2 id="sale-cart-title">ตะกร้าสินค้า</h2>
+        <h2 id="sale-cart-title" tabindex="-1">ตะกร้าสินค้า</h2>
         <fieldset id="sale-cart-fields">
           <ul id="sale-cart" class="sale-list"></ul>
           <p id="sale-empty" class="muted">ยังไม่มีสินค้าในตะกร้า</p>

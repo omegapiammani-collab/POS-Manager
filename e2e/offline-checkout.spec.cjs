@@ -127,3 +127,58 @@ test("offline bill survives reload and syncs once after another device sells the
       expect.objectContaining({ id: product.id, quantity: "-1" }),
     ]);
   });
+
+for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 }]) {
+  test(`checkout and reports fit a touch viewport of ${viewport.width}px`,
+    async ({ browser, request, pos }) => {
+      await createProduct(request, pos);
+      if (viewport.width <= 720) {
+        for (let index = 0; index < 12; index++) {
+          const response = await request.post(pos + "/products", {
+            data: { code: "EX" + index, name: "สินค้าทดสอบ " + index, base_unit: "ชิ้น", price: "10" },
+          });
+          expect(response.status()).toBe(201);
+        }
+      }
+      const context = await browser.newContext({ viewport, hasTouch: true, isMobile: true });
+      try {
+        const page = await context.newPage();
+        const fitsViewport = () => page.evaluate(() =>
+          document.documentElement.scrollWidth <= document.documentElement.clientWidth
+        );
+
+        await page.goto(pos + "/checkout");
+        const search = page.getByRole("searchbox", { name: "ค้นหาสินค้า" });
+        await search.fill("W01");
+        await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).tap();
+        if (viewport.width <= 720) {
+          await search.clear();
+          await expect(page.locator("#sale-products > li")).toHaveCount(13);
+          await page.getByRole("link", { name: "ไปตะกร้าสินค้า" }).tap();
+          await expect(page.getByRole("heading", { name: "ตะกร้าสินค้า" })).toBeFocused();
+        }
+        await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).tap();
+        await page.getByRole("button", { name: "ปิดบิล", exact: true }).tap();
+        const receipt = page.getByRole("dialog", { name: "ใบเสร็จรับเงิน" });
+        await expect(receipt).toBeVisible();
+        await expect(receipt).toContainText("25.00");
+        expect(await fitsViewport()).toBe(true);
+        await receipt.getByRole("button", { name: "ข้ามการพิมพ์" }).tap();
+
+        await page.getByRole("link", { name: "รายงานยอดขาย" }).tap();
+        await expect(page.locator("#report-summary")).toContainText("25.00");
+        await expect(page.locator("#report-products")).toContainText("น้ำดื่ม");
+        const daily = page.getByRole("region", { name: "ยอดขายรายวัน" });
+        await expect(daily).toBeVisible();
+        expect(await fitsViewport()).toBe(true);
+        expect(await daily.evaluate((region) => {
+          region.scrollLeft = region.scrollWidth;
+          const lastColumn = region.querySelector("thead th:last-child");
+          return region.scrollLeft > 0
+            && lastColumn.getBoundingClientRect().right <= region.getBoundingClientRect().right + 1;
+        })).toBe(true);
+      } finally {
+        await context.close();
+      }
+    });
+}

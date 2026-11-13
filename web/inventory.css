@@ -201,3 +201,25 @@ dialog .error { margin-top: 12px; padding: 8px; }
 .backup-confirm input { width: 20px; min-height: 20px; flex: 0 0 auto; }
 .backup #backup-queue-selected { overflow-wrap: anywhere; }
 .backup #backup-queue-message.error { padding: 8px; }
+
+/* Keep the cart reachable while scrolling a long product list on a phone. */
+.checkout .sale-cart-jump { display: none; }
+@media (max-width: 720px) {
+  .checkout .workspace { grid-template-columns: minmax(0, 1fr); }
+  .checkout .sale-picker-heading {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px 8px;
+    background: white;
+  }
+  .checkout .sale-cart-jump {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
