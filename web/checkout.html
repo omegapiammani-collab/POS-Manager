@@ -14,6 +14,12 @@
   <main class="frame">
     <div class="page-title"><h1>ขายสินค้า</h1><nav class="actions" aria-label="เมนู POS"><a class="pos-link" href="/">สินค้าและสต๊อก</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/backup">สำรองข้อมูล</a></nav></div>
     <p id="sale-connection" class="sale-message" role="status">กำลังเชื่อมต่อ…</p>
+    <section class="panel sale-pending" aria-labelledby="sale-storage-title">
+      <h2 id="sale-storage-title">พื้นที่เก็บบิลออฟไลน์</h2>
+      <p id="sale-storage-status" class="muted" role="status">กำลังตรวจสอบ…</p>
+      <button id="sale-storage-persist" class="secondary" type="button" hidden>ขอเก็บข้อมูลถาวร</button>
+      <a class="pos-link" href="/backup">สำรองบิลในเครื่อง</a>
+    </section>
     <section id="sale-pending" class="panel sale-pending" aria-labelledby="sale-queue-title" hidden>
       <h2 id="sale-queue-title">บิลในเครื่องนี้</h2>
       <p id="sale-queue-summary" class="muted" role="status"></p>

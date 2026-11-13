@@ -658,6 +658,38 @@ async function loadCustomers() {
   }
 }
 
+const storageStatus = byId("sale-storage-status");
+const persistButton = byId("sale-storage-persist");
+async function checkStorage() {
+  if (!navigator.storage?.persisted || !navigator.storage?.persist) {
+    storageStatus.textContent = "เบราว์เซอร์นี้ไม่รองรับการขอเก็บข้อมูลถาวร กรุณาสำรองบิลในเครื่อง";
+    persistButton.hidden = true;
+    return;
+  }
+  try {
+    const persistent = await navigator.storage.persisted();
+    storageStatus.textContent = persistent
+      ? "เบราว์เซอร์อนุญาตให้เก็บข้อมูลถาวรแล้ว การล้างข้อมูลเว็บไซต์ยังลบบิลในเครื่องได้"
+      : "ยังไม่ได้รับอนุญาตให้เก็บข้อมูลถาวร กรุณาสำรองบิลในเครื่อง";
+    persistButton.hidden = persistent;
+  } catch {
+    storageStatus.textContent = "ตรวจสอบพื้นที่เก็บข้อมูลไม่ได้ กรุณาสำรองบิลในเครื่อง";
+    persistButton.hidden = true;
+  }
+}
+persistButton?.addEventListener("click", async () => {
+  persistButton.disabled = true;
+  try {
+    await navigator.storage.persist();
+    await checkStorage();
+  } catch {
+    storageStatus.textContent = "ขอเก็บข้อมูลถาวรไม่สำเร็จ กรุณาสำรองบิลในเครื่อง";
+  } finally {
+    persistButton.disabled = false;
+  }
+});
+if (storageStatus && persistButton) checkStorage();
+
 window.addEventListener("online", () => {
   setConnected(true);
   loadProducts();
