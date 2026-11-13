@@ -41,7 +41,10 @@ function money(value) {
 }
 
 function dateText(value) {
-  const date = new Date(value);
+  // SQLite CURRENT_TIMESTAMP is UTC, but has no timezone suffix.
+  const utcValue = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? value.replace(" ", "T") + "Z" : value;
+  const date = new Date(utcValue);
   return Number.isNaN(date.getTime()) ? value : dateFormat.format(date);
 }
 

@@ -96,6 +96,33 @@ test("debt history shows the offline sale time in Bangkok", async ({ page, pos }
   await expect(page.locator("#debt-bills li").nth(1)).toContainText(expected[1]);
 });
 
+test("debt dates use Bangkok time regardless of browser timezone", async ({ browser, pos }) => {
+  const formatter = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" });
+  const expected = formatter.format(new Date("2026-11-01T17:00:00Z"));
+  for (const timezoneId of ["UTC", "Asia/Bangkok", "America/Los_Angeles"]) {
+    const context = await browser.newContext({ timezoneId });
+    try {
+      const page = await context.newPage();
+      await page.route("**/customer-debts", (route) => route.fulfill({ json: [
+        { id: "customer", name: "ลูกค้า ก", outstanding: "20.00" },
+      ] }));
+      await page.route("**/customers/customer/debt", (route) => route.fulfill({ json: {
+        id: "customer", name: "ลูกค้า ก", outstanding: "20.00", bills: [
+          { id: "online", created_at: "2026-11-01 17:00:00", sold_at: null, credit: "10.00", paid: "0.00", outstanding: "10.00" },
+          { id: "offline", created_at: "2026-11-05 05:00:00", sold_at: "2026-11-01T17:00:00.000Z", credit: "10.00", paid: "0.00", outstanding: "10.00" },
+        ], repayments: [{ id: "repayment", created_at: "2026-11-01 17:00:00", amount: "5.00", method: "cash", note: "", allocations: [] }],
+      } }));
+      await page.goto(pos + "/debts");
+      await page.getByRole("button", { name: /ลูกค้า ก/ }).click();
+      await expect(page.locator("#debt-bills li").nth(0)).toContainText(expected);
+      await expect(page.locator("#debt-bills li").nth(1)).toContainText(expected);
+      await expect(page.locator("#debt-history > li")).toContainText(expected);
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   test("shows offline storage status when persistence is " + scenario, async ({ page, request, pos }) => {
     await createProduct(request, pos);
