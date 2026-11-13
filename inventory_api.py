@@ -91,6 +91,56 @@ def check_product(db, product_id):
         raise RequestError(404, "Product not found")
 
 
+def product_details(data):
+    if not isinstance(data, dict):
+        raise ValueError("Product details must be an object")
+    return (
+        required_text(data, "code"), required_text(data, "name"),
+        decimal_field(data, "minimum_quantity"),
+    )
+
+
+def edit_product(db, product_id, data):
+    desired = product_details(data)
+    expected = product_details(data.get("expected"))
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        check_product(db, product_id)
+        row = db.execute(
+            "SELECT code, name, minimum_quantity FROM products WHERE id = ?", (product_id,),
+        ).fetchone()
+        current = (row["code"], row["name"], Decimal(row["minimum_quantity"]))
+        if current == desired:
+            return {"id": product_id}
+        if current != expected:
+            raise SaleConflict("product_changed", "Product details changed since they were loaded")
+        code, name, minimum = desired
+        db.execute(
+            "UPDATE products SET code = ?, name = ?, minimum_quantity = ? WHERE id = ?",
+            (code, name, str(minimum), product_id),
+        )
+    return {"id": product_id}
+
+
+def edit_unit_price(db, product_id, unit_id, data):
+    desired = decimal_field(data, "price")
+    expected = decimal_field(data, "expected_price")
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT price FROM units WHERE product_id = ? AND id = ?", (product_id, unit_id),
+        ).fetchone()
+        if row is None:
+            raise RequestError(404, "Unit not found")
+        current = Decimal(row["price"])
+        if current == desired:
+            return {"id": unit_id, "price": row["price"]}
+        if current != expected:
+            raise SaleConflict("price_changed", "Unit price changed since it was loaded")
+        db.execute("UPDATE units SET price = ? WHERE id = ?", (str(desired), unit_id))
+    return {"id": unit_id, "price": str(desired)}
+
+
 class InventoryHandler(BaseHTTPRequestHandler):
     def __init__(self, *args, database, **kwargs):
         self.database = database
@@ -219,6 +269,12 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 decimal_field(data, "minimum_quantity", default=0),
             )
             return 201, {"id": product_id, "base_unit_id": unit_id}
+
+        if parts[0] == "products" and self.command == "POST":
+            if len(parts) == 3 and parts[2] == "edit":
+                return 200, edit_product(db, parts[1], self.read_json())
+            if len(parts) == 5 and parts[2] == "units" and parts[4] == "price":
+                return 200, edit_unit_price(db, parts[1], parts[3], self.read_json())
 
         if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts"}:
             raise RequestError(404, "Route not found")

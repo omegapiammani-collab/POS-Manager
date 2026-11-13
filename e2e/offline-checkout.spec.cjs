@@ -209,3 +209,29 @@ for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 
       }
     });
 }
+
+test("edits inventory and uses the new price at checkout", async ({ page, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/");
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await page.getByRole("button", { name: "แก้ไขสินค้า", exact: true }).click();
+  const edit = page.getByRole("dialog", { name: "แก้ไขสินค้า" });
+  await edit.getByLabel("ชื่อสินค้า").fill("น้ำแร่");
+  await edit.getByLabel("รหัสสินค้า").fill("W02");
+  await edit.getByRole("button", { name: "บันทึกสินค้า" }).click();
+  await expect(page.locator("#detail-title")).toHaveText("น้ำแร่");
+
+  await page.getByRole("button", { name: "แก้ไขราคา ขวด" }).click();
+  const price = page.getByRole("dialog", { name: "แก้ไขราคาขาย" });
+  await price.getByLabel("ราคาขายต่อหน่วย (บาท)").fill("32");
+  await price.getByRole("button", { name: "บันทึกราคาขาย" }).click();
+  await expect(page.locator("#units")).toContainText("32 บาท");
+
+  await page.goto(pos + "/checkout");
+  await page.getByRole("searchbox", { name: "ค้นหาสินค้า" }).fill("W02");
+  await page.getByRole("button", { name: "เพิ่ม น้ำแร่ ขวด" }).click();
+  await expect(page.locator("#sale-total")).toContainText("32.00");
+  await page.getByRole("button", { name: "เงินสดเต็มจำนวน" }).click();
+  await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "ใบเสร็จรับเงิน" })).toContainText("32.00");
+});

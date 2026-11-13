@@ -3,6 +3,8 @@ const numberFormat = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 }
 let products = [];
 let selectedId = null;
 let historyRequest = 0;
+let editingProduct;
+let editingUnit;
 
 const format = (value) => numberFormat.format(Number(value));
 const productPath = (id) => "/products/" + encodeURIComponent(id);
@@ -85,6 +87,8 @@ async function renderDetail() {
   byId("detail-title").textContent = product?.name ?? "รายละเอียดสินค้า";
   if (!product) return;
   byId("code").textContent = product.code;
+  byId("minimum-quantity").textContent =
+    "แจ้งเตือนเมื่อเหลือไม่เกิน " + format(product.minimum_quantity) + " " + product.base_unit;
   const negative = Number(product.quantity) < 0;
   byId("quantity").textContent = format(product.quantity) + " " + product.base_unit;
   byId("stock-shortage").hidden = !negative;
@@ -94,9 +98,22 @@ async function renderDetail() {
   byId("average").textContent = product.average_cost === null
     ? "ยังไม่มีต้นทุน"
     : format(product.average_cost) + " บาท / " + product.base_unit;
-  byId("units").replaceChildren(...product.units.map((unit) =>
-    line(unit.name + " · " + format(unit.multiplier) + " " + product.base_unit, format(unit.price) + " บาท")
-  ));
+  byId("units").replaceChildren(...product.units.map((unit) => {
+    const row = line(unit.name + " · " + format(unit.multiplier) + " " + product.base_unit, format(unit.price) + " บาท");
+    const price = row.lastElementChild;
+    price.className = "unit-price-actions";
+    const edit = element("button", "แก้ไขราคา");
+    edit.type = "button";
+    edit.className = "secondary";
+    edit.setAttribute("aria-label", "แก้ไขราคา " + unit.name);
+    edit.addEventListener("click", () => {
+      editingUnit = { productId: product.id, id: unit.id, price: unit.price };
+      byId("unit-price-description").textContent = product.name + " · " + unit.name;
+      openEdit("unit-price", { price: unit.price });
+    });
+    price.append(edit);
+    return row;
+  }));
   await Promise.all([
     renderHistory("receipts", product, request, "ยังไม่มีรายการรับสินค้า", "โหลดประวัติรับสินค้าไม่สำเร็จ", (row) =>
       line(format(row.quantity) + " " + row.unit_name + " · " + row.created_at.slice(0, 10),
@@ -155,10 +172,40 @@ document.querySelectorAll("[data-open]").forEach((button) => {
   });
 });
 
+function openEdit(dialogId, fields) {
+  const dialog = byId(dialogId);
+  const form = dialog.querySelector("form");
+  form.reset();
+  form.querySelector(".error").hidden = true;
+  for (const [field, value] of Object.entries(fields)) form.elements[field].value = value;
+  dialog.showModal();
+}
+
+byId("open-product-edit").addEventListener("click", () => {
+  const product = products.find((entry) => entry.id === selectedId);
+  if (!product) return;
+  const { id, code, name, minimum_quantity } = product;
+  const expected = { code, name, minimum_quantity };
+  editingProduct = { id, expected };
+  openEdit("product-edit", expected);
+});
+
 const actions = {
   product: { path: () => "/products", success: "เพิ่มสินค้าแล้ว" },
   unit: { path: () => productPath(selectedId) + "/units", success: "เพิ่มหน่วยขายแล้ว" },
   receipt: { path: () => productPath(selectedId) + "/receipts", success: "บันทึกรับสินค้าแล้ว" },
+  "product-edit": {
+    path: () => productPath(editingProduct.id) + "/edit",
+    payload: (data) => ({ ...data, expected: editingProduct.expected }),
+    success: "แก้ไขสินค้าแล้ว",
+    staleCode: "product_changed",
+  },
+  "unit-price": {
+    path: () => productPath(editingUnit.productId) + "/units/" + encodeURIComponent(editingUnit.id) + "/price",
+    payload: (data) => ({ ...data, expected_price: editingUnit.price }),
+    success: "แก้ไขราคาขายแล้ว",
+    staleCode: "price_changed",
+  },
 };
 
 document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
@@ -178,7 +225,7 @@ document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
     buttons.forEach((button) => { button.disabled = true; });
     error.hidden = true;
     try {
-      const result = await api(action.path(), data);
+      const result = await api(action.path(), action.payload ? action.payload(data) : data);
       if (dialog.id === "product") {
         selectedId = result.id;
         byId("search").value = "";
@@ -191,6 +238,16 @@ document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
         notice(action.success + " แต่โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้า", true);
       }
     } catch (failure) {
+      if (action.staleCode && failure.code === action.staleCode) {
+        dialog.close();
+        notice("ข้อมูลเปลี่ยนระหว่างแก้ไข กรุณาตรวจสอบข้อมูลล่าสุดก่อนบันทึกอีกครั้ง", true);
+        try {
+          await refresh();
+        } catch {
+          notice("โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้าก่อนแก้ไขอีกครั้ง", true);
+        }
+        return;
+      }
       error.textContent = failure instanceof TypeError
         ? "ขาดการเชื่อมต่อ กรุณาตรวจสอบรายการก่อนบันทึกซ้ำ"
         : failure.message;

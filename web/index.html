@@ -28,12 +28,13 @@
         <p id="detail-empty" class="muted">เลือกสินค้าจากรายการเพื่อดูสต๊อกและรับสินค้าเข้า</p>
         <div id="detail" hidden>
           <p id="code" class="muted"></p>
+          <p id="minimum-quantity" class="muted"></p>
           <p id="stock-shortage" class="muted" role="status" hidden></p>
           <dl class="metrics">
             <div><dt>คงเหลือ</dt><dd id="quantity"></dd></div>
             <div><dt>ต้นทุนเฉลี่ย</dt><dd id="average"></dd></div>
           </dl>
-          <div class="actions"><button data-open="receipt">รับสินค้า</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button><button type="button" class="secondary" id="open-stock-count">ปรับยอดจากการตรวจนับ</button></div>
+          <div class="actions"><button data-open="receipt">รับสินค้า</button><button type="button" class="secondary" id="open-product-edit">แก้ไขสินค้า</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button><button type="button" class="secondary" id="open-stock-count">ปรับยอดจากการตรวจนับ</button></div>
           <h3>หน่วยขาย</h3>
           <ul id="units" class="lines"></ul>
           <h3>ประวัติรับสินค้า</h3>
@@ -54,6 +55,25 @@
       <label>แจ้งเตือนเมื่อคงเหลือไม่เกิน<input name="minimum_quantity" type="number" min="0" max="1000000000" step="0.000001" value="0"></label>
       <p class="error" role="alert" hidden></p>
       <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกสินค้า</button></div>
+    </form>
+  </dialog>
+  <dialog id="product-edit" aria-labelledby="product-edit-title">
+    <form>
+      <h2 id="product-edit-title">แก้ไขสินค้า</h2>
+      <label>รหัสสินค้า<input name="code" required maxlength="120"></label>
+      <label>ชื่อสินค้า<input name="name" required maxlength="120"></label>
+      <label>แจ้งเตือนเมื่อคงเหลือไม่เกิน<input name="minimum_quantity" type="number" required min="0" max="1000000000" step="0.000001"></label>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกสินค้า</button></div>
+    </form>
+  </dialog>
+  <dialog id="unit-price" aria-labelledby="unit-price-title">
+    <form>
+      <h2 id="unit-price-title">แก้ไขราคาขาย</h2>
+      <p id="unit-price-description" class="muted"></p>
+      <label>ราคาขายต่อหน่วย (บาท)<input name="price" type="number" required min="0" max="1000000000" step="0.000001"></label>
+      <p class="error" role="alert" hidden></p>
+      <div class="actions"><button type="button" class="secondary" data-close>ยกเลิก</button><button>บันทึกราคาขาย</button></div>
     </form>
   </dialog>
   <dialog id="unit">

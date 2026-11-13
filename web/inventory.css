@@ -223,3 +223,5 @@ dialog .error { margin-top: 12px; padding: 8px; }
     min-height: 44px;
   }
 }
+
+.unit-price-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 6px 10px; }
