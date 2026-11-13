@@ -31,7 +31,19 @@
     <div class="workspace">
       <section class="panel" aria-labelledby="bill-list-title">
         <h2 id="bill-list-title">รายการบิล</h2>
-        <label>ค้นหาบิล<input id="bill-search" type="search" placeholder="ค้นด้วยเลขอ้างอิงหรือชื่อลูกค้า"></label>
+        <form id="bill-filters" role="search" aria-label="ค้นหาและกรองบิล">
+          <label>ค้นหาบิล<input name="query" type="search" placeholder="ค้นด้วยเลขอ้างอิงหรือชื่อลูกค้า"></label>
+          <div class="bill-filter-dates">
+            <label>ตั้งแต่วันที่<input name="from" type="date"></label>
+            <label>ถึงวันที่<input name="to" type="date"></label>
+          </div>
+          <label>สถานะบิล<select name="status">
+            <option value="">ทุกสถานะ</option>
+            <option value="active">บิลปกติ</option>
+            <option value="voided">ยกเลิกแล้ว</option>
+          </select></label>
+          <button class="secondary bill-spaced" type="button" id="bill-filter-clear">ล้างตัวกรอง</button>
+        </form>
         <ul id="bill-list" class="products"></ul>
         <p id="bill-list-state" class="muted" role="status">กำลังโหลดบิล…</p>
       </section>

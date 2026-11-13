@@ -307,3 +307,74 @@ test("reprints original receipt values and labels a voided bill", async ({ page,
   await print.click();
   expect(await page.evaluate(() => window.printCount)).toBe(1);
 });
+
+test("filters bill history by inclusive Bangkok sale dates and status", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const restock = await request.post(`${pos}/products/${product.id}/receipts`, {
+    data: { unit_id: product.base_unit_id, quantity: "4", unit_cost: "12" },
+  });
+  expect(restock.status()).toBe(201);
+
+  const recordBill = async (soldAt) => {
+    const response = await request.post(pos + (soldAt ? "/offline-sales" : "/sales"), {
+      data: {
+        id: randomUUID(),
+        items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+        payments: { cash: "25", qr: "0", credit: "0" },
+        qr_confirmed: false,
+        ...(soldAt ? { sold_at: soldAt } : {}),
+      },
+    });
+    expect(response.status()).toBe(201);
+    return response.json();
+  };
+  // Bangkok midnight is at 17:00 UTC on the previous day.
+  const previous = await recordBill("2025-06-13T16:59:59.999Z");
+  const first = await recordBill("2025-06-13T17:00:00.000Z");
+  const last = await recordBill("2025-06-14T16:59:59.999Z");
+  const next = await recordBill("2025-06-14T17:00:00.000Z");
+  const online = await recordBill();
+  const cancellation = await request.post(`${pos}/sales/${last.id}/corrections`, {
+    data: { id: randomUUID(), reason: "ยกเลิกบิลทดสอบ" },
+  });
+  expect(cancellation.status()).toBe(201);
+
+  await page.goto(pos + "/bills");
+  const rows = page.locator("#bill-list").getByRole("button");
+  const from = page.getByLabel("ตั้งแต่วันที่", { exact: true });
+  const to = page.getByLabel("ถึงวันที่", { exact: true });
+  const status = page.getByLabel("สถานะบิล", { exact: true });
+  const search = page.getByRole("searchbox", { name: "ค้นหาบิล" });
+  await expect(rows).toHaveCount(5);
+
+  await from.fill("2025-06-14");
+  await to.fill("2025-06-14");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText(last.id);
+  await expect(rows.nth(1)).toContainText(first.id);
+
+  await status.selectOption("active");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText(first.id);
+  await search.fill(last.id);
+  await expect(rows).toHaveCount(0);
+  await status.selectOption("voided");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText(last.id);
+
+  await page.getByRole("button", { name: "ล้างตัวกรอง", exact: true }).click();
+  await expect(search).toHaveValue("");
+  await expect(rows).toHaveCount(5);
+  for (const bill of [previous, next, online]) {
+    await expect(rows.filter({ hasText: bill.id })).toBeVisible();
+  }
+
+  const onlineDay = new Date(Date.parse(online.created_at) + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await from.fill(onlineDay);
+  await to.fill("2025-06-14");
+  await expect(page.locator("#bill-list-state")).toHaveText("วันที่เริ่มต้นต้องไม่อยู่หลังวันที่สิ้นสุด");
+  await expect(rows).toHaveCount(0);
+  await to.fill(onlineDay);
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText(online.id);
+});

@@ -3,6 +3,7 @@ const dialog = byId("bill-correction");
 const receipt = byId("bill-receipt");
 const form = dialog.querySelector("form");
 const fields = form.elements;
+const filters = byId("bill-filters");
 const methods = { cash: "เงินสด", qr: "โอนผ่าน QR", credit: "เงินเชื่อ" };
 const excessActions = {
   refund_cash: "บันทึกคืนเงินสด",
@@ -14,6 +15,9 @@ const numberFormat = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 }
 const dateFormat = new Intl.DateTimeFormat("th-TH", {
   dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok",
 });
+const businessDateFormat = new Intl.DateTimeFormat("sv-SE", {
+  year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Bangkok",
+});
 let bills = [];
 let catalog = new Map();
 let customers = [];
@@ -21,7 +25,7 @@ let pending = restorePending();
 let selectedId = pending?.saleId ?? null;
 let sending = false;
 let opening = false;
-let loadingList = true;
+let listState = "loading";
 let editing = false;
 let cart = new Map();
 let nextLine = 0;
@@ -114,11 +118,28 @@ function selectBill(id) {
   renderDetail();
 }
 
-function renderList() {
-  const query = byId("bill-search").value.trim().toLowerCase();
-  const matches = bills.filter((bill) =>
-    bill.id.toLowerCase().includes(query) || (bill.customer_name ?? "").toLowerCase().includes(query)
-  );
+function renderList(clearSelection = false) {
+  const query = filters.elements.query.value.trim().toLowerCase();
+  const from = filters.elements.from.value;
+  const to = filters.elements.to.value;
+  const status = filters.elements.status.value;
+  const invalidRange = from && to && from > to;
+  const matches = invalidRange ? [] : bills.filter((bill) => {
+    if (status && bill.status !== status) return false;
+    if (!bill.id.toLowerCase().includes(query) && !(bill.customer_name ?? "").toLowerCase().includes(query)) {
+      return false;
+    }
+    if (!from && !to) return true;
+    const date = new Date(bill.sold_at ?? bill.created_at);
+    if (Number.isNaN(date.getTime())) return false;
+    const day = businessDateFormat.format(date);
+    return (!from || day >= from) && (!to || day <= to);
+  });
+  if (clearSelection && !pending && selectedId && !matches.some((bill) => bill.id === selectedId)) {
+    selectedId = null;
+    message("");
+    renderDetail();
+  }
   byId("bill-list").replaceChildren(...matches.map((bill) => {
     const row = element("li");
     const button = element("button");
@@ -138,8 +159,11 @@ function renderList() {
     return row;
   }));
   const state = byId("bill-list-state");
-  if (!loadingList) state.textContent = query ? "ไม่พบบิลที่ตรงกับคำค้น" : "ยังไม่มีบิล";
-  state.hidden = matches.length > 0;
+  state.hidden = matches.length > 0 && listState !== "error";
+  if (listState === "error") state.textContent = "โหลดรายการบิลไม่สำเร็จ กรุณารีเฟรชหน้า";
+  else if (listState === "loading") state.textContent = "กำลังโหลดบิล…";
+  else if (invalidRange) state.textContent = "วันที่เริ่มต้นต้องไม่อยู่หลังวันที่สิ้นสุด";
+  else state.textContent = query || from || to || status ? "ไม่พบบิลที่ตรงกับตัวกรอง" : "ยังไม่มีบิล";
 }
 
 function line(left, right) {
@@ -239,12 +263,12 @@ function renderDetail() {
 async function loadBills() {
   try {
     bills = await api("/sale-history");
-    loadingList = false;
+    listState = "ready";
     renderList();
     renderDetail();
   } catch {
-    byId("bill-list-state").textContent = "โหลดรายการบิลไม่สำเร็จ กรุณารีเฟรชหน้า";
-    byId("bill-list-state").hidden = false;
+    listState = "error";
+    renderList();
   }
 }
 
@@ -516,7 +540,12 @@ async function submitPending() {
   }
 }
 
-byId("bill-search").addEventListener("input", renderList);
+filters.addEventListener("input", () => renderList(true));
+filters.addEventListener("submit", (event) => event.preventDefault());
+byId("bill-filter-clear").addEventListener("click", () => {
+  filters.reset();
+  renderList(true);
+});
 byId("bill-reprint").addEventListener("click", openReceipt);
 byId("bill-receipt-close").addEventListener("click", () => receipt.close());
 byId("bill-receipt-print").addEventListener("click", () => window.print());
