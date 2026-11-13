@@ -397,13 +397,19 @@ test("offline bill survives reload and syncs once after another device sells the
       await otherContext.close();
     }
 
-    page.on("requestfailed", (request) => {
-      if (request.url().endsWith("/offline-sales")) {
-        console.error("Offline sale request failed:", request.failure()?.errorText);
-      }
+    let attempts = 0;
+    await page.route("**/offline-sales", (route) => {
+      attempts++;
+      // Exercise the case where the online event arrives before requests work.
+      if (attempts <= 2) return route.abort("connectionfailed");
+      return route.continue();
     });
     await context.setOffline(false);
-    await expect(page.locator("#sale-message")).toContainText("สต๊อกติดลบ 1 บิล");
+    await expect(page.locator("#sale-message")).toContainText("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+    expect(await queue()).toEqual([{ payload, state: "pending", error: null }]);
+    // After the immediate retry fails, the next automatic attempt is in 10 seconds.
+    await expect(page.locator("#sale-message")).toContainText("สต๊อกติดลบ 1 บิล", { timeout: 25000 });
+    expect(attempts).toBeGreaterThanOrEqual(3);
     await expect(page.locator("#sale-pending")).toBeHidden();
     expect(await queue()).toEqual([]);
 
