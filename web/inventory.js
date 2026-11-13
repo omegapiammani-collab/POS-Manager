@@ -1,5 +1,8 @@
 const byId = (id) => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 });
+const historyDateFormat = new Intl.DateTimeFormat("sv-SE", {
+  year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Bangkok",
+});
 let products = [];
 let displayedProducts = [];
 let selectedId = null;
@@ -9,6 +12,11 @@ let editingUnit;
 let changingAvailability = false;
 
 const format = (value) => numberFormat.format(Number(value));
+// SQLite CURRENT_TIMESTAMP has no zone suffix but is in UTC.
+function historyDate(value) {
+  const timestamp = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+  return Number.isNaN(timestamp.getTime()) ? value.slice(0, 10) : historyDateFormat.format(timestamp);
+}
 const productPath = (id) => "/products/" + encodeURIComponent(id);
 
 async function api(path, data) {
@@ -134,7 +142,7 @@ async function renderDetail() {
   }));
   await Promise.all([
     renderHistory("receipts", product, request, "ยังไม่มีรายการรับสินค้า", "โหลดประวัติรับสินค้าไม่สำเร็จ", (row) =>
-      line(format(row.quantity) + " " + row.unit_name + " · " + row.created_at.slice(0, 10),
+      line(format(row.quantity) + " " + row.unit_name + " · " + historyDate(row.created_at),
         format(row.unit_cost) + " บาท / " + row.unit_name)),
     renderHistory("stock-counts", product, request, "ยังไม่มีรายการปรับยอด", "โหลดประวัติปรับยอดไม่สำเร็จ", (row) =>
       stockCountRow(row, product.base_unit)),
@@ -157,7 +165,7 @@ function stockCountRow(row, unit) {
   const change = Number(row.delta) > 0 ? "+" + format(row.delta) : format(row.delta);
   const rowNode = line(format(row.expected_quantity) + " → " + format(row.counted_quantity) + " " + unit, change + " " + unit);
   const summary = rowNode.firstElementChild;
-  summary.append(element("small", row.reason + " · " + row.created_at.slice(0, 10)));
+  summary.append(element("small", row.reason + " · " + historyDate(row.created_at)));
   if (row.unit_cost != null) {
     summary.append(element("small", "ต้นทุนที่ใช้ปรับยอด " + format(row.unit_cost) + " บาท / " + unit));
   }

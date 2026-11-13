@@ -119,6 +119,20 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("inventory history shows the Bangkok date around UTC midnight", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.route(`**/products/${product.id}/receipts`, (route) => route.fulfill({ json: [
+    { quantity: "1", unit_name: "ขวด", unit_cost: "12", created_at: "2026-11-12 17:00:00" },
+  ] }));
+  await page.route(`**/products/${product.id}/stock-counts`, (route) => route.fulfill({ json: [
+    { expected_quantity: "1", counted_quantity: "2", delta: "1", reason: "ตรวจนับ", unit_cost: null, created_at: "2026-11-12T16:59:59.000Z" },
+  ] }));
+  await page.goto(pos + "/");
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await expect(page.locator("#receipts")).toContainText("2026-11-13");
+  await expect(page.locator("#stock-counts")).toContainText("2026-11-12");
+});
+
 test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/");
