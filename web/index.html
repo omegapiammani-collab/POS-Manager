@@ -20,6 +20,13 @@
       <section class="panel" aria-labelledby="list-title">
         <h2 id="list-title">รายการสินค้า</h2>
         <label class="search">ค้นหาสินค้า<input id="search" type="search" placeholder="ค้นด้วยชื่อหรือรหัสสินค้า"></label>
+        <label for="stock-filter">กรองสินค้า</label>
+        <select id="stock-filter">
+          <option value="all">สินค้าทั้งหมด</option>
+          <option value="low">สินค้าใกล้หมด</option>
+          <option value="negative">สต๊อกติดลบ</option>
+          <option value="paused">สินค้าพักขาย</option>
+        </select>
         <ul id="products" class="products"></ul>
         <p id="list-state" class="muted">กำลังโหลดสินค้า…</p>
       </section>

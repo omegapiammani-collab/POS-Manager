@@ -42,9 +42,18 @@ function notice(message, error = false) {
 
 function renderList() {
   const query = byId("search").value.trim().toLowerCase();
-  const matches = products.filter((product) =>
-    product.name.toLowerCase().includes(query) || product.code.toLowerCase().includes(query)
-  );
+  const filter = byId("stock-filter").value;
+  const matches = products.filter((product) => {
+    if (!product.name.toLowerCase().includes(query) && !product.code.toLowerCase().includes(query)) return false;
+    if (filter === "low") return product.available !== false && Number(product.quantity) >= 0 && product.low_stock;
+    if (filter === "negative") return Number(product.quantity) < 0;
+    if (filter === "paused") return product.available === false;
+    return true;
+  });
+  if (selectedId && !matches.some((product) => product.id === selectedId)) {
+    selectedId = null;
+    renderDetail();
+  }
   byId("products").replaceChildren(...matches.map((product) => {
     const item = document.createElement("li");
     const button = element("button", "");
@@ -71,7 +80,7 @@ function renderList() {
     return item;
   }));
   const state = byId("list-state");
-  state.textContent = query ? "ไม่พบสินค้าที่ตรงกับคำค้น" : "ยังไม่มีสินค้า";
+  state.textContent = query || filter !== "all" ? "ไม่พบสินค้าที่ตรงกับตัวกรอง" : "ยังไม่มีสินค้า";
   state.hidden = matches.length > 0;
 }
 
@@ -158,6 +167,7 @@ async function refresh() {
 }
 
 byId("search").addEventListener("input", renderList);
+byId("stock-filter").addEventListener("change", renderList);
 byId("toggle-availability").addEventListener("click", async () => {
   const product = products.find((entry) => entry.id === selectedId);
   if (!product || changingAvailability) return;

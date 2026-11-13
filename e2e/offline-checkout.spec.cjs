@@ -119,6 +119,58 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("filters inventory by stock and availability together with search", async ({ page, request, pos }) => {
+  const create = async (code, name) => {
+    const response = await request.post(pos + "/products", {
+      data: { code, name, base_unit: "ชิ้น", price: "10", minimum_quantity: "1" },
+    });
+    expect(response.status()).toBe(201);
+    return response.json();
+  };
+  await create("LOW", "ใกล้หมด");
+  const paused = await create("PAUSE", "พักขาย");
+  const negative = await create("NEG", "ติดลบ");
+  const stocked = await create("FULL", "มีสต๊อก");
+  expect((await request.post(pos + "/products/" + paused.id + "/availability", {
+    data: { available: false },
+  })).status()).toBe(200);
+  expect((await request.post(pos + "/products/" + stocked.id + "/receipts", {
+    data: { unit_id: stocked.base_unit_id, quantity: "5", unit_cost: "5" },
+  })).status()).toBe(201);
+  expect((await request.post(pos + "/offline-sales", { data: {
+    id: randomUUID(),
+    items: [{ product_id: negative.id, unit_id: negative.base_unit_id, quantity: "1", expected_unit_price: "10" }],
+    payments: { cash: "10", qr: "0", credit: "0" },
+    qr_confirmed: false, sold_at: "2025-06-14T09:00:00.000Z",
+  } })).status()).toBe(201);
+  expect((await request.post(pos + "/products/" + negative.id + "/availability", {
+    data: { available: false },
+  })).status()).toBe(200);
+  await page.goto(pos + "/");
+  const rows = page.locator("#products").getByRole("button");
+  const filter = page.getByLabel("กรองสินค้า");
+  const search = page.getByRole("searchbox", { name: "ค้นหาสินค้า" });
+  await expect(rows).toHaveCount(4);
+  await filter.selectOption("low");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText("LOW");
+  await filter.selectOption("negative");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText("NEG");
+  await rows.first().click();
+  await expect(page.locator("#detail-title")).toHaveText("ติดลบ");
+  await filter.selectOption("paused");
+  await expect(rows).toHaveCount(2);
+  await search.fill("PAUSE");
+  await expect(rows).toHaveCount(1);
+  await expect(page.locator("#detail-empty")).toBeVisible();
+  await search.fill("missing");
+  await expect(page.locator("#list-state")).toHaveText("ไม่พบสินค้าที่ตรงกับตัวกรอง");
+  await search.fill("");
+  await filter.selectOption("all");
+  await expect(rows).toHaveCount(4);
+});
+
 test("owner pauses and reactivates a product across checkout and offline reload", async ({ page, context, request, pos }) => {
   await createProduct(request, pos);
   await page.goto(pos + "/");
