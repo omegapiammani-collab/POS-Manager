@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 
 from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawer
-from database_backup import copy_database
+from database_backup import copy_database, read_only_database, validate_backup
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
 from inventory import ReceiptConflict, add_product, add_unit, connect, number, receive
@@ -384,10 +384,30 @@ def make_server(database, port):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, default=Path("inventory.sqlite3"))
+    parser.add_argument("--database", type=Path, help="Existing POS database file")
+    parser.add_argument("--create-database", action="store_true", help="Create the named database; fail if it exists")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    with make_server(args.database, args.port) as server:
+    if args.create_database and args.database is None:
+        parser.error("--create-database requires --database")
+    database = args.database or Path("inventory.sqlite3")
+    try:
+        if args.create_database or (args.database is None and not database.exists()):
+            # Exclusive creation prevents accidentally replacing an existing store.
+            with database.open("xb"):
+                pass
+        else:
+            if not database.is_file():
+                raise ValueError("Database file not found; use --create-database to create a new named database")
+            if database.stat().st_size == 0:
+                raise ValueError("Database file is empty; choose a valid backup or a new filename")
+            # Validate before connect() can create tables or modify a non-POS file.
+            with closing(read_only_database(database)) as db:
+                db.execute("PRAGMA trusted_schema = OFF")
+                validate_backup(db)
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        parser.exit(1, f"Cannot open database: {exc}\n")
+    with make_server(database, args.port) as server:
         print(f"Inventory API: http://127.0.0.1:{server.server_port}", flush=True)
         try:
             server.serve_forever()

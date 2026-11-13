@@ -11,7 +11,7 @@ const test = base.extend({
   pos: async ({}, use) => {
     const directory = await mkdtemp(join(tmpdir(), "pos-playwright-"));
     const server = spawn(process.env.POS_PYTHON || "python3", [
-      "inventory_api.py", "--port", "0", "--database", join(directory, "test.sqlite3"),
+      "inventory_api.py", "--port", "0", "--database", join(directory, "test.sqlite3"), "--create-database",
     ], {
       cwd: join(__dirname, ".."),
       stdio: ["ignore", "pipe", "pipe"],
