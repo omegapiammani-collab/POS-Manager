@@ -6,6 +6,7 @@
   <title>สินค้าและสต๊อก | POS Manager</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/inventory.css">
+  <script defer src="/csv.js"></script>
   <script defer src="/inventory.js"></script>
 </head>
 <body>
@@ -27,6 +28,7 @@
           <option value="negative">สต๊อกติดลบ</option>
           <option value="paused">สินค้าพักขาย</option>
         </select>
+        <div class="actions"><button id="stock-download" class="secondary" type="button" disabled>ดาวน์โหลดรายการสต๊อก CSV</button></div>
         <ul id="products" class="products"></ul>
         <p id="list-state" class="muted">กำลังโหลดสินค้า…</p>
       </section>

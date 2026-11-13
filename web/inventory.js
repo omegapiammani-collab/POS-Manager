@@ -1,6 +1,7 @@
 const byId = (id) => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 6 });
 let products = [];
+let displayedProducts = [];
 let selectedId = null;
 let historyRequest = 0;
 let editingProduct;
@@ -50,6 +51,8 @@ function renderList() {
     if (filter === "paused") return product.available === false;
     return true;
   });
+  displayedProducts = matches;
+  byId("stock-download").disabled = !matches.length;
   if (selectedId && !matches.some((product) => product.id === selectedId)) {
     selectedId = null;
     renderDetail();
@@ -168,6 +171,18 @@ async function refresh() {
 
 byId("search").addEventListener("input", renderList);
 byId("stock-filter").addEventListener("change", renderList);
+byId("stock-download").addEventListener("click", () => {
+  if (!displayedProducts.length) return;
+  const { cell, download } = window.PosCsv;
+  const headers = ["รหัสสินค้า", "ชื่อสินค้า", "หน่วยสต๊อก", "คงเหลือ", "จำนวนขั้นต่ำ", "ต้นทุนเฉลี่ย", "สถานะขาย", "สถานะสต๊อก"];
+  const rows = displayedProducts.map((product) => [
+    cell(product.code, true), cell(product.name, true), cell(product.base_unit, true),
+    cell(product.quantity), cell(product.minimum_quantity), cell(product.average_cost),
+    product.available === false ? "พักขาย" : "พร้อมขาย",
+    Number(product.quantity) < 0 ? "สต๊อกติดลบ" : product.low_stock ? "ใกล้หมด" : "ปกติ",
+  ]);
+  download("stock-" + byId("stock-filter").value + ".csv", [headers, ...rows]);
+});
 byId("toggle-availability").addEventListener("click", async () => {
   const product = products.find((entry) => entry.id === selectedId);
   if (!product || changingAvailability) return;

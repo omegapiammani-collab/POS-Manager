@@ -129,7 +129,7 @@ test("filters inventory by stock and availability together with search", async (
   };
   await create("LOW", "ใกล้หมด");
   const paused = await create("PAUSE", "พักขาย");
-  const negative = await create("NEG", "ติดลบ");
+  const negative = await create("NEG", "=ติดลบ");
   const stocked = await create("FULL", "มีสต๊อก");
   expect((await request.post(pos + "/products/" + paused.id + "/availability", {
     data: { available: false },
@@ -139,8 +139,8 @@ test("filters inventory by stock and availability together with search", async (
   })).status()).toBe(201);
   expect((await request.post(pos + "/offline-sales", { data: {
     id: randomUUID(),
-    items: [{ product_id: negative.id, unit_id: negative.base_unit_id, quantity: "1", expected_unit_price: "10" }],
-    payments: { cash: "10", qr: "0", credit: "0" },
+    items: [{ product_id: negative.id, unit_id: negative.base_unit_id, quantity: "0.5", expected_unit_price: "10" }],
+    payments: { cash: "5", qr: "0", credit: "0" },
     qr_confirmed: false, sold_at: "2025-06-14T09:00:00.000Z",
   } })).status()).toBe(201);
   expect((await request.post(pos + "/products/" + negative.id + "/availability", {
@@ -157,8 +157,13 @@ test("filters inventory by stock and availability together with search", async (
   await filter.selectOption("negative");
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("NEG");
+  const csv = await downloadCsv(page, "ดาวน์โหลดรายการสต๊อก CSV", "stock-negative.csv");
+  expect(csv.trimEnd().split(/\r?\n/)).toEqual([
+    "รหัสสินค้า,ชื่อสินค้า,หน่วยสต๊อก,คงเหลือ,จำนวนขั้นต่ำ,ต้นทุนเฉลี่ย,สถานะขาย,สถานะสต๊อก",
+    "NEG,'=ติดลบ,ชิ้น,-0.5,1,,พักขาย,สต๊อกติดลบ",
+  ]);
   await rows.first().click();
-  await expect(page.locator("#detail-title")).toHaveText("ติดลบ");
+  await expect(page.locator("#detail-title")).toHaveText("=ติดลบ");
   await filter.selectOption("paused");
   await expect(rows).toHaveCount(2);
   await search.fill("PAUSE");
@@ -166,6 +171,7 @@ test("filters inventory by stock and availability together with search", async (
   await expect(page.locator("#detail-empty")).toBeVisible();
   await search.fill("missing");
   await expect(page.locator("#list-state")).toHaveText("ไม่พบสินค้าที่ตรงกับตัวกรอง");
+  await expect(page.getByRole("button", { name: "ดาวน์โหลดรายการสต๊อก CSV" })).toBeDisabled();
   await search.fill("");
   await filter.selectOption("all");
   await expect(rows).toHaveCount(4);
