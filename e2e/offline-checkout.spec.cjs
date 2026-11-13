@@ -119,6 +119,32 @@ for (const scenario of ["granted", "denied", "unsupported", "rejected"]) {
   });
 }
 
+test("automatically retries a queued bill when the server recovers without an online event", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  let attempts = 0;
+  let serverAvailable = false;
+  await page.route("**/sales", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    attempts += 1;
+    if (!serverAvailable) return route.abort("connectionfailed");
+    return route.continue();
+  });
+  await sellOne(page);
+  await expect(page.getByRole("dialog")).toHaveAccessibleName("หลักฐานการขายจากเครื่องนี้");
+  const [{ payload }] = await page.evaluate(() => window.PosOffline.list());
+  expect(await page.evaluate(() => navigator.onLine)).toBe(true);
+  await expect.poll(() => attempts, { timeout: 20000 }).toBeGreaterThanOrEqual(2);
+  serverAvailable = true;
+  await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status(), { timeout: 25000 }).toBe(200);
+  await expect.poll(() => page.evaluate(() => window.PosOffline.list()), { timeout: 10000 }).toEqual([]);
+  const history = await (await request.get(pos + "/sale-history")).json();
+  expect(history.filter((bill) => bill.id === payload.id)).toHaveLength(1);
+  const products = await (await request.get(pos + "/products")).json();
+  expect(products.find(({ id }) => id === product.id).quantity).toBe("0");
+});
+
 test("offline bill survives reload and syncs once after another device sells the last unit",
   async ({ browser, context, page, request, pos }) => {
     const product = await createProduct(request, pos);

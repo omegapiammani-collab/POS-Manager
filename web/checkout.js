@@ -17,6 +17,8 @@ const snapshotKeys = new Set();
 const cacheProblems = new Set();
 let shellReady = false;
 let syncRequested = false;
+let retryTimer = null;
+const retryDelay = 10000;
 let stagedDuringSync = new Set();
 let queueRequest = 0;
 let queueProblem = false;
@@ -303,6 +305,20 @@ async function showQueue() {
   }
   const pendingCount = entries.filter(({ state }) => state === "pending").length;
   const conflictCount = entries.filter(({ state }) => state === "conflict").length;
+  if ((!pendingCount && !legacyPending) || navigator.onLine === false || queueProblem) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  } else if (retryTimer === null) {
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (navigator.onLine === false) return;
+      if (syncing || staging) {
+        showQueue();
+      } else {
+        syncQueue();
+      }
+    }, retryDelay);
+  }
   byId("sale-pending").hidden = !entries.length && !legacyPending && !queueProblem;
   byId("sale-retry").disabled = syncing || staging || (!pendingCount && !legacyPending);
   summary.textContent = queueProblem
@@ -697,7 +713,11 @@ window.addEventListener("online", () => {
   syncRequested = true;
   flushRequestedSync();
 });
-window.addEventListener("offline", () => setConnected(false));
+window.addEventListener("offline", () => {
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  setConnected(false);
+});
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js", { scope: "/checkout" })
     .then(() => navigator.serviceWorker.ready)
