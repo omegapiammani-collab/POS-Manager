@@ -74,6 +74,7 @@ def decimal_field(data, field, *, positive=False, default=None):
 
 def list_products(db, query):
     products = db.execute("SELECT * FROM products ORDER BY name, code").fetchall()
+    discontinued = {row[0] for row in db.execute("SELECT product_id FROM discontinued_products")}
     units = {}
     for row in db.execute("SELECT * FROM units ORDER BY name"):
         units.setdefault(row["product_id"], []).append(dict(row))
@@ -81,6 +82,7 @@ def list_products(db, query):
         {
             **dict(product),
             "units": units.get(product["id"], []),
+            "available": product["id"] not in discontinued,
             "low_stock": Decimal(product["quantity"]) <= Decimal(product["minimum_quantity"]),
         }
         for product in products
@@ -273,6 +275,19 @@ class InventoryHandler(BaseHTTPRequestHandler):
             return 201, {"id": product_id, "base_unit_id": unit_id}
 
         if parts[0] == "products" and self.command == "POST":
+            if len(parts) == 3 and parts[2] == "availability":
+                product_id = parts[1]
+                data = self.read_json()
+                if not isinstance(data.get("available"), bool):
+                    raise ValueError("available must be a boolean")
+                db.execute("BEGIN IMMEDIATE")
+                check_product(db, product_id)
+                if data["available"]:
+                    db.execute("DELETE FROM discontinued_products WHERE product_id = ?", (product_id,))
+                else:
+                    db.execute("INSERT OR IGNORE INTO discontinued_products (product_id) VALUES (?)", (product_id,))
+                db.commit()
+                return 200, {"id": product_id, "available": data["available"]}
             if len(parts) == 3 and parts[2] == "edit":
                 return 200, edit_product(db, parts[1], self.read_json())
             if len(parts) == 5 and parts[2] == "units" and parts[4] == "price":

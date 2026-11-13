@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS units (
  name TEXT NOT NULL, multiplier TEXT NOT NULL, price TEXT NOT NULL,
  UNIQUE(product_id, name)
 );
+CREATE TABLE IF NOT EXISTS discontinued_products (
+ product_id TEXT PRIMARY KEY REFERENCES products(id)
+);
 CREATE TABLE IF NOT EXISTS receipts (
  id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id),
  unit_id TEXT NOT NULL REFERENCES units(id), quantity TEXT NOT NULL,

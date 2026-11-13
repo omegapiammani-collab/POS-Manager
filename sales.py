@@ -228,10 +228,12 @@ def checkout(db, data, *, allow_negative=False):
     sold_at = offline_sale_time(data, offline=allow_negative)
     with db:
         db.execute("BEGIN IMMEDIATE")
-        return checkout_in_transaction(db, validated, allow_negative=allow_negative, sold_at=sold_at)
+        return checkout_in_transaction(
+            db, validated, allow_negative=allow_negative, sold_at=sold_at, check_availability=True,
+        )
 
 
-def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None):
+def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None, check_availability=False):
     if not db.in_transaction:
         raise RuntimeError("Checkout requires a transaction")
     sale_id, items, payments, customer_id, qr_confirmed = validated
@@ -241,6 +243,11 @@ def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None
         if saved[0] != request_hash:
             raise SaleConflict("idempotency_conflict", "This sale ID was already used")
         return False, read_sale(db, sale_id)
+
+    if check_availability and sold_at is None:
+        for product_id, _, _, _ in items:
+            if db.execute("SELECT 1 FROM discontinued_products WHERE product_id = ?", (product_id,)).fetchone():
+                raise SaleConflict("item_unavailable", "A selected product is unavailable")
 
     customer_name = None
     if customer_id is not None:

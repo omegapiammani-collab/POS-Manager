@@ -70,6 +70,35 @@ class InventoryApiTests(unittest.TestCase):
         self.assertEqual(self.request("/products", {"code": 1})[0], 400)
         self.assertEqual(self.request("/products/missing/receipts")[0], 404)
 
+    def test_product_availability_and_offline_replay(self):
+        _, product = self.request("/products", {
+            "code": "W01", "name": "น้ำ", "base_unit": "ขวด", "price": "15",
+        })
+        path = "/products/" + product["id"]
+        self.assertTrue(self.request("/products")[1][0]["available"])
+        self.assertEqual(self.request(path + "/receipts", {
+            "unit_id": product["base_unit_id"], "quantity": "3", "unit_cost": "10",
+        })[0], 201)
+        sale = {
+            "id": str(uuid4()),
+            "items": [{"product_id": product["id"], "unit_id": product["base_unit_id"],
+                       "quantity": "1", "expected_unit_price": "15"}],
+            "payments": {"cash": "15", "qr": "0", "credit": "0"},
+            "qr_confirmed": False,
+        }
+        self.assertEqual(self.request("/sales", sale)[0], 201)
+        self.assertEqual(self.request(path + "/availability", {"available": False})[0], 200)
+        self.assertFalse(self.request("/products")[1][0]["available"])
+        self.assertEqual(self.request("/sales", sale)[0], 200)
+        self.assertEqual(self.request("/sales", {**sale, "id": str(uuid4())})[0], 409)
+        offline = {**sale, "id": str(uuid4()), "sold_at": "2025-01-01T00:00:00.000Z"}
+        self.assertEqual(self.request("/offline-sales", offline)[0], 201)
+        self.assertEqual(self.request("/offline-sales", offline)[0], 200)
+        self.assertEqual(self.request(path + "/availability", {"available": "true"})[0], 400)
+        self.assertEqual(self.request(path + "/availability", {"available": True})[0], 200)
+        self.assertTrue(self.request("/products")[1][0]["available"])
+        self.assertEqual(self.request("/sales", {**sale, "id": str(uuid4())})[0], 201)
+
     def test_edit_product_guards_stale_changes_and_duplicate_code(self):
         product = {"code": "W01", "name": "น้ำดื่ม", "base_unit": "ขวด", "price": "15"}
         _, created = self.request("/products", product)
