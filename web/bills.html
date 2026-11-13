@@ -37,11 +37,12 @@
             <label>ตั้งแต่วันที่<input name="from" type="date"></label>
             <label>ถึงวันที่<input name="to" type="date"></label>
           </div>
-          <label>สถานะบิล<select name="status">
+          <label for="bill-filter-status">สถานะบิล</label>
+          <select id="bill-filter-status" name="status">
             <option value="">ทุกสถานะ</option>
             <option value="active">บิลปกติ</option>
             <option value="voided">ยกเลิกแล้ว</option>
-          </select></label>
+          </select>
           <button class="secondary bill-spaced" type="button" id="bill-filter-clear">ล้างตัวกรอง</button>
         </form>
         <ul id="bill-list" class="products"></ul>

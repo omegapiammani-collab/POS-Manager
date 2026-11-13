@@ -118,6 +118,7 @@ dialog .error { margin-top: 12px; padding: 8px; }
 .bills .bill-message.error { background: #fff1f0; }
 .bills .bill-pending button, .bills .bill-actions, .bills .bill-spaced { margin-top: 12px; }
 .bills .bill-filter-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.bills #bill-filter-status { display: block; margin-top: 5px; }
 .bills .bill-total, .bills .bill-money-change { margin-block: 12px; padding: 12px; background: #f3f6f8; border-radius: 9px; }
 .bills .bill-total { font-weight: 700; }
 #bill-receipt { overflow-wrap: anywhere; }
