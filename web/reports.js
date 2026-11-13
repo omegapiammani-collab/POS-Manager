@@ -15,6 +15,7 @@ const thaiDate = new Intl.DateTimeFormat("th-TH", {
   timeZone: "Asia/Bangkok",
 });
 let request;
+let displayedReport;
 
 function bangkokToday() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -115,6 +116,47 @@ function renderReport(report) {
   ])));
 }
 
+const dailyColumns = [
+  ["วันที่", "date"], ["จำนวนบิล", "bill_count"], ["ยอดขาย (บาท)", "revenue"],
+  ["เงินสด (บาท)", "cash"], ["โอน (บาท)", "qr"], ["เงินเชื่อ (บาท)", "credit"],
+  ["ต้นทุนขาย (บาท)", "cost"], ["กำไรขั้นต้น (บาท)", "gross_profit"],
+  ["ค่าใช้จ่าย (บาท)", "expenses"], ["กำไรหลังหักค่าใช้จ่าย (บาท)", "profit_after_expenses"],
+];
+const productColumns = [
+  ["สินค้า", "name", true], ["จำนวนขาย", "quantity"], ["หน่วยสต๊อก", "base_unit", true],
+  ["ยอดขาย (บาท)", "revenue"], ["ต้นทุนขาย (บาท)", "cost"], ["กำไรขั้นต้น (บาท)", "gross_profit"],
+];
+
+function csvCell(value, userText = false) {
+  let cell = String(value ?? "");
+  // Protect spreadsheet users when product names or units resemble formulas.
+  if (userText && /^[\s\u0000-\u001f]*[=+\-@＝＋－＠]|^[\t\r\n]/u.test(cell)) cell = "'" + cell;
+  return /[",\r\n]/.test(cell) ? '"' + cell.replaceAll('"', '""') + '"' : cell;
+}
+
+function downloadReport(group, fileType, columns) {
+  if (!displayedReport || results.hidden) return;
+  const { from, to } = displayedReport;
+  const headers = [...columns.map(([title]) => csvCell(title)),
+    "วันเริ่มต้น", "วันสิ้นสุด", "บิลรอปรับต้นทุน", "บิลขาดข้อมูลต้นทุน", "สถานะต้นทุน"];
+  const rows = displayedReport[group].map((row) => [
+    ...columns.map(([, field, userText]) => csvCell(row[field], userText)),
+    from, to, row.pending_cost_bills, row.unknown_cost_bills, csvCell(costLabel(row)),
+  ].join(","));
+  const contents = "\uFEFF" + [headers.join(","), ...rows].join("\r\n") + "\r\n";
+  const url = URL.createObjectURL(new Blob([contents], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "sales-" + fileType + "-" + from + "-to-" + to + ".csv";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+byId("report-download-days").addEventListener("click", () => downloadReport("days", "daily", dailyColumns));
+byId("report-download-products").addEventListener("click", () => downloadReport("products", "products", productColumns));
+
 function setStatus(message, error = false) {
   status.textContent = message;
   status.classList.toggle("error", error);
@@ -123,6 +165,7 @@ function setStatus(message, error = false) {
 async function loadReport() {
   request?.abort();
   results.hidden = true;
+  displayedReport = null;
   if (!start.value || !end.value || start.value > end.value) {
     setStatus("กรุณาเลือกวันที่สิ้นสุดให้ตรงกับหรืออยู่หลังวันที่เริ่มต้น", true);
     return;
@@ -138,6 +181,7 @@ async function loadReport() {
     const report = await response.json();
     if (request !== current || current.signal.aborted) return;
     renderReport(report);
+    displayedReport = report;
     results.hidden = false;
     setStatus("แสดงรายงาน " + displayDate(report.from) + " ถึง " + displayDate(report.to));
   } catch {

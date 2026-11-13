@@ -43,7 +43,10 @@
       </section>
 
       <section class="panel" aria-labelledby="report-days-title">
-        <h2 id="report-days-title">ยอดขายรายวัน</h2>
+        <div class="actions">
+          <h2 id="report-days-title">ยอดขายรายวัน</h2>
+          <button type="button" class="secondary" id="report-download-days">ดาวน์โหลดรายวัน (CSV)</button>
+        </div>
         <p id="report-days-empty" class="muted" hidden>ไม่มียอดขายหรือค่าใช้จ่ายในช่วงที่เลือก</p>
         <div id="report-days-wrap" class="report-table-wrap" role="region" tabindex="0" aria-labelledby="report-days-title" hidden>
           <table class="report-table">
@@ -56,7 +59,10 @@
       </section>
 
       <section class="panel" aria-labelledby="report-products-title">
-        <h2 id="report-products-title">ยอดขายตามสินค้า</h2>
+        <div class="actions">
+          <h2 id="report-products-title">ยอดขายตามสินค้า</h2>
+          <button type="button" class="secondary" id="report-download-products">ดาวน์โหลดรายสินค้า (CSV)</button>
+        </div>
         <p id="report-products-empty" class="muted" hidden>ไม่มีสินค้าที่ขายในช่วงที่เลือก</p>
         <div id="report-products-wrap" class="report-table-wrap" role="region" tabindex="0" aria-labelledby="report-products-title" hidden>
           <table class="report-table">

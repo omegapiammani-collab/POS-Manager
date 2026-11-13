@@ -1,6 +1,6 @@
 const { spawn } = require("node:child_process");
 const { once } = require("node:events");
-const { mkdtemp, rm } = require("node:fs/promises");
+const { mkdtemp, readFile, rm } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 const { createInterface } = require("node:readline");
@@ -42,9 +42,9 @@ const test = base.extend({
   },
 });
 
-async function createProduct(request, pos) {
+async function createProduct(request, pos, name = "น้ำดื่ม") {
   const added = await request.post(pos + "/products", {
-    data: { code: "W01", name: "น้ำดื่ม", base_unit: "ขวด", price: "25" },
+    data: { code: "W01", name, base_unit: "ขวด", price: "25" },
   });
   expect(added.status()).toBe(201);
   const product = await added.json();
@@ -59,6 +59,17 @@ async function sellOne(page) {
   await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).click();
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
+}
+
+async function downloadCsv(page, label, filename) {
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: label, exact: true }).tap(),
+  ]);
+  expect(download.suggestedFilename()).toBe(filename);
+  const contents = await readFile(await download.path());
+  expect([...contents.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  return contents.subarray(3).toString("utf8");
 }
 
 test("offline bill survives reload and syncs once after another device sells the last unit",
@@ -131,7 +142,9 @@ test("offline bill survives reload and syncs once after another device sells the
 for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 }]) {
   test(`checkout and reports fit a touch viewport of ${viewport.width}px`,
     async ({ browser, request, pos }) => {
-      await createProduct(request, pos);
+      const phone = viewport.width === 360;
+      const productName = phone ? "=1+1" : "น้ำดื่ม";
+      await createProduct(request, pos, productName);
       if (viewport.width <= 720) {
         for (let index = 0; index < 12; index++) {
           const response = await request.post(pos + "/products", {
@@ -150,7 +163,7 @@ for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 
         await page.goto(pos + "/checkout");
         const search = page.getByRole("searchbox", { name: "ค้นหาสินค้า" });
         await search.fill("W01");
-        await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).tap();
+        await page.getByRole("button", { name: `เพิ่ม ${productName} ขวด`, exact: true }).tap();
         if (viewport.width <= 720) {
           await search.clear();
           await expect(page.locator("#sale-products > li")).toHaveCount(13);
@@ -167,7 +180,7 @@ for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 
 
         await page.getByRole("link", { name: "รายงานยอดขาย" }).tap();
         await expect(page.locator("#report-summary")).toContainText("25.00");
-        await expect(page.locator("#report-products")).toContainText("น้ำดื่ม");
+        await expect(page.locator("#report-products")).toContainText(productName);
         const daily = page.locator("#report-days-wrap");
         await expect(daily).toBeVisible();
         expect(await fitsViewport()).toBe(true);
@@ -177,6 +190,20 @@ for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 
           return region.scrollLeft > 0
             && lastColumn.getBoundingClientRect().right <= region.getBoundingClientRect().right + 1;
         })).toBe(true);
+
+        if (phone) {
+          const from = await page.locator('#report-filters input[name="from"]').inputValue();
+          const to = await page.locator('#report-filters input[name="to"]').inputValue();
+          const dateRange = `${from}-to-${to}`;
+          const dailyCsv = await downloadCsv(page, "ดาวน์โหลดรายวัน (CSV)", `sales-daily-${dateRange}.csv`);
+          expect(dailyCsv).toMatch(/^(?:วันที่|"วันที่"),/);
+          expect(dailyCsv).toMatch(/(?:^|,)("?)25\.00\1(?:,|\r?$)/m);
+
+          const productCsv = await downloadCsv(page, "ดาวน์โหลดรายสินค้า (CSV)", `sales-products-${dateRange}.csv`);
+          expect(productCsv).toMatch(/^(?:สินค้า|"สินค้า"),/);
+          expect(productCsv).toMatch(/(?:^|,)("?)25\.00\1(?:,|\r?$)/m);
+          expect(productCsv).toMatch(/(?:^|,)("?)'=1\+1\1(?:,|\r?$)/m);
+        }
       } finally {
         await context.close();
       }
