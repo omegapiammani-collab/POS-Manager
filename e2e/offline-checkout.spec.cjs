@@ -168,7 +168,7 @@ for (const viewport of [{ width: 360, height: 800 }, { width: 768, height: 1024 
         await page.getByRole("link", { name: "รายงานยอดขาย" }).tap();
         await expect(page.locator("#report-summary")).toContainText("25.00");
         await expect(page.locator("#report-products")).toContainText("น้ำดื่ม");
-        const daily = page.getByRole("region", { name: "ยอดขายรายวัน" });
+        const daily = page.locator("#report-days-wrap");
         await expect(daily).toBeVisible();
         expect(await fitsViewport()).toBe(true);
         expect(await daily.evaluate((region) => {
