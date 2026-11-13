@@ -97,12 +97,17 @@ test("offline bill survives reload and syncs once after another device sells the
     await expect(page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true })).toBeVisible();
     expect(await queue()).toEqual([{ payload, state: "pending", error: null }]);
 
+    const priceChange = await request.post(pos + "/products/" + product.id + "/units/"
+      + product.base_unit_id + "/price", { data: { price: "32", expected_price: "25" } });
+    expect(priceChange.status()).toBe(200);
+
     const otherContext = await browser.newContext();
     try {
       const otherPage = await otherContext.newPage();
       await otherPage.goto(pos + "/checkout");
       await sellOne(otherPage);
       await expect(otherPage.getByRole("dialog")).toHaveAccessibleName("ใบเสร็จรับเงิน");
+      await expect(otherPage.locator("#sale-receipt-total")).toContainText("32.00");
       await expect(otherPage.locator("#sale-message")).toContainText("ปิดบิลและส่งข้อมูลแล้ว");
     } finally {
       await otherContext.close();
@@ -121,7 +126,8 @@ test("offline bill survives reload and syncs once after another device sells the
     const replay = await request.post(pos + "/offline-sales", { data: payload });
     expect(replay.status()).toBe(200);
     const sale = await replay.json();
-    expect(sale).toMatchObject({ id: payload.id, sold_at: payload.sold_at });
+    expect(sale).toMatchObject({ id: payload.id, sold_at: payload.sold_at, total: "25.00" });
+    expect(sale.items[0].unit_price).toBe("25");
     expect(sale.stock_shortages).toEqual([expect.objectContaining({
       product_id: product.id, remaining: "1",
     })]);

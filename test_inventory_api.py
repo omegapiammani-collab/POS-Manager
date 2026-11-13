@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+from decimal import Decimal
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -6,6 +8,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from inventory_api import make_server
 
@@ -118,3 +121,59 @@ class InventoryApiTests(unittest.TestCase):
         _, rows = self.request("/products")
         self.assertEqual(rows[0]["units"][0]["price"], "18")
         self.assertEqual(rows[0]["quantity"], "1")
+
+    def test_timed_offline_sale_preserves_price_and_mixed_payment_after_catalog_edit(self):
+        status, product = self.request("/products", {
+            "code": "W01", "name": "น้ำดื่ม", "base_unit": "ขวด", "price": "15",
+        })
+        self.assertEqual(status, 201)
+        path = f"/products/{product['id']}"
+        unit = product["base_unit_id"]
+        self.assertEqual(self.request(path + "/receipts", {
+            "unit_id": unit, "quantity": "3", "unit_cost": "8",
+        })[0], 201)
+        status, customer = self.request("/customers", {"name": "ลูกค้าทดสอบ"})
+        self.assertEqual(status, 201)
+        sold_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        self.assertEqual(self.request(path + f"/units/{unit}/price", {
+            "price": "18", "expected_price": "15",
+        })[0], 200)
+
+        sale = {
+            "id": str(uuid4()),
+            "items": [{
+                "product_id": product["id"], "unit_id": unit, "quantity": "2",
+                "expected_unit_price": "15",
+            }],
+            "payments": {"cash": "10", "qr": "5", "credit": "15"},
+            "customer_id": customer["id"], "qr_confirmed": True,
+        }
+        for endpoint in ("/sales", "/offline-sales"):
+            with self.subTest(endpoint=endpoint):
+                status, error = self.request(endpoint, sale)
+                self.assertEqual((status, error["code"]), (409, "price_changed"))
+        self.assertEqual(self.request("/sales/" + sale["id"])[0], 404)
+        self.assertEqual(Decimal(self.request("/products")[1][0]["quantity"]), 3)
+
+        timed_sale = {**sale, "sold_at": sold_at}
+        mismatched_payment = {**timed_sale, "payments": {**sale["payments"], "cash": "11"}}
+        self.assertEqual(self.request("/offline-sales", mismatched_payment)[0], 400)
+        self.assertEqual(self.request("/sales/" + sale["id"])[0], 404)
+
+        status, receipt = self.request("/offline-sales", timed_sale)
+        self.assertEqual(status, 201, receipt)
+        self.assertEqual(receipt["id"], sale["id"])
+        self.assertEqual(receipt["sold_at"], sold_at)
+        line, = receipt["items"]
+        self.assertEqual(Decimal(line["unit_price"]), 15)
+        self.assertEqual(Decimal(line["total"]), 30)
+        self.assertEqual(Decimal(receipt["total"]), 30)
+        self.assertEqual(
+            receipt["payments"], {"cash": "10.00", "qr": "5.00", "credit": "15.00"},
+        )
+        self.assertEqual(receipt["customer_id"], customer["id"])
+        self.assertEqual(self.request("/offline-sales", timed_sale), (200, receipt))
+        self.assertEqual(self.request("/sales/" + sale["id"]), (200, receipt))
+        current, = self.request("/products")[1]
+        self.assertEqual(Decimal(current["units"][0]["price"]), 18)
+        self.assertEqual(Decimal(current["quantity"]), 1)

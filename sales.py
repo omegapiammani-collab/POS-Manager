@@ -170,7 +170,7 @@ def checkout_hash(items, payments, customer_id, qr_confirmed, *, sold_at=None):
     return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
 
 
-def prepare_items(db, items, *, allow_negative):
+def prepare_items(db, items, *, allow_negative, preserve_offline_price):
     stock = {}
     details = []
     shortages = []
@@ -186,7 +186,10 @@ def prepare_items(db, items, *, allow_negative):
         name, available, average_cost, unit_name, multiplier, unit_price = row
         price = Decimal(unit_price)
         if price != expected_price:
-            raise SaleConflict("price_changed", "A unit price changed. Refresh the cart")
+            if not preserve_offline_price:
+                raise SaleConflict("price_changed", "A unit price changed. Refresh the cart")
+            price = expected_price
+            unit_price = format(price, "f")
         before = stock.get(product_id, Decimal(available))
         remaining = before - quantity * Decimal(multiplier)
         if remaining < 0 and not allow_negative:
@@ -248,7 +251,10 @@ def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None
 
     with localcontext() as context:
         context.prec = 50
-        stock, details, total, shortages = prepare_items(db, items, allow_negative=allow_negative)
+        stock, details, total, shortages = prepare_items(
+            db, items, allow_negative=allow_negative,
+            preserve_offline_price=sold_at is not None,
+        )
         if sum(payments.values()) != total:
             raise ValueError("Payment amounts must add up to the sale total")
         db.execute(
