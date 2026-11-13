@@ -31,6 +31,7 @@ const unavailable = "—";
 let state;
 let activeRequest;
 let pending = restorePending();
+let pendingStored = true;
 let saving = false;
 
 function bangkokToday() {
@@ -66,11 +67,12 @@ function restorePending() {
 
 function setPending(value) {
   pending = value;
+  pendingStored = true;
   try {
     if (value) sessionStorage.setItem(storageKey, JSON.stringify(value));
     else sessionStorage.removeItem(storageKey);
   } catch {
-    // The in-memory request still preserves its identifier in this tab.
+    pendingStored = !value;
   }
   updateControls();
 }
@@ -78,6 +80,7 @@ function setPending(value) {
 function updateControls() {
   const blocked = saving || Boolean(pending);
   byId("drawer-pending").hidden = !pending;
+  byId("drawer-storage-warning").hidden = !pending || pendingStored;
   byId("drawer-retry").disabled = saving;
   byId("drawer-pending-date").textContent = pending ? businessDate(pending.payload.date) : "";
   for (const form of Object.values(actionForms)) form.querySelector("fieldset").disabled = blocked;
@@ -252,3 +255,10 @@ byId("drawer-retry").addEventListener("click", submitPending);
 dateInput.value = pending?.payload.date || bangkokToday();
 updateControls();
 loadDrawer();
+
+window.addEventListener("beforeunload", (event) => {
+  if (pending && !pendingStored) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});

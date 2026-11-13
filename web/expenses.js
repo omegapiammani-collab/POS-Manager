@@ -11,6 +11,7 @@ const sourceNames = { cash_drawer: "เงินสดในลิ้นชั�
 const amounts = new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const dates = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeZone: "Asia/Bangkok" });
 let pending = restorePending();
+let pendingStored = true;
 let saving = false;
 let request;
 let selected;
@@ -33,17 +34,19 @@ function restorePending() {
 
 function savePending(value) {
   pending = value;
+  pendingStored = true;
   try {
     if (value) sessionStorage.setItem(storageKey, JSON.stringify(value));
     else sessionStorage.removeItem(storageKey);
   } catch {
-    // The same request can still be retried until the tab closes.
+    pendingStored = !value;
   }
   renderPending();
 }
 
 function renderPending() {
   byId("expense-pending").hidden = !pending;
+  byId("expense-storage-warning").hidden = !pending || pendingStored;
   byId("expense-retry").disabled = saving;
   entry.querySelector("fieldset").disabled = Boolean(pending) || saving;
   for (const button of list.querySelectorAll("button")) button.disabled = Boolean(pending) || saving;
@@ -206,3 +209,10 @@ filter.addEventListener("submit", (event) => {
 entry.elements.namedItem("date").value = from.value = to.value = bangkokToday();
 renderPending();
 loadHistory();
+
+window.addEventListener("beforeunload", (event) => {
+  if (pending && !pendingStored) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});

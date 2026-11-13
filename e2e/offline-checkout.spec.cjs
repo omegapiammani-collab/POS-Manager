@@ -287,6 +287,82 @@ test("inventory history shows the Bangkok date around UTC midnight", async ({ pa
   await expect(page.locator("#stock-counts")).toContainText("2026-11-12");
 });
 
+test("warns when expense request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
+  await page.addInitScript(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === sessionStorage && key === "pos-pending-expense") throw new Error("storage unavailable");
+      return original.call(this, key, value);
+    };
+  });
+  const ids = [];
+  await page.route("**/expenses", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    ids.push(route.request().postDataJSON().id);
+    if (ids.length === 1) {
+      expect((await route.fetch()).status()).toBe(201);
+      return route.abort("connectionfailed");
+    }
+    return route.continue();
+  });
+  await page.goto(pos + "/expense-entry");
+  const date = await page.locator('#expense-create [name="date"]').inputValue();
+  await page.getByLabel("รายการ", { exact: true }).fill("ค่าไฟ");
+  await page.getByLabel("จำนวนเงิน (บาท)").fill("25");
+  await page.getByLabel("แหล่งเงิน").selectOption("external");
+  await page.getByRole("button", { name: "บันทึกค่าใช้จ่าย" }).click();
+  await expect(page.locator("#expense-storage-warning")).toBeVisible();
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+  await page.getByRole("button", { name: "ส่งคำขอเดิมอีกครั้ง" }).click();
+  await expect(page.locator("#expense-message")).toContainText("บันทึกค่าใช้จ่ายแล้ว");
+  await expect(page.locator("#expense-pending")).toBeHidden();
+  expect(ids).toHaveLength(2);
+  expect(ids[0]).toBe(ids[1]);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
+  const expenses = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+  expect(expenses).toHaveLength(1);
+  expect(expenses[0]).toMatchObject({ id: ids[0], amount: "25.00", description: "ค่าไฟ" });
+});
+
+test("warns when drawer request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
+  await page.addInitScript(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === sessionStorage && key === "pos-pending-drawer") throw new Error("storage unavailable");
+      return original.call(this, key, value);
+    };
+  });
+  const ids = [];
+  await page.route("**/cash-drawer/movements", async (route) => {
+    ids.push(route.request().postDataJSON().id);
+    if (ids.length === 1) {
+      expect((await route.fetch()).status()).toBe(201);
+      return route.abort("connectionfailed");
+    }
+    return route.continue();
+  });
+  await page.goto(pos + "/drawer");
+  const date = await page.locator('#drawer-filter [name="date"]').inputValue();
+  const opened = await request.post(pos + "/cash-drawer/open", { data: { id: randomUUID(), date, opening_cash: "100" } });
+  expect(opened.status()).toBe(201);
+  await page.getByRole("button", { name: "แสดงยอดล่าสุด" }).click();
+  await page.getByLabel("จำนวนเงิน (บาท)").fill("20");
+  await page.getByLabel("เหตุผล", { exact: true }).fill("เงินทอน");
+  await page.getByRole("button", { name: "บันทึกรายการ", exact: true }).click();
+  await expect(page.locator("#drawer-storage-warning")).toBeVisible();
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+  await page.getByRole("button", { name: "ส่งคำขอเดิมอีกครั้ง" }).click();
+  await expect(page.locator("#drawer-message")).toContainText("บันทึกรายการเงินสดแล้ว");
+  await expect(page.locator("#drawer-pending")).toBeHidden();
+  expect(ids).toHaveLength(2);
+  expect(ids[0]).toBe(ids[1]);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
+  const drawer = await (await request.get(`${pos}/cash-drawer?date=${date}`)).json();
+  expect(drawer.movements).toHaveLength(1);
+  expect(drawer.movements[0]).toMatchObject({ id: ids[0], amount: "20.00", reason: "เงินทอน" });
+  expect(drawer.expected_cash).toBe("120.00");
+});
+
 test("warns when a pending repayment cannot be saved and retries the same request", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
