@@ -43,6 +43,14 @@
             <option value="active">บิลปกติ</option>
             <option value="voided">ยกเลิกแล้ว</option>
           </select>
+          <label for="bill-filter-payment">วิธีชำระเงิน</label>
+          <select id="bill-filter-payment" name="payment">
+            <option value="">ทุกวิธีชำระ</option>
+            <option value="cash">เงินสด</option>
+            <option value="qr">โอนผ่าน QR</option>
+            <option value="credit">เงินเชื่อ</option>
+            <option value="mixed">ชำระหลายวิธี</option>
+          </select>
           <button class="secondary bill-spaced" type="button" id="bill-filter-clear">ล้างตัวกรอง</button>
         </form>
         <ul id="bill-list" class="products"></ul>

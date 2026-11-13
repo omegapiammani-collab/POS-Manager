@@ -123,9 +123,16 @@ function renderList(clearSelection = false) {
   const from = filters.elements.from.value;
   const to = filters.elements.to.value;
   const status = filters.elements.status.value;
+  const payment = filters.elements.payment.value;
   const invalidRange = from && to && from > to;
   const matches = invalidRange ? [] : bills.filter((bill) => {
     if (status && bill.status !== status) return false;
+    if (payment) {
+      const paid = recordedPayments(bill.payments);
+      if (payment === "mixed" ? paid.length < 2 : !paid.some(([method]) => method === payment)) {
+        return false;
+      }
+    }
     if (!bill.id.toLowerCase().includes(query) && !(bill.customer_name ?? "").toLowerCase().includes(query)) {
       return false;
     }
@@ -163,7 +170,7 @@ function renderList(clearSelection = false) {
   if (listState === "error") state.textContent = "โหลดรายการบิลไม่สำเร็จ กรุณารีเฟรชหน้า";
   else if (listState === "loading") state.textContent = "กำลังโหลดบิล…";
   else if (invalidRange) state.textContent = "วันที่เริ่มต้นต้องไม่อยู่หลังวันที่สิ้นสุด";
-  else state.textContent = query || from || to || status ? "ไม่พบบิลที่ตรงกับตัวกรอง" : "ยังไม่มีบิล";
+  else state.textContent = query || from || to || status || payment ? "ไม่พบบิลที่ตรงกับตัวกรอง" : "ยังไม่มีบิล";
 }
 
 function line(left, right) {
@@ -172,11 +179,15 @@ function line(left, right) {
   return row;
 }
 
-function paymentLines(payments) {
-  return Object.entries(methods).flatMap(([method, label]) => {
+function recordedPayments(payments) {
+  return Object.keys(methods).flatMap((method) => {
     const amount = decimal(payments[method], 2, true);
-    return amount > 0n ? [line(label, money(amount))] : [];
+    return amount > 0n ? [[method, amount]] : [];
   });
+}
+
+function paymentLines(payments) {
+  return recordedPayments(payments).map(([method, amount]) => line(methods[method], money(amount)));
 }
 
 function openReceipt() {

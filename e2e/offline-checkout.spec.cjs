@@ -378,3 +378,73 @@ test("filters bill history by inclusive Bangkok sale dates and status", async ({
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText(online.id);
 });
+
+test("filters bill history by payment method including split payments", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const restock = await request.post(`${pos}/products/${product.id}/receipts`, {
+    data: { unit_id: product.base_unit_id, quantity: "4", unit_cost: "12" },
+  });
+  expect(restock.status()).toBe(201);
+  const customerName = "ลูกค้าเงินเชื่อทดสอบ";
+  const createdCustomer = await request.post(pos + "/customers", { data: { name: customerName } });
+  expect(createdCustomer.status()).toBe(201);
+  const customer = await createdCustomer.json();
+
+  const recordBill = async ({ cash = "0", qr = "0", credit = "0" }, day) => {
+    const response = await request.post(pos + "/offline-sales", {
+      data: {
+        id: randomUUID(),
+        items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+        payments: { cash, qr, credit },
+        qr_confirmed: qr !== "0",
+        ...(credit !== "0" ? { customer_id: customer.id } : {}),
+        sold_at: day + "T09:00:00.000Z",
+      },
+    });
+    expect(response.status()).toBe(201);
+    return response.json();
+  };
+  const cashBill = await recordBill({ cash: "25" }, "2025-06-14");
+  const qrBill = await recordBill({ qr: "25" }, "2025-06-14");
+  const creditBill = await recordBill({ credit: "25" }, "2025-06-14");
+  const splitBill = await recordBill({ cash: "5", qr: "10", credit: "10" }, "2025-06-14");
+  const voidedBill = await recordBill({ cash: "15", qr: "10" }, "2025-06-15");
+  const cancellation = await request.post(`${pos}/sales/${voidedBill.id}/corrections`, {
+    data: { id: randomUUID(), reason: "ยกเลิกบิลทดสอบ" },
+  });
+  expect(cancellation.status()).toBe(201);
+
+  await page.goto(pos + "/bills");
+  const rows = page.locator("#bill-list").getByRole("button");
+  const payment = page.getByLabel("วิธีชำระเงิน", { exact: true });
+  const status = page.getByLabel("สถานะบิล", { exact: true });
+  const to = page.getByLabel("ถึงวันที่", { exact: true });
+  const search = page.getByRole("searchbox", { name: "ค้นหาบิล" });
+  const expectBills = async (...bills) => {
+    await expect(rows).toHaveCount(bills.length);
+    for (const bill of bills) await expect(rows.filter({ hasText: bill.id })).toBeVisible();
+  };
+
+  await expectBills(cashBill, qrBill, creditBill, splitBill, voidedBill);
+  await payment.selectOption("cash");
+  await expectBills(cashBill, splitBill, voidedBill);
+  await payment.selectOption("qr");
+  await expectBills(qrBill, splitBill, voidedBill);
+  await payment.selectOption("credit");
+  await expectBills(creditBill, splitBill);
+  await payment.selectOption("mixed");
+  await expectBills(splitBill, voidedBill);
+  await status.selectOption("voided");
+  await expectBills(voidedBill);
+  await to.fill("2025-06-14");
+  await expectBills();
+  await status.selectOption("active");
+  await search.fill(customerName);
+  await expectBills(splitBill);
+  await search.fill(cashBill.id);
+  await expectBills();
+
+  await page.getByRole("button", { name: "ล้างตัวกรอง", exact: true }).click();
+  await expect(payment).toHaveValue("");
+  await expectBills(cashBill, qrBill, creditBill, splitBill, voidedBill);
+});
