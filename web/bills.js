@@ -24,6 +24,7 @@ let displayedBills = [];
 let catalog = new Map();
 let customers = [];
 let pending = restorePending();
+let pendingStored = true;
 let selectedId = pending?.saleId ?? null;
 let sending = false;
 let opening = false;
@@ -494,11 +495,12 @@ function restorePending() {
 
 function setPending(request) {
   pending = request;
+  pendingStored = true;
   try {
     if (request) sessionStorage.setItem(storageKey, JSON.stringify(request));
     else sessionStorage.removeItem(storageKey);
   } catch {
-    // Keep the request in this tab if browser storage is unavailable.
+    pendingStored = !request;
   }
   renderPending();
 }
@@ -507,6 +509,8 @@ function renderPending() {
   const locked = Boolean(pending) || sending;
   byId("bill-fields").disabled = locked;
   byId("bill-pending").hidden = !pending || sending;
+  byId("bill-storage-warning").hidden = !pending || pendingStored;
+  byId("bill-dialog-storage-warning").hidden = !pending || pendingStored;
   byId("bill-retry").disabled = sending;
   byId("bill-close").disabled = sending;
   renderList();
@@ -641,3 +645,10 @@ form.addEventListener("submit", (event) => {
 });
 renderPending();
 loadBills();
+
+window.addEventListener("beforeunload", (event) => {
+  if (pending && !pendingStored) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});

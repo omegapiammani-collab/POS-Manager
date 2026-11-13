@@ -287,6 +287,58 @@ test("inventory history shows the Bangkok date around UTC midnight", async ({ pa
   await expect(page.locator("#stock-counts")).toContainText("2026-11-12");
 });
 
+for (const mode of ["edit", "void"]) {
+  test(`warns when ${mode} correction cannot be stored and safely retries after a lost response`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos);
+    const saleId = randomUUID();
+    const saleResponse = await request.post(pos + "/sales", { data: {
+      id: saleId, items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "25", qr: "0", credit: "0" }, qr_confirmed: false,
+    } });
+    expect(saleResponse.status()).toBe(201);
+    await page.addInitScript(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (this === sessionStorage && key === "pos-pending-correction") throw new Error("storage unavailable");
+        return original.call(this, key, value);
+      };
+    });
+    const requests = [];
+    await page.route(`**/sales/${saleId}/corrections`, async (route) => {
+      requests.push(route.request().postDataJSON());
+      if (requests.length === 1) {
+        expect((await route.fetch()).status()).toBe(201);
+        return route.abort("connectionfailed");
+      }
+      return route.continue();
+    });
+    await page.goto(pos + "/bills");
+    await page.locator("#bill-list").getByRole("button", { name: new RegExp(saleId) }).click();
+    await page.getByRole("button", { name: mode === "edit" ? "แก้ไขบิล" : "ยกเลิกบิล", exact: true }).click();
+    const dialog = page.locator("#bill-correction");
+    await dialog.getByLabel("เหตุผล", { exact: true }).fill("ตรวจสอบรายการ");
+    await dialog.getByLabel("ตรวจสอบยอดเงินสดและเงินโอนที่เกี่ยวข้องแล้ว").check();
+    await dialog.getByRole("button", { name: "บันทึก", exact: true }).click();
+    await expect(dialog.locator("#bill-error")).toContainText("ส่งคำขอเดิมอีกครั้ง");
+    await expect(dialog.locator("#bill-dialog-storage-warning")).toBeVisible();
+    expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+    await dialog.getByRole("button", { name: "ปิด", exact: true }).click();
+    await expect(page.locator("#bill-storage-warning")).toBeVisible();
+    await page.getByRole("button", { name: "ส่งคำขอเดิมอีกครั้ง" }).click();
+    await expect(page.locator("#bill-message")).toContainText(mode === "edit" ? "แก้ไขบิลแล้ว" : "ยกเลิกบิลแล้ว");
+    await expect(page.locator("#bill-pending")).toBeHidden();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(false);
+    const history = await (await request.get(pos + "/sale-history")).json();
+    expect(history).toHaveLength(mode === "edit" ? 2 : 1);
+    expect(history.find((bill) => bill.id === saleId).status).toBe("voided");
+    if (mode === "edit") expect(history.filter((bill) => bill.id === requests[0].replacement.id)).toHaveLength(1);
+    const products = await (await request.get(pos + "/products")).json();
+    expect(Number(products[0].quantity)).toBe(mode === "edit" ? 0 : 1);
+  });
+}
+
 test("warns when expense request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
   await page.addInitScript(() => {
     const original = Storage.prototype.setItem;

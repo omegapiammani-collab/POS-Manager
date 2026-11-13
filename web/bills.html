@@ -26,6 +26,7 @@
     </div>
     <div id="bill-pending" class="panel bill-pending" hidden>
       <p>ยังไม่ได้รับผลยืนยัน กดส่งคำขอเดิมอีกครั้งเพื่อดูผล</p>
+      <p id="bill-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งคำขอเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
       <button id="bill-retry" type="button">ส่งคำขอเดิมอีกครั้ง</button>
     </div>
     <p id="bill-message" class="bill-message" role="status" hidden></p>
@@ -132,6 +133,7 @@
         </div>
       </fieldset>
       <p id="bill-error" class="error" role="alert" hidden></p>
+      <p id="bill-dialog-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาปิดหน้าต่างนี้และส่งคำขอเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
       <div class="actions">
         <button id="bill-close" class="secondary" type="button">ปิด</button>
         <button id="bill-submit" type="submit">บันทึก</button>
