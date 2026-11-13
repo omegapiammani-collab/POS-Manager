@@ -272,6 +272,7 @@ document.querySelectorAll("dialog:not(#stock-count)").forEach((dialog) => {
       if (dialog.id === "product") {
         selectedId = result.id;
         byId("search").value = "";
+        byId("stock-filter").value = "all";
       }
       dialog.close();
       notice(action.success);
