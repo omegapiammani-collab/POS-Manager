@@ -420,7 +420,7 @@ test("a blocked IndexedDB v1 migration preserves the queue and requires explicit
   }, payload);
   const upgraded = await context.newPage();
   await upgraded.goto(pos + "/checkout");
-  await expect(upgraded.locator("#sale-store-message")).toContainText("ปิดแท็บ POS รุ่นเก่า");
+  await expect(upgraded.locator("#sale-store-message")).toContainText("มีแท็บ POS รุ่นเก่าเปิดอยู่");
   await expect(upgraded.locator("#sale-submit")).toBeDisabled();
   expect(await page.evaluate(() => window.__legacyVersionChanges)).toBeGreaterThan(0);
   expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
