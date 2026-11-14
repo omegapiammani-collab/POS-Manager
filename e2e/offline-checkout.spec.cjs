@@ -907,6 +907,95 @@ test("legacy session-only sale is placed directly into review after store confir
   await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
 });
 
+test("legacy session sale can be backed up offline in the same tab before binding", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  const raw = JSON.stringify(payload);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("บิลเดิมยังไม่ระบุร้าน");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await page.locator("#sale-store-blocked").getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  await expect(page.locator("#backup-queue-count")).toContainText("0 บิล");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  const file = await readFile(await download.path());
+  const backup = JSON.parse(file);
+  expect(backup.version).toBe(1);
+  expect(backup.legacy_raw).toBe(raw);
+  expect(backup.entries).toEqual([{ payload, state: "conflict", error: "บิลรุ่นเดิมไม่ระบุร้าน กรุณาตรวจสอบก่อนส่ง" }]);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  await context.setOffline(false);
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await other.goto(pos + "/checkout/backup");
+  await other.locator("#backup-queue-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: file });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้า 1 บิล");
+  const entries = await other.evaluate(() => window.PosOffline.list());
+  expect(entries).toHaveLength(1);
+  expect(entries[0].payload).toEqual(payload);
+  expect(entries[0].state).toBe("conflict");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  await other.locator("#backup-queue-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: file });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("มีอยู่แล้ว 1 บิล");
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(entries);
+  const conflicting = structuredClone(backup);
+  conflicting.entries[0].payload.items[0].quantity = "2";
+  await other.locator("#backup-queue-file").setInputFiles({ name: "conflict.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(conflicting)) });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้าไม่สำเร็จ");
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(entries);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+});
+
+test("malformed legacy session data is exported unchanged and cannot be imported", async ({ page, pos }) => {
+  const raw = '{"id":"unfinished",';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  expect(download.suggestedFilename()).toMatch(/^pos-legacy-sale-raw-.*\.txt$/);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+  await expect(page.locator("#backup-queue-message")).toContainText("นำเข้าอัตโนมัติไม่ได้");
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await page.goto(pos + "/checkout/backup");
+  await page.locator("#backup-queue-file").setInputFiles({ name: "raw.json", mimeType: "application/json", buffer: await readFile(await download.path()) });
+  await page.locator("#backup-queue-confirm").check();
+  await page.locator("#backup-queue-submit").click();
+  await expect(page.locator("#backup-queue-message")).toContainText("รูปแบบหรือรุ่นไฟล์นี้ไม่รองรับ");
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+});
+
+test("legacy session storage errors do not hide the normal queue backup", async ({ page, pos }) => {
+  await page.addInitScript(() => {
+    const original = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-sale") throw new Error("storage unavailable");
+      return original.call(this, key);
+    };
+  });
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#backup-legacy-count")).toContainText("อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้");
+  await expect(page.locator("#backup-legacy-export")).toBeDisabled();
+  await expect(page.locator("#backup-queue-count")).toContainText("0 บิล");
+});
+
 test("checkout without any known store identity is blocked while offline", async ({ page, context, pos }) => {
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
