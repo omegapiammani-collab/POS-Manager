@@ -415,14 +415,14 @@ test("restoring an old database blocks an existing queue until explicit review",
   async function start(database, port, create) {
     const args = ["inventory_api.py", "--port", String(port), "--database", database];
     if (create) args.push("--create-database");
-    const process = spawn(process.env.POS_PYTHON || "python3", args, { cwd: join(__dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
-    const closed = once(process, "close");
+    const server = spawn(process.env.POS_PYTHON || "python3", args, { cwd: join(__dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+    const closed = once(server, "close");
     closed.catch(() => {});
-    const lines = createInterface({ input: process.stdout });
+    const lines = createInterface({ input: server.stdout });
     const [line] = await Promise.race([once(lines, "line"), closed.then(([code]) => { throw new Error("server exited " + code); })]);
     const match = /^Inventory API: (http:\/\/127\.0\.0\.1:\d+)$/.exec(line);
     expect(match).not.toBeNull();
-    return { process, closed, origin: match[1] };
+    return { process: server, closed, origin: match[1] };
   }
   try {
     active = await start(originalFile, 0, true);
