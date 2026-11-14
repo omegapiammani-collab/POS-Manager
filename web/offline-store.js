@@ -10,16 +10,25 @@
   function openDatabase() {
     if (!opening) {
       opening = new Promise((resolve, reject) => {
-        const request = indexedDB.open(DATABASE, 1);
-        request.onupgradeneeded = () => {
+      const request = indexedDB.open(DATABASE, 2);
+        let blocked = false;
+      request.onupgradeneeded = (event) => {
           const db = request.result;
+        if (event.oldVersion === 0) {
           db.createObjectStore(SNAPSHOTS);
           const queue = db.createObjectStore(QUEUE, { keyPath: "sequence", autoIncrement: true });
           queue.createIndex("saleId", "id", { unique: true });
+        }
         };
         request.onerror = () => reject(request.error);
+        request.onblocked = () => {
+          blocked = true;
+          reject(new Error("Offline database upgrade blocked by another tab"));
+        };
         request.onsuccess = () => {
           const db = request.result;
+          // A blocked request may succeed later, after its promise has rejected.
+          if (blocked) { db.close(); return; }
           db.onversionchange = () => {
             db.close();
             opening = null;
@@ -33,6 +42,77 @@
       });
     }
     return opening;
+  }
+
+  async function guarded(expected, run) {
+    expected = saleId(expected);
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([SNAPSHOTS, QUEUE], "readwrite");
+      let result, failure;
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error("Offline transaction was aborted"));
+      const snapshots = tx.objectStore(SNAPSHOTS);
+      const queue = tx.objectStore(QUEUE);
+      const abort = (error) => { failure = error; tx.abort(); };
+      const request = snapshots.get("storeId");
+      request.onsuccess = () => {
+        if (request.result !== expected) return abort(new Error("Store binding changed"));
+        try { run(queue, snapshots, (value) => { result = value; }, abort); }
+        catch (error) { abort(error); }
+      };
+    });
+  }
+
+  async function getBinding() {
+    return transaction(SNAPSHOTS, "readonly", (store, setResult) => {
+      const request = store.get("storeId");
+      request.onsuccess = () => setResult(request.result ?? null);
+    });
+  }
+
+  async function bindStore(id, { acceptLegacy = false, allowSwitch = false, acceptRestore = false, ancestors = null, expectedCurrent = null } = {}) {
+    id = saleId(id);
+    if (ancestors !== null) ancestors = ancestors.map(saleId);
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([SNAPSHOTS, QUEUE], "readwrite");
+      let result, failure;
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error("Cannot bind store"));
+      const snapshots = tx.objectStore(SNAPSHOTS), queue = tx.objectStore(QUEUE);
+      const currentRequest = snapshots.get("storeId");
+      currentRequest.onsuccess = () => {
+        const current = currentRequest.result ?? null;
+        const countRequest = queue.count();
+        countRequest.onsuccess = () => {
+          const count = countRequest.result;
+          if (current === id) { if (ancestors !== null) snapshots.put(ancestors, "restoreAncestors"); result = { bound: true }; return; }
+          if (current !== expectedCurrent) { result = { bound: false, current, count }; return; }
+          if ((!current && count && !acceptLegacy) || (current && current !== id && ((count && !acceptRestore) || (!allowSwitch && !acceptRestore)))) {
+            result = { bound: false, current, count };
+            return;
+          }
+          if (current !== id) {
+            snapshots.delete("products");
+            snapshots.delete("customers");
+          }
+          snapshots.put(id, "storeId");
+          snapshots.put(ancestors ?? [], "restoreAncestors");
+          if (acceptRestore || (!current && acceptLegacy)) {
+            const cursor = queue.openCursor();
+            cursor.onsuccess = () => {
+              const item = cursor.result;
+              if (!item) { result = { bound: true }; return; }
+              if (item.value.state === "pending") {
+                item.update({ ...item.value, state: "conflict", error: "ฐานข้อมูลถูกกู้คืนหรือคิวเดิมไม่ระบุรุ่น กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" });
+              }
+              item.continue();
+            };
+          } else result = { bound: true };
+        };
+      };
+    });
   }
 
   async function transaction(storeName, mode, run) {
@@ -81,17 +161,24 @@
     return { payload, state, error };
   }
 
-  async function getSnapshot(key) {
+  async function getSnapshot(key, expected) {
     validatedKey(key);
-    return transaction(SNAPSHOTS, "readonly", (store, setResult) => {
-      const request = store.get(key);
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get(key);
       request.onsuccess = () => setResult(request.result ?? null);
     });
   }
 
-  async function putSnapshot(key, value) {
+  async function getRestoreAncestors(expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get("restoreAncestors");
+      request.onsuccess = () => setResult(request.result ?? []);
+    });
+  }
+
+  async function putSnapshot(key, value, expected) {
     validatedKey(key);
-    await transaction(SNAPSHOTS, "readwrite", (store) => { store.put(value, key); });
+    await guarded(expected, (queue, snapshots) => { snapshots.put(value, key); });
   }
 
   async function list() {
@@ -101,11 +188,32 @@
     });
   }
 
-  async function put(payload) {
+  async function listForStore(expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = queue.getAll();
+      request.onsuccess = () => setResult(request.result.map(queueEntry));
+    });
+  }
+
+  async function exportQueue() {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([SNAPSHOTS, QUEUE], "readonly");
+      let id = null, entries = [];
+      tx.oncomplete = () => resolve({ storeId: id, entries });
+      tx.onabort = () => reject(tx.error ?? new Error("Cannot read queue"));
+      const binding = tx.objectStore(SNAPSHOTS).get("storeId");
+      const rows = tx.objectStore(QUEUE).getAll();
+      binding.onsuccess = () => { id = binding.result ?? null; };
+      rows.onsuccess = () => { entries = rows.result.map(queueEntry); };
+    });
+  }
+
+  async function put(payload, expected, { reviewRequired = false } = {}) {
     const id = saleId(payload?.id);
     const submitted = structuredClone({ ...payload, id });
     const signature = canonicalJson(submitted);
-    return transaction(QUEUE, "readwrite", (store, setResult, abort) => {
+    return guarded(expected, (store, snapshots, setResult, abort) => {
       const request = store.index("saleId").get(id);
       request.onsuccess = () => {
         const existing = request.result;
@@ -114,10 +222,15 @@
             abort(new Error("This offline sale ID already has different data"));
             return;
           }
-          setResult(queueEntry(existing));
+          if (reviewRequired && existing.state === "pending") {
+            const reviewed = { ...existing, state: "conflict", error: "คิวเดิมไม่ระบุรุ่นฐานข้อมูล กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" };
+            store.put(reviewed);
+            setResult(queueEntry(reviewed));
+          } else setResult(queueEntry(existing));
           return;
         }
-        const row = { id, signature, payload: submitted, state: "pending", error: null };
+        const row = { id, signature, payload: submitted, state: reviewRequired ? "conflict" : "pending",
+          error: reviewRequired ? "คิวเดิมไม่ระบุรุ่นฐานข้อมูล กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" : null };
         store.add(row);
         setResult(queueEntry(row));
       };
@@ -192,12 +305,12 @@
     return { id, signature: canonicalJson(submitted), payload: submitted, state, error };
   }
 
-  async function importQueue(entries) {
+  async function importQueue(entries, expected) {
     if (!Array.isArray(entries)) {
       throw new TypeError("A queue backup must contain an array of entries");
     }
     const rows = Array.from(entries, validatedImportEntry);
-    return transaction(QUEUE, "readwrite", (store, setResult, abort) => {
+    return guarded(expected, (store, snapshots, setResult, abort) => {
       const index = store.index("saleId");
       const totals = { imported: 0, duplicates: 0 };
       let position = 0;
@@ -218,7 +331,12 @@
           if (existing) {
             totals.duplicates++;
           } else {
-            store.add(row);
+            // A restored database can predate a sale or cancellation even when
+            // its store ID matches. Require a review before submitting a newly
+            // imported pending sale; preserve existing conflicts and all payloads.
+            store.add(row.state === "pending"
+              ? { ...row, state: "conflict", error: "นำเข้าจากไฟล์สำรอง กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" }
+              : row);
             totals.imported++;
           }
           next();
@@ -228,11 +346,11 @@
     });
   }
 
-  async function update(id, state, error = null) {
+  async function update(id, state, error = null, expected) {
     id = saleId(id);
     if (!STATES.has(state)) throw new TypeError("Unknown offline sale state");
     if (error !== null && typeof error !== "string") throw new TypeError("Invalid offline error");
-    return transaction(QUEUE, "readwrite", (store, setResult) => {
+    return guarded(expected, (store, snapshots, setResult) => {
       const request = store.index("saleId").get(id);
       request.onsuccess = () => {
         const existing = request.result;
@@ -247,9 +365,9 @@
     });
   }
 
-  async function remove(id) {
+  async function remove(id, expected) {
     id = saleId(id);
-    await transaction(QUEUE, "readwrite", (store) => {
+    await guarded(expected, (store) => {
       const request = store.index("saleId").getKey(id);
       request.onsuccess = () => {
         if (request.result !== undefined) store.delete(request.result);
@@ -257,5 +375,5 @@
     });
   }
 
-  window.PosOffline = { getSnapshot, putSnapshot, list, put, update, remove, importQueue };
+  window.PosOffline = { getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
 })();

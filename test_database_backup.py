@@ -10,6 +10,7 @@ from threading import Thread
 import unittest
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from test_store_headers import store_headers
 from uuid import uuid4
 
 from inventory_api import make_server
@@ -40,7 +41,7 @@ class DatabaseBackupTests(unittest.TestCase):
         request = Request(
             (origin or self.origin) + path,
             data=None if payload is None else json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=store_headers(origin or self.origin),
         )
         with urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, 200 if payload is None else 201)
@@ -113,6 +114,11 @@ class DatabaseBackupTests(unittest.TestCase):
         result = self.restore(backup, restored)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         origin = self.start_server(restored)
+        with urlopen(self.origin + "/store-identity") as original_response, urlopen(origin + "/store-identity") as restored_response:
+            original_identity, restored_identity = json.load(original_response), json.load(restored_response)
+            self.assertEqual(original_identity["id"], restored_identity["id"])
+            self.assertNotEqual(original_identity["binding_id"], restored_identity["binding_id"])
+            self.assertIn(original_identity["binding_id"], restored_identity["restore_ancestors"])
         self.assertEqual(self.request(f"/sales/{sale['id']}", origin=origin), sale)
         self.assertEqual(self.request(f"/expenses?from={DAY}&to={DAY}", origin=origin), [expense])
         self.assertEqual(self.request(f"/cash-drawer?date={DAY}", origin=origin), drawer)
@@ -126,20 +132,55 @@ class DatabaseBackupTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(target.read_bytes(), original)
 
+    def test_restore_rotates_only_target_binding_and_rejects_old_client_after_lost_response(self):
+        product = self.request("/products", {"code": "W01", "name": "น้ำ", "base_unit": "ขวด", "price": "10"})
+        self.request(f"/products/{product['id']}/receipts", {"unit_id": product["base_unit_id"], "quantity": "2", "unit_cost": "4"})
+        with urlopen(self.origin + "/store-identity") as response:
+            before_identity = json.load(response)
+        backup = self.download()
+        backup_bytes = backup.read_bytes()
+        sale = {"id": str(uuid4()), "items": [{"product_id": product["id"], "unit_id": product["base_unit_id"],
+                "quantity": "1", "expected_unit_price": "10"}],
+                "payments": {"cash": "10", "qr": "0", "credit": "0"}, "customer_id": None, "qr_confirmed": False}
+        recorded = self.request("/sales", sale)
+        restored = self.directory / "restored-old.sqlite3"
+        self.assertEqual(self.restore(backup, restored).returncode, 0)
+        self.assertEqual(backup.read_bytes(), backup_bytes)
+        with urlopen(self.origin + "/store-identity") as response:
+            self.assertEqual(json.load(response), before_identity)
+        restored_origin = self.start_server(restored)
+        with urlopen(restored_origin + "/store-identity") as response:
+            restored_identity = json.load(response)
+        self.assertEqual(restored_identity["id"], before_identity["id"])
+        self.assertNotEqual(restored_identity["binding_id"], before_identity["binding_id"])
+        self.assertIn(before_identity["binding_id"], restored_identity["restore_ancestors"])
+        headers = {"Content-Type": "application/json", "X-POS-Store-ID": before_identity["binding_id"]}
+        for route, body in (("/sales", sale), ("/offline-sales", sale), ("/sales/allow-negative", sale),
+                            (f"/sales/{sale['id']}/abandon", {})):
+            req = Request(restored_origin + route, data=json.dumps(body).encode(), headers=headers)
+            with self.subTest(route=route), self.assertRaises(HTTPError) as rejected:
+                urlopen(req, timeout=5)
+            self.assertEqual(rejected.exception.code, 409)
+            self.assertEqual(json.load(rejected.exception)["code"], "store_mismatch")
+        with self.assertRaises(HTTPError) as missing:
+            self.request(f"/sales/{sale['id']}", origin=restored_origin)
+        self.assertEqual(missing.exception.code, 404)
+        self.assertEqual(self.request(f"/sales/{sale['id']}"), recorded)
+
     def test_backup_restores_abandoned_sale_guard_and_legacy_database_still_opens(self):
         product = self.request("/products", {"code": "W01", "name": "น้ำ", "base_unit": "ขวด", "price": "10"})
         sale_id = str(uuid4())
         sale = {"id": sale_id, "items": [{"product_id": product["id"], "unit_id": product["base_unit_id"],
                  "quantity": "1", "expected_unit_price": "10"}],
                 "payments": {"cash": "10", "qr": "0", "credit": "0"}, "customer_id": None, "qr_confirmed": False}
-        req = Request(self.origin + f"/sales/{sale_id}/abandon", data=b"{}", headers={"Content-Type": "application/json"})
+        req = Request(self.origin + f"/sales/{sale_id}/abandon", data=b"{}", headers=store_headers(self.origin))
         with urlopen(req, timeout=5) as response:
             self.assertEqual(response.status, 200)
         backup = self.download()
         restored = self.directory / "abandoned-restored.sqlite3"
         self.assertEqual(self.restore(backup, restored).returncode, 0)
         origin = self.start_server(restored)
-        req = Request(origin + "/offline-sales", data=json.dumps(sale).encode(), headers={"Content-Type": "application/json"})
+        req = Request(origin + "/offline-sales", data=json.dumps(sale).encode(), headers=store_headers(origin))
         with self.assertRaises(HTTPError) as raised:
             urlopen(req, timeout=5)
         self.assertEqual(raised.exception.code, 409)

@@ -14,6 +14,12 @@
   <main class="frame">
     <div class="page-title"><h1>ขายสินค้า</h1><nav class="actions" aria-label="เมนู POS"><a class="pos-link" href="/">สินค้าและสต๊อก</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/checkout/backup">สำรองข้อมูล</a></nav></div>
     <p id="sale-connection" class="sale-message" role="status">กำลังเชื่อมต่อ…</p>
+    <section id="sale-store-blocked" class="panel sale-pending" hidden>
+      <h2>ตรวจสอบฐานข้อมูลร้าน</h2>
+      <p id="sale-store-message" role="alert"></p>
+      <button id="sale-store-bind" type="button" hidden>ตรวจสอบและยืนยันฐานข้อมูล</button>
+      <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
+    </section>
     <section class="panel sale-pending" aria-labelledby="sale-storage-title">
       <h2 id="sale-storage-title">พื้นที่เก็บบิลออฟไลน์</h2>
       <p id="sale-storage-status" class="muted" role="status">กำลังตรวจสอบ…</p>
@@ -79,6 +85,12 @@
       </section>
     </div>
   </main>
+  <dialog id="sale-store-confirm" aria-labelledby="sale-store-confirm-title">
+    <h2 id="sale-store-confirm-title">ยืนยันฐานข้อมูลร้าน</h2>
+    <p id="sale-store-confirm-message"></p>
+    <p id="sale-store-confirm-id"></p>
+    <div class="actions"><button id="sale-store-cancel" class="secondary" type="button">กลับ</button><button id="sale-store-confirm-button" type="button">ยืนยันฐานข้อมูลนี้</button></div>
+  </dialog>
   <dialog id="sale-queue-detail" aria-labelledby="sale-queue-detail-title">
     <h2 id="sale-queue-detail-title">รายละเอียดบิลในเครื่อง</h2>
     <p class="muted">สถานะและชื่อสินค้า หน่วยขาย และลูกค้าอ้างอิงข้อมูลที่เครื่องโหลดไว้ อาจเปลี่ยนหลังขาย หากไม่พบจะแสดงรหัส</p>
