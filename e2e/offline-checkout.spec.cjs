@@ -292,7 +292,7 @@ test("queue backup rejects a different store and requires explicit confirmation 
   await input.setInputFiles({ name: "wrong.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "pos-sale-queue", version: 2, store_id: randomUUID(), entries })) });
   await check.check();
   await page.getByRole("button", { name: "นำเข้าบิล" }).click();
-  await expect(page.locator("#backup-queue-message")).toContainText("ฐานข้อมูลร้านอื่น");
+  await expect(page.locator("#backup-queue-message")).toContainText("ตรวจสอบความสัมพันธ์ระหว่างไฟล์กับฐานข้อมูลร้านไม่ได้");
   expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(0);
   await input.setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "pos-sale-queue", version: 1, entries })) });
   await expect(page.getByRole("button", { name: "นำเข้าบิล" })).toBeDisabled();
@@ -482,6 +482,46 @@ test("restoring an old database blocks an existing queue until explicit review",
     await expect.poll(async () => (await client.get(active.origin + "/sales/" + queued.payload.id)).status()).toBe(200);
     await expect.poll(() => page.evaluate(() => window.PosOffline.list())).toEqual([]);
     expect(product.id).toBe(queued.payload.items[0].product_id);
+
+    // Restoring the same old backup again creates a sibling, not a descendant
+    // of the first restored binding. Keep its queue until a human can inspect it.
+    const siblingQueued = { ...queued.payload, id: randomUUID() };
+    await page.evaluate(async ({ payload, binding }) => window.PosOffline.put(payload, binding),
+      { payload: siblingQueued, binding: restoredIdentity.binding_id });
+    active.process.kill();
+    await active.closed;
+    active = null;
+    const siblingFile = join(directory, "sibling.sqlite3");
+    const restoreAgain = spawn(process.env.POS_PYTHON || "python3", ["database_backup.py", "restore", backupFile, siblingFile],
+      { cwd: join(__dirname, ".."), stdio: "ignore" });
+    expect((await once(restoreAgain, "close"))[0]).toBe(0);
+    active = await start(siblingFile, port, false);
+    const siblingIdentityClient = await playwright.request.newContext();
+    const siblingIdentity = await (await siblingIdentityClient.get(active.origin + "/store-identity")).json();
+    await siblingIdentityClient.dispose();
+    expect(siblingIdentity.id).toBe(restoredIdentity.id);
+    expect(siblingIdentity.binding_id).not.toBe(restoredIdentity.binding_id);
+    expect(siblingIdentity.restore_ancestors).not.toContain(restoredIdentity.binding_id);
+    await page.reload();
+    await expect(page.locator("#sale-store-message")).toContainText("ตรวจสอบความสัมพันธ์ของฐานข้อมูลกับบิลในเครื่องไม่ได้");
+    await expect(page.locator("#sale-store-bind")).toBeHidden();
+    const retained = await page.evaluate(() => window.PosOffline.list());
+    expect(retained).toHaveLength(1);
+    expect(retained[0].payload).toEqual(siblingQueued);
+    expect(retained[0].state).toBe("pending");
+    await staleTab.reload();
+    await expect(staleTab.locator("#sale-store-bind")).toBeHidden();
+    expect(await staleTab.evaluate(() => window.PosOffline.getBinding())).toBe(restoredIdentity.binding_id);
+    const siblingClient = await playwright.request.newContext({ extraHTTPHeaders: { "X-POS-Store-ID": restoredIdentity.binding_id } });
+    expect((await siblingClient.post(active.origin + "/offline-sales", { data: siblingQueued })).status()).toBe(409);
+    await siblingClient.dispose();
+    await page.goto(active.origin + "/checkout/backup");
+    const [download] = await Promise.all([
+      page.waitForEvent("download"), page.locator("#backup-queue-export").click(),
+    ]);
+    const saved = JSON.parse(await readFile(await download.path(), "utf8"));
+    expect(saved.store_id).toBe(restoredIdentity.binding_id);
+    expect(saved.entries[0].payload).toEqual(siblingQueued);
   } finally {
     if (client) await client.dispose();
     if (active) { active.process.kill(); await active.closed; }

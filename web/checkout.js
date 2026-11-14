@@ -131,7 +131,7 @@ async function initializeStore() {
         const fromRestore = Boolean(storeId && observedAncestors.includes(storeId));
         const canBind = (!storeId || storeId === observedStoreId || fromRestore || (!queued.length && !legacyPending));
         blockStore(storeId && storeId !== observedStoreId
-          ? (fromRestore ? "ตรวจพบฐานข้อมูลที่กู้คืน บิลค้างต้องตรวจสอบกับแหล่งข้อมูลอื่นก่อนส่ง" : "ฐานข้อมูลร้านไม่ตรงกับข้อมูลในเครื่อง (ในเครื่อง " + storeId + " · เซิร์ฟเวอร์ " + observedStoreId + ") กรุณาตรวจสอบบิลค้างก่อนเปลี่ยนร้าน")
+          ? (fromRestore ? "ตรวจพบฐานข้อมูลที่กู้คืน บิลค้างต้องตรวจสอบกับแหล่งข้อมูลอื่นก่อนส่ง" : "ตรวจสอบความสัมพันธ์ของฐานข้อมูลกับบิลในเครื่องไม่ได้ (ในเครื่อง " + storeId + " · เซิร์ฟเวอร์ " + observedStoreId + ") กรุณาสำรองบิลและตรวจสอบฐานข้อมูลก่อนดำเนินการ")
           : "บิลเดิมยังไม่ระบุร้าน กรุณาตรวจสอบว่าเป็นของฐานข้อมูลนี้ก่อนยืนยัน", canBind);
         return;
       }

@@ -115,7 +115,7 @@ form.addEventListener("submit", async (event) => {
     if (backup.version === 2 && backup.store_id && backup.store_id !== storeId) {
       const ancestors = await queueStore.getRestoreAncestors(storeId);
       if (!ancestors.includes(backup.store_id)) {
-        message("ไฟล์นี้เป็นของฐานข้อมูลร้านอื่น กรุณาตรวจสอบฐานข้อมูลก่อนนำเข้า", true);
+        message("ตรวจสอบความสัมพันธ์ระหว่างไฟล์กับฐานข้อมูลร้านไม่ได้ กรุณาเก็บไฟล์สำรองไว้และตรวจสอบก่อนนำเข้า", true);
         return;
       }
     }
