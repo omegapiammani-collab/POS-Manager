@@ -1529,6 +1529,7 @@ test("unreadable inventory request storage never triggers deletion", async ({ pa
 
 test("valid pending receipt is not rewritten on load and retries its original id", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
+  const initialQuantity = Number((await (await request.get(pos + "/products")).json())[0].quantity);
   const payload = { id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10" };
   const raw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", payload }, null, 2);
   await page.goto(pos + "/");
@@ -1542,8 +1543,13 @@ test("valid pending receipt is not rewritten on load and retries its original id
   await expect(page.locator("#receipt-pending")).toBeHidden();
   expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBeNull();
   const beforeReplay = (await (await request.get(pos + "/products")).json())[0].quantity;
-  expect((await request.post(pos + `/products/${product.id}/receipts`, { data: payload })).status()).toBe(200);
+  expect(Number(beforeReplay)).toBe(initialQuantity + 2);
+  const replay = await request.post(pos + `/products/${product.id}/receipts`, { data: payload });
+  expect(replay.status()).toBe(201);
+  expect(await replay.json()).toEqual({ id: payload.id });
   expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe(beforeReplay);
+  const receipts = await (await request.get(pos + `/products/${product.id}/receipts`)).json();
+  expect(receipts.filter((receipt) => receipt.id === payload.id)).toHaveLength(1);
 });
 
 test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {
