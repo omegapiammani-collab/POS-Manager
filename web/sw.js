@@ -9,6 +9,21 @@ const snapshotUrl = (path) => path + "?shell=" + SHELL_REVISION;
 
 async function verified(response, path) {
   if (!response || response.status !== 200 || response.redirected || response.type === "opaque") return false;
+  const contentType = response.headers.get("content-type");
+  if (!contentType) return false;
+  const [mediaType, ...parameters] = contentType.split(";").map((part) => part.trim());
+  const expected = path === CHECKOUT || path === BACKUP ? ["text/html"]
+    : path.endsWith(".css") ? ["text/css"] : ["text/javascript", "application/javascript"];
+  if (!expected.includes(mediaType.toLowerCase())) return false;
+  let charsetSeen = false;
+  for (const parameter of parameters) {
+    const match = /^([!#$%&'*+.^_`|~\w-]+)\s*=\s*([!#$%&'*+.^_`|~\w-]+|"[^"\\]*")$/.exec(parameter);
+    if (!match) return false;
+    if (match[1].toLowerCase() === "charset") {
+      if (charsetSeen || match[2].replace(/^"|"$/g, "").toLowerCase() !== "utf-8") return false;
+      charsetSeen = true;
+    }
+  }
   try {
     const bytes = await response.clone().arrayBuffer();
     const digest = await crypto.subtle.digest("SHA-256", bytes);

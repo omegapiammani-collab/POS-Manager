@@ -7,7 +7,8 @@ const vm = require("node:vm");
 
 const bodies = { "/checkout": "html-v1", "/checkout/backup": "backup-v1", "/checkout.js": "js-v1", "/backup.js": "backup-js-v1" };
 const hashes = Object.fromEntries(Object.entries(bodies).map(([path, body]) => [path, createHash("sha256").update(body).digest("hex")]));
-const result = (body, status = 200) => new Response(body, { status });
+const result = (body, status = 200, type = body.startsWith("html-") || body === "backup-v1" ? "text/html; charset=utf-8" : "text/javascript; charset=utf-8") =>
+  new Response(body, { status, headers: { "Content-Type": type } });
 
 function harness(initial, network, { quota = false } = {}) {
   const entries = initial instanceof Map ? initial : new Map(Object.entries(initial));
@@ -64,6 +65,27 @@ test("worker restart, concurrent requests and storage quota preserve verified re
 test("unmatched online HTML cannot replace a cached older shell", async () => {
   const h = harness({ "/checkout?shell=v1": result("html-v1") }, async () => result("html-v2"));
   assert.equal(await (await h.navigation("/checkout")).text(), "html-v1");
+});
+
+test("wrong MIME and charset are not used or cached, even when bytes match", async () => {
+  for (const type of ["text/plain; charset=utf-8", "text/javascript; charset=windows-1252", "text/javascript; charset=utf-8; charset=windows-1252"]) {
+    const entries = new Map([["/checkout.js?shell=v1", result("js-v1", 200, type)]]);
+    const h = harness(entries, async () => result("js-v1", 200, type));
+    assert.equal((await h.asset("/checkout.js")).type, "error");
+    assert.equal(entries.get("/checkout.js?shell=v1").headers.get("content-type"), type);
+    const healed = harness(entries, async () => result("js-v1", 200, 'text/javascript; foo=bar; charset="UTF-8"'));
+    assert.equal(await (await healed.asset("/checkout.js")).text(), "js-v1");
+    assert.equal(entries.get("/checkout.js?shell=v1").headers.get("content-type"), 'text/javascript; foo=bar; charset="UTF-8"');
+  }
+});
+
+test("invalid HTML content type falls back to the valid snapshot, never the bad headers", async () => {
+  for (const type of ["text/plain; charset=utf-8", "text/html; charset=iso-8859-1"]) {
+    const h = harness({ "/checkout?shell=v1": result("html-v1") }, async () => result("html-v1", 200, type));
+    const response = await h.navigation("/checkout");
+    assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+    assert.equal(await response.text(), "html-v1");
+  }
 });
 
 test("installation rejects a 200 response with mismatched bytes", async () => {

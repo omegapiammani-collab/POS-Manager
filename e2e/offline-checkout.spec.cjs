@@ -134,6 +134,54 @@ test("missing cached backup script warns offline and preserves the queued bill",
   expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
 });
 
+test("backup recovery rejects wrong MIME even for identical bytes and preserves the queue", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  const backupScript = await readFile(join(__dirname, "..", "web", "backup.js"));
+  let wrongMime = false;
+  const proxy = http.createServer((incoming, response) => {
+    if (wrongMime && incoming.url.startsWith("/backup.js?")) {
+      response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end(backupScript); return;
+    }
+    const upstream = http.request(new URL(incoming.url, pos), {
+      method: incoming.method, headers: { ...incoming.headers, host: new URL(pos).host },
+    }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
+    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+    incoming.pipe(upstream);
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    await context.setOffline(true);
+    await sellOne(page);
+    await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+    const queued = await page.evaluate(() => window.PosOffline.list());
+    expect(queued).toHaveLength(1);
+    await page.evaluate(async () => {
+      const name = (await caches.keys()).find((item) => item.startsWith("pos-checkout-snapshot-"));
+      const cache = await caches.open(name);
+      const entry = (await cache.keys()).find((item) => new URL(item.url).pathname === "/backup.js");
+      await cache.delete(entry);
+    });
+    await page.goto(origin + "/checkout/backup");
+    await expect(page.locator("#shell-load-error")).toBeVisible();
+    wrongMime = true;
+    await context.setOffline(false);
+    await page.reload();
+    await expect(page.locator("#shell-load-error")).toBeVisible();
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+    wrongMime = false;
+    await page.reload();
+    await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  } finally {
+    await new Promise((resolve) => { proxy.close(resolve); proxy.closeAllConnections(); });
+  }
+});
+
 test("a new shell waits for both old tabs and then serves its own offline snapshot", async ({ page, context }) => {
   const worker = await readFile(join(__dirname, "..", "web", "sw.js"), "utf8");
   let revision = "revision-a", failNavigation = false;
