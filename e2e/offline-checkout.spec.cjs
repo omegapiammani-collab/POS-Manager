@@ -1157,9 +1157,32 @@ test("offline bill survives reload and syncs once after another device sells the
       return route.continue();
     });
     const expectedStore = await page.evaluate(() => storeId);
-    await page.route("**/store-identity", (route) => route.fulfill({ json: { id: expectedStore } }));
+    let identityRequests = 0;
+    await page.route("**/store-identity", (route) => {
+      identityRequests++;
+      return route.fulfill({ json: { id: expectedStore } });
+    });
+    await page.evaluate(() => {
+      window.__posNetworkEvents = [];
+      for (const event of ["online", "offline"]) {
+        window.addEventListener(event, () => window.__posNetworkEvents.push({ event, online: navigator.onLine }));
+      }
+    });
     await context.setOffline(false);
-    await expect(page.locator("#sale-message")).toContainText("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+    try {
+      await expect(page.locator("#sale-message")).toContainText("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+    } catch (error) {
+      const state = await page.evaluate(async () => ({
+        online: navigator.onLine, events: window.__posNetworkEvents, storeReady, initializingStore,
+        hasStoreId: Boolean(storeId), bindingMatches: (await window.PosOffline.getBinding()) === storeId,
+        connected, syncing, staging, syncRequested, retryScheduled: retryTimer !== null, queueProblem,
+        queueStates: (await window.PosOffline.list()).map((entry) => entry.state),
+        storeBlocked: !document.getElementById("sale-store-blocked").hidden,
+        storeMessage: document.getElementById("sale-store-message").textContent,
+      }));
+      console.error("POS_SYNC_DIAGNOSTIC", JSON.stringify({ identityRequests, attempts, state }));
+      throw error;
+    }
     expect(await queue()).toEqual([{ payload, state: "pending", error: null }]);
     // After the immediate retry fails, the next automatic attempt is in 10 seconds.
     await expect(page.locator("#sale-message")).toContainText("สต๊อกติดลบ 1 บิล", { timeout: 25000 });
