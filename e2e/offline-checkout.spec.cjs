@@ -580,7 +580,7 @@ test("a changed server store blocks a queued sale without rebinding or sending i
   const other = randomUUID();
   await page.route("**/store-identity", (route) => route.fulfill({ json: { id: other, binding_id: other, restore_ancestors: [] } }));
   await page.reload();
-  await expect(page.locator("#sale-store-message")).toContainText("ฐานข้อมูลร้านไม่ตรง");
+  await expect(page.locator("#sale-store-message")).toContainText("ตรวจสอบความสัมพันธ์ของฐานข้อมูลกับบิลในเครื่องไม่ได้");
   await expect(page.locator("#sale-store-bind")).toBeHidden();
   await expect(page.locator("#sale-submit")).toBeDisabled();
   expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(original);
