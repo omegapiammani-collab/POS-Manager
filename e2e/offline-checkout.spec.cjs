@@ -971,14 +971,57 @@ test("malformed legacy session data is exported unchanged and cannot be imported
   await expect(page.locator("#backup-queue-message")).toContainText("นำเข้าอัตโนมัติไม่ได้");
   expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
   expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
-  await page.goto(pos + "/checkout");
-  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
-  await page.goto(pos + "/checkout/backup");
   await page.locator("#backup-queue-file").setInputFiles({ name: "raw.json", mimeType: "application/json", buffer: await readFile(await download.path()) });
   await page.locator("#backup-queue-confirm").check();
   await page.locator("#backup-queue-submit").click();
   await expect(page.locator("#backup-queue-message")).toContainText("รูปแบบหรือรุ่นไฟล์นี้ไม่รองรับ");
   expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+});
+
+test("malformed session sale blocks sales and queue sync without changing data", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const queued = await page.evaluate(() => window.PosOffline.list());
+  const raw = '{"id":"unfinished",';
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.reload();
+  await expect(page.locator("#sale-store-message")).toContainText("ข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่สมบูรณ์");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  await expect(page.locator("#sale-retry")).toBeDisabled();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  await context.setOffline(false);
+  await expect(page.locator("#sale-store-message")).toContainText("สำรองบิลจากแท็บนี้");
+  expect((await request.get(pos + "/sales/" + queued[0].payload.id)).status()).toBe(404);
+  await page.locator("#sale-store-blocked").getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+});
+
+test("unreadable legacy session storage blocks checkout and keeps existing bytes", async ({ page, pos }) => {
+  await page.goto(pos + "/");
+  const raw = '{"id":"unfinished",';
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.addInitScript(() => {
+    const original = Storage.prototype.getItem;
+    window.originalStorageGetItem = original;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-sale") throw new Error("storage unavailable");
+      return original.call(this, key);
+    };
+  });
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-sale"))).toBe(raw);
   expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
 });
 
