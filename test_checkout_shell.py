@@ -1,0 +1,44 @@
+"""Check versioned checkout shell responses across server restarts."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Thread
+from unittest import TestCase
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import urlopen
+import shutil
+import re
+
+import inventory_api
+
+
+class CheckoutShellTests(TestCase):
+    def test_snapshot_is_immutable_and_other_revisions_are_rejected(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = root / "web"
+            shutil.copytree(inventory_api.WEB_DIR, web)
+            with patch.object(inventory_api, "WEB_DIR", web):
+                server = inventory_api.make_server(root / "store.sqlite", 0)
+                worker = Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    origin = f"http://127.0.0.1:{server.server_port}"
+                    def get(path):
+                        with urlopen(origin + path, timeout=3) as response:
+                            return response.read()
+                    html = get("/checkout")
+                    revision = re.search(rb"/checkout\.js\?shell=([0-9a-f]{64})", html).group(1).decode()
+                    self.assertIn(("/offline-store.js?shell=" + revision).encode(), html)
+                    self.assertIn(revision.encode(), get("/sw.js"))
+                    original = get("/checkout.js?shell=" + revision)
+                    (web / "checkout.js").write_text("changed on disk")
+                    self.assertEqual(get("/checkout.js?shell=" + revision), original)
+                    with self.assertRaises(HTTPError) as error:
+                        get("/checkout.js?shell=" + "0" * 64)
+                    self.assertEqual(error.exception.code, 409)
+                    self.assertEqual(inventory_api.checkout_shell()[0] == revision, False)
+                finally:
+                    server.shutdown()
+                    worker.join()
+                    server.server_close()

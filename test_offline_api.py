@@ -85,8 +85,8 @@ class OfflineApiTests(unittest.TestCase):
                 body = response.read().decode("utf-8")
                 self.assertTrue(body.strip())
                 if path == "/checkout":
-                    self.assertIn('src="/offline-store.js"', body)
-                    self.assertIn('src="/checkout.js"', body)
+                    self.assertRegex(body, r'src="/offline-store\.js\?shell=[0-9a-f]{64}"')
+                    self.assertRegex(body, r'src="/checkout\.js\?shell=[0-9a-f]{64}"')
 
     def test_out_of_stock_queued_sale_can_retry_and_replay_without_double_stock_change(self):
         product = self.expect(201, "/products", {

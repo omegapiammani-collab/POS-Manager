@@ -1,5 +1,6 @@
 """Local HTTP entry point for the POS inventory foundation."""
 import argparse
+import hashlib
 from contextlib import closing
 from decimal import Decimal
 from functools import partial
@@ -52,6 +53,24 @@ WEB_ASSETS = {
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
+SHELL_PATHS = ("/checkout", "/checkout/backup", "/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js")
+
+
+def checkout_shell():
+    # Keep a single immutable set for the lifetime of this server process.
+    paths = {path: (WEB_DIR / WEB_ASSETS[path][0]).read_bytes() for path in SHELL_PATHS}
+    worker = (WEB_DIR / "sw.js").read_bytes()
+    digest = hashlib.sha256()
+    for path, body in sorted(paths.items()):
+        digest.update(path.encode() + b"\0" + body + b"\0")
+    digest.update(worker)
+    revision = digest.hexdigest()
+    for path in ("/checkout", "/checkout/backup"):
+        for asset in SHELL_PATHS[2:]:
+            paths[path] = paths[path].replace(('"' + asset + '"').encode(),
+                                               ('"' + asset + '?shell=' + revision + '"').encode())
+    paths["/sw.js"] = worker.replace(b"__SHELL_REVISION__", revision.encode())
+    return revision, paths
 
 
 class RequestError(Exception):
@@ -148,8 +167,9 @@ def edit_unit_price(db, product_id, unit_id, data):
 
 
 class InventoryHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, database, **kwargs):
+    def __init__(self, *args, database, shell, **kwargs):
         self.database = database
+        self.shell = shell
         super().__init__(*args, **kwargs)
 
     def send_json(self, status, data):
@@ -164,8 +184,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def serve_asset(self, name, content_type):
-        body = (WEB_DIR / name).read_bytes()
+    def serve_asset(self, route, name, content_type):
+        revision, paths = self.shell
+        requested = parse_qs(route.query, keep_blank_values=True).get("shell")
+        if requested is not None and (route.path not in SHELL_PATHS or requested != [revision]):
+            raise RequestError(409, "Checkout shell revision unavailable")
+        body = paths.get(route.path)
+        if body is None:
+            body = (WEB_DIR / name).read_bytes()
         self.send_bytes(200, body, content_type, "no-cache")
 
     def send_database_backup(self):
@@ -359,7 +385,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if self.command == "GET" and route.path == "/database-backup":
                 return self.send_database_backup()
             if self.command == "GET" and route.path in WEB_ASSETS:
-                return self.serve_asset(*WEB_ASSETS[route.path])
+                return self.serve_asset(route, *WEB_ASSETS[route.path])
             if self.command == "GET" and route.path == "/payment-qr":
                 amount = parse_qs(route.query).get("amount", [""])[0]
                 return self.send_bytes(200, payment_qr_svg(amount), "image/svg+xml", "no-store")
@@ -405,7 +431,7 @@ def make_server(database, port):
         db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
         db.executescript(BINDING_SCHEMA)
         ensure_binding(db)
-    handler = partial(InventoryHandler, database=database)
+    handler = partial(InventoryHandler, database=database, shell=checkout_shell())
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
 

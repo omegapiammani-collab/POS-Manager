@@ -1,4 +1,5 @@
 const { spawn } = require("node:child_process");
+const http = require("node:http");
 const { randomUUID } = require("node:crypto");
 const { once } = require("node:events");
 const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
@@ -68,6 +69,41 @@ async function sellOne(page) {
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).click();
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
 }
+
+test("checkout snapshot handles 503 without mixing assets and leaves 404 intact", async ({ page, pos }) => {
+  let status = 200;
+  const proxy = http.createServer((request, response) => {
+    if (request.url === "/checkout" && status !== 200) {
+      response.writeHead(status, { "Content-Type": "text/plain" });
+      response.end("shell error " + status);
+      return;
+    }
+    const upstream = http.request(new URL(request.url, pos), {
+      method: request.method, headers: { ...request.headers, host: new URL(pos).host },
+    }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
+    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+    request.pipe(upstream);
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const version = new URL(await page.locator('script[src*="checkout.js"]').getAttribute("src"), origin).searchParams.get("shell");
+    expect(version).toMatch(/^[0-9a-f]{64}$/);
+    status = 503;
+    await page.reload();
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    const cachedVersion = new URL(await page.locator('script[src*="checkout.js"]').getAttribute("src"), origin).searchParams.get("shell");
+    expect(cachedVersion).toBe(version);
+    status = 404;
+    expect((await page.reload()).status()).toBe(404);
+    await expect(page.locator("body")).toContainText("shell error 404");
+  } finally {
+    await new Promise((resolve) => { proxy.close(resolve); proxy.closeAllConnections(); });
+  }
+});
 
 async function downloadCsv(page, label, filename, { touch = false } = {}) {
   const button = page.getByRole("button", { name: label, exact: true });
