@@ -119,7 +119,7 @@ form.addEventListener("submit", async (event) => {
     const result = await queueStore.importQueue(backup.entries, storeId);
     form.reset();
     selected.textContent = "";
-    message("นำเข้า " + integers.format(result.imported) + " บิล · มีอยู่แล้ว " + integers.format(result.duplicates) + " บิล");
+    message("นำเข้า " + integers.format(result.imported) + " บิลเพื่อตรวจสอบก่อนส่ง · มีอยู่แล้ว " + integers.format(result.duplicates) + " บิล (คงสถานะเดิม)");
   } catch {
     message("นำเข้าไม่สำเร็จ กรุณาตรวจสอบไฟล์หรือบิลที่มีเลขอ้างอิงซ้ำก่อนลองอีกครั้ง", true);
   } finally {

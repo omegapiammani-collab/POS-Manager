@@ -307,7 +307,12 @@
           if (existing) {
             totals.duplicates++;
           } else {
-            store.add(row);
+            // A restored database can predate a sale or cancellation even when
+            // its store ID matches. Require a review before submitting a newly
+            // imported pending sale; preserve existing conflicts and all payloads.
+            store.add(row.state === "pending"
+              ? { ...row, state: "conflict", error: "นำเข้าจากไฟล์สำรอง กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" }
+              : row);
             totals.imported++;
           }
           next();
