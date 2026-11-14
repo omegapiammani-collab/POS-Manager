@@ -6,6 +6,8 @@ from unittest import TestCase
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
+import hashlib
+import json
 import shutil
 import re
 
@@ -30,7 +32,11 @@ class CheckoutShellTests(TestCase):
                     html = get("/checkout")
                     revision = re.search(rb"/checkout\.js\?shell=([0-9a-f]{64})", html).group(1).decode()
                     self.assertIn(("/offline-store.js?shell=" + revision).encode(), html)
-                    self.assertIn(revision.encode(), get("/sw.js"))
+                    worker_script = get("/sw.js")
+                    self.assertIn(revision.encode(), worker_script)
+                    expected = json.loads(re.search(rb"const SHELL_HASHES = (.*);", worker_script).group(1))
+                    for path, digest in expected.items():
+                        self.assertEqual(hashlib.sha256(get(path + "?shell=" + revision)).hexdigest(), digest)
                     original = get("/checkout.js?shell=" + revision)
                     (web / "checkout.js").write_text("changed on disk")
                     self.assertEqual(get("/checkout.js?shell=" + revision), original)

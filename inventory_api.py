@@ -81,7 +81,9 @@ def checkout_shell():
         for asset in SHELL_PATHS[2:]:
             paths[path] = paths[path].replace(('"' + asset + '"').encode(),
                                                ('"' + asset + '?shell=' + revision + '"').encode())
-    paths["/sw.js"] = worker.replace(b"__SHELL_REVISION__", revision.encode())
+    shell_hashes = {path: hashlib.sha256(body).hexdigest() for path, body in paths.items()}
+    paths["/sw.js"] = (worker.replace(b"__SHELL_REVISION__", revision.encode())
+                       .replace(b"__SHELL_HASHES__", json.dumps(shell_hashes, sort_keys=True).encode()))
     return revision, paths
 
 

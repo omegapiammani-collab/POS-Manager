@@ -1,6 +1,6 @@
 const { spawn } = require("node:child_process");
 const http = require("node:http");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
 const { once } = require("node:events");
 const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -127,11 +127,20 @@ test("missing cached backup script warns offline and preserves the queued bill",
   await expect(page.locator("#shell-load-error")).toContainText("อย่าลบข้อมูลเว็บไซต์");
   await expect(page.locator("#shell-load-error")).toBeVisible();
   expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  await context.setOffline(false);
+  await page.reload();
+  await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+  await expect(page.locator("#shell-load-error")).toBeHidden();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
 });
 
 test("a new shell waits for both old tabs and then serves its own offline snapshot", async ({ page, context }) => {
   const worker = await readFile(join(__dirname, "..", "web", "sw.js"), "utf8");
   let revision = "revision-a", failNavigation = false;
+  const shellPaths = ["/checkout", "/checkout/backup", "/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js"];
+  const shellBody = (path, version) => path === "/checkout" || path === "/checkout/backup"
+    ? `<body><script>navigator.serviceWorker.register('/sw.js', {scope:'/checkout'})</script><script src="/checkout.js?shell=${version}"></script></body>`
+    : path === "/checkout.js" ? `document.body.dataset.version = '${version}';` : "";
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, "http://localhost");
     const requested = url.searchParams.get("shell");
@@ -146,14 +155,15 @@ test("a new shell waits for both old tabs and then serves its own offline snapsh
     }
     if (url.pathname === "/sw.js") {
       response.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
-      response.end(worker.replaceAll("__SHELL_REVISION__", revision)); return;
+      const hashes = Object.fromEntries(shellPaths.map((path) => [path, createHash("sha256").update(shellBody(path, revision)).digest("hex")]));
+      response.end(worker.replaceAll("__SHELL_REVISION__", revision).replace("__SHELL_HASHES__", JSON.stringify(hashes))); return;
     }
     if (url.pathname === "/checkout" || url.pathname === "/checkout/backup") {
       response.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
-      response.end(`<body><script>navigator.serviceWorker.register('/sw.js', {scope:'/checkout'})</script><script src="/checkout.js?shell=${revision}"></script></body>`); return;
+      response.end(shellBody(url.pathname, revision)); return;
     }
     response.writeHead(200, { "Content-Type": url.pathname.endsWith(".css") ? "text/css" : "text/javascript", "Cache-Control": "no-store" });
-    response.end(url.pathname === "/checkout.js" ? `document.body.dataset.version = '${revision}';` : "");
+    response.end(shellBody(url.pathname, revision));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
