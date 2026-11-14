@@ -223,6 +223,7 @@ byId("toggle-availability").addEventListener("click", async () => {
 document.querySelectorAll("[data-open]").forEach((button) => {
   button.addEventListener("click", () => {
     const dialog = byId(button.dataset.open);
+    if (dialog.id === "receipt" && receiptProblem) return;
     if (dialog.id === "receipt" && pendingReceipt) {
       openPendingReceipt();
       return;
@@ -335,22 +336,46 @@ document.querySelectorAll("dialog:not(#stock-count):not(#receipt)").forEach((dia
 const receiptDialog = byId("receipt");
 const receiptForm = receiptDialog.querySelector("form");
 const receiptError = receiptForm.querySelector(".error");
-let pendingReceipt = null;
+function readStoredRequest(key, valid) {
+  let raw;
+  try { raw = sessionStorage.getItem(key); } catch { return { problem: true, available: false, value: null }; }
+  if (raw === null) return { problem: false, available: false, value: null };
+  try {
+    const value = JSON.parse(raw);
+    if (valid(value)) return { problem: false, available: true, value };
+  } catch { /* Preserve raw data for export. */ }
+  return { problem: true, available: true, value: null };
+}
+function exportStoredRequest(key, filename) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { notice("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+}
+const receiptStorageKey = "pos-pending-receipt";
+const receiptRestore = readStoredRequest(receiptStorageKey, (value) =>
+  typeof value?.productId === "string" && typeof value.unitName === "string"
+  && ["id", "unit_id", "quantity", "unit_cost"].every((key) => typeof value.payload?.[key] === "string"));
+let pendingReceipt = receiptRestore.value;
+const receiptProblem = receiptRestore.problem;
 let receiptStored = true;
 let savingReceipt = false;
 let receiptProduct = null;
-try {
-  const saved = JSON.parse(sessionStorage.getItem("pos-pending-receipt"));
-  if (typeof saved?.productId === "string" && typeof saved.payload?.id === "string") pendingReceipt = saved;
-} catch {
-  // Retain requests in memory when session storage is unavailable.
-}
 function setPendingReceipt(value) {
+  if (receiptProblem) return;
   pendingReceipt = value;
   receiptStored = true;
   try {
-    if (value) sessionStorage.setItem("pos-pending-receipt", JSON.stringify(value));
-    else sessionStorage.removeItem("pos-pending-receipt");
+    if (value) sessionStorage.setItem(receiptStorageKey, JSON.stringify(value));
+    else sessionStorage.removeItem(receiptStorageKey);
   } catch {
     receiptStored = !value;
   }
@@ -368,7 +393,11 @@ function openPendingReceipt() {
   receiptError.hidden = false;
   receiptDialog.showModal();
 }
-setPendingReceipt(pendingReceipt);
+byId("receipt-pending").hidden = !pendingReceipt;
+byId("receipt-restore-error").hidden = !receiptProblem;
+byId("receipt-restore-export").hidden = !receiptProblem || !receiptRestore.available;
+byId("receipt-restore-export").addEventListener("click", () => exportStoredRequest(receiptStorageKey, "pos-receipt-raw.txt"));
+if (receiptProblem) document.querySelector('[data-open="receipt"]').disabled = true;
 byId("retry-receipt").addEventListener("click", () => {
   if (pendingReceipt && !receiptDialog.open) openPendingReceipt();
 });
@@ -376,7 +405,7 @@ receiptForm.querySelector("[data-close]").addEventListener("click", () => receip
 receiptDialog.addEventListener("cancel", (event) => { if (savingReceipt) event.preventDefault(); });
 receiptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (savingReceipt) return;
+  if (savingReceipt || receiptProblem) return;
   if (!pendingReceipt) {
     const product = receiptProduct;
     if (!product) return;
@@ -419,22 +448,17 @@ const countSubmit = byId("submit-stock-count");
 const countClose = countForm.querySelector("[data-close]");
 const countFields = [...countForm.querySelectorAll("input")];
 const countStorageKey = "pos-pending-stock-count";
-let pendingCount = restorePendingCount();
+const countRestore = readStoredRequest(countStorageKey, (value) =>
+  ["id", "name", "quantity", "base_unit"].every((key) => typeof value?.product?.[key] === "string")
+  && ["id", "expected_quantity", "counted_quantity", "reason"].every((key) => typeof value?.payload?.[key] === "string"));
+let pendingCount = countRestore.value;
+const countProblem = countRestore.problem;
 let countStored = true;
 let countProduct = null;
 let savingCount = false;
 
-function restorePendingCount() {
-  try {
-    const pending = JSON.parse(sessionStorage.getItem(countStorageKey));
-    if (typeof pending?.product?.id === "string" && typeof pending.payload?.id === "string") return pending;
-  } catch {
-    // This session may not have storage access.
-  }
-  return null;
-}
-
 function setPendingCount(pending) {
+  if (countProblem) return;
   pendingCount = pending;
   countStored = true;
   try {
@@ -487,6 +511,7 @@ function openCount(product, pending = null) {
 }
 
 byId("open-stock-count").addEventListener("click", () => {
+  if (countProblem) return;
   if (pendingCount) {
     openCount(pendingCount.product, pendingCount);
     return;
@@ -505,7 +530,7 @@ countDialog.addEventListener("cancel", (event) => {
 
 countForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (savingCount || !countProduct) return;
+  if (savingCount || countProblem || !countProduct) return;
   if (!pendingCount) {
     const fields = Object.fromEntries(new FormData(countForm));
     const reason = fields.reason.trim();
@@ -570,12 +595,16 @@ countForm.addEventListener("submit", async (event) => {
 });
 
 byId("stock-count-pending").hidden = !pendingCount;
+byId("count-restore-error").hidden = !countProblem;
+byId("count-restore-export").hidden = !countProblem || !countRestore.available;
+byId("count-restore-export").addEventListener("click", () => exportStoredRequest(countStorageKey, "pos-stock-count-raw.txt"));
+if (countProblem) byId("open-stock-count").disabled = true;
 refresh().catch(() => {
   byId("list-state").textContent = "โหลดสินค้าไม่สำเร็จ กรุณารีเฟรชหน้า";
 });
 
 window.addEventListener("beforeunload", (event) => {
-  if (pendingReceipt || pendingCount) {
+  if (pendingReceipt || pendingCount || receiptProblem || countProblem) {
     event.preventDefault();
     event.returnValue = "";
   }

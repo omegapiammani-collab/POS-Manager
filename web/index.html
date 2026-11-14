@@ -14,6 +14,8 @@
   <main class="frame">
     <div class="page-title"><h1>สินค้าและสต๊อก</h1><div class="actions"><a class="pos-link" href="/checkout">ขายสินค้า</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/backup">สำรองข้อมูล</a><button data-open="product">+ เพิ่มสินค้า</button></div></div>
     <p id="notice" role="status" hidden></p>
+    <div id="receipt-restore-error" role="alert" hidden><p>อ่านรายการรับสินค้าเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดรับสินค้าในแท็บนี้ กรุณาเก็บข้อมูลเดิมไว้และติดต่อผู้ดูแลก่อนปิดแท็บ</p><button id="receipt-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลรับสินค้าเดิม</button></div>
+    <div id="count-restore-error" role="alert" hidden><p>อ่านรายการตรวจนับเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดปรับยอดในแท็บนี้ กรุณาเก็บข้อมูลเดิมไว้และติดต่อผู้ดูแลก่อนปิดแท็บ</p><button id="count-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลตรวจนับเดิม</button></div>
     <div id="receipt-pending" hidden><button type="button" class="secondary" id="retry-receipt">ตรวจสอบรายการรับสินค้าที่ค้าง</button><p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p><p id="receipt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p></div>
     <div id="stock-count-pending" hidden>
       <button type="button" class="secondary" id="retry-stock-count">ตรวจสอบผลการปรับสต๊อกที่ค้าง</button>

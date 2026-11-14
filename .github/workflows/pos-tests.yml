@@ -25,6 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: python3 shell_manifest.py --check
       - run: python3 -m unittest discover -q
 
   chromium:
@@ -42,5 +43,6 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
+      - run: node --test experiments/service-worker-cache-check.cjs
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e

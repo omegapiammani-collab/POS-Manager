@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const http = require("node:http");
+const { randomUUID, createHash } = require("node:crypto");
 const { once } = require("node:events");
 const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -68,6 +69,189 @@ async function sellOne(page) {
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).click();
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
 }
+
+test("checkout snapshot handles 503 without mixing assets and leaves 404 intact", async ({ page, pos }) => {
+  let status = 200;
+  const proxy = http.createServer((request, response) => {
+    if (request.url === "/checkout" && status !== 200) {
+      response.writeHead(status, { "Content-Type": "text/plain" });
+      response.end("shell error " + status);
+      return;
+    }
+    const upstream = http.request(new URL(request.url, pos), {
+      method: request.method, headers: { ...request.headers, host: new URL(pos).host },
+    }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
+    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+    request.pipe(upstream);
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const version = new URL(await page.locator('script[src*="checkout.js"]').getAttribute("src"), origin).searchParams.get("shell");
+    expect(version).toMatch(/^[0-9a-f]{64}$/);
+    status = 503;
+    await page.reload();
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    const cachedVersion = new URL(await page.locator('script[src*="checkout.js"]').getAttribute("src"), origin).searchParams.get("shell");
+    expect(cachedVersion).toBe(version);
+    status = 404;
+    expect((await page.reload()).status()).toBe(404);
+    await expect(page.locator("body")).toContainText("shell error 404");
+  } finally {
+    await new Promise((resolve) => { proxy.close(resolve); proxy.closeAllConnections(); });
+  }
+});
+
+test("missing cached backup script warns offline and preserves the queued bill", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const queued = await page.evaluate(() => window.PosOffline.list());
+  expect(queued).toHaveLength(1);
+  const removed = await page.evaluate(async () => {
+    const names = await caches.keys();
+    const name = names.find((item) => item.startsWith("pos-checkout-snapshot-"));
+    const cache = await caches.open(name);
+    const request = (await cache.keys()).find((item) => new URL(item.url).pathname === "/backup.js");
+    return cache.delete(request);
+  });
+  expect(removed).toBe(true);
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#shell-load-error")).toContainText("อย่าลบข้อมูลเว็บไซต์");
+  await expect(page.locator("#shell-load-error")).toBeVisible();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  await context.setOffline(false);
+  await page.reload();
+  await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+  await expect(page.locator("#shell-load-error")).toBeHidden();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+});
+
+test("backup recovery rejects wrong MIME even for identical bytes and preserves the queue", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  const backupScript = await readFile(join(__dirname, "..", "web", "backup.js"));
+  let wrongMime = false;
+  const proxy = http.createServer((incoming, response) => {
+    if (wrongMime && incoming.url.startsWith("/backup.js?")) {
+      response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end(backupScript); return;
+    }
+    const upstream = http.request(new URL(incoming.url, pos), {
+      method: incoming.method, headers: { ...incoming.headers, host: new URL(pos).host },
+    }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
+    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+    incoming.pipe(upstream);
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    await context.setOffline(true);
+    await sellOne(page);
+    await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+    const queued = await page.evaluate(() => window.PosOffline.list());
+    expect(queued).toHaveLength(1);
+    await page.evaluate(async () => {
+      const name = (await caches.keys()).find((item) => item.startsWith("pos-checkout-snapshot-"));
+      const cache = await caches.open(name);
+      const entry = (await cache.keys()).find((item) => new URL(item.url).pathname === "/backup.js");
+      await cache.delete(entry);
+    });
+    await page.goto(origin + "/checkout/backup");
+    await expect(page.locator("#shell-load-error")).toBeVisible();
+    wrongMime = true;
+    await context.setOffline(false);
+    await page.reload();
+    await expect(page.locator("#shell-load-error")).toBeVisible();
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+    wrongMime = false;
+    await page.reload();
+    await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  } finally {
+    await new Promise((resolve) => { proxy.close(resolve); proxy.closeAllConnections(); });
+  }
+});
+
+test("a new shell waits for both old tabs and then serves its own offline snapshot", async ({ page, context }) => {
+  const worker = await readFile(join(__dirname, "..", "web", "sw.js"), "utf8");
+  let revision = "revision-a", failNavigation = false;
+  const shellPaths = ["/checkout", "/checkout/backup", "/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js"];
+  const shellBody = (path, version) => path === "/checkout" || path === "/checkout/backup"
+    ? `<body><script>navigator.serviceWorker.register('/sw.js', {scope:'/checkout'})</script><script src="/checkout.js?shell=${version}"></script></body>`
+    : path === "/checkout.js" ? `document.body.dataset.version = '${version}';` : "";
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, "http://localhost");
+    const requested = url.searchParams.get("shell");
+    if (url.pathname === "/observer") {
+      response.writeHead(200, { "Content-Type": "text/html" }); response.end("observer"); return;
+    }
+    if (requested && requested !== revision) {
+      response.writeHead(409); response.end("old revision"); return;
+    }
+    if ((url.pathname === "/checkout" || url.pathname === "/checkout/backup") && !requested && failNavigation) {
+      response.writeHead(503); response.end("unavailable"); return;
+    }
+    if (url.pathname === "/sw.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
+      const hashes = Object.fromEntries(shellPaths.map((path) => [path, createHash("sha256").update(shellBody(path, revision)).digest("hex")]));
+      response.end(worker.replaceAll("__SHELL_REVISION__", revision).replace("__SHELL_HASHES__", JSON.stringify(hashes))); return;
+    }
+    if (url.pathname === "/checkout" || url.pathname === "/checkout/backup") {
+      response.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+      response.end(shellBody(url.pathname, revision)); return;
+    }
+    response.writeHead(200, { "Content-Type": url.pathname.endsWith(".css") ? "text/css" : "text/javascript", "Cache-Control": "no-store" });
+    response.end(shellBody(url.pathname, revision));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const second = await context.newPage();
+    await second.goto(origin + "/checkout");
+    await expect.poll(() => second.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    revision = "revision-b";
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+    await expect.poll(() => page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration()).waiting))).toBe(true);
+    failNavigation = true;
+    for (const tab of [page, second]) {
+      await tab.reload();
+      await expect(tab.locator("body")).toHaveAttribute("data-version", "revision-a");
+    }
+    failNavigation = false;
+    const observer = await context.newPage();
+    await observer.goto(origin + "/observer");
+    await page.close();
+    await second.close();
+    await expect.poll(() => observer.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/checkout");
+      return Boolean(registration && !registration.waiting && registration.active);
+    })).toBe(true);
+    const upgraded = await context.newPage();
+    await upgraded.goto(origin + "/checkout");
+    await expect.poll(() => upgraded.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return Boolean(registration && !registration.waiting && registration.active);
+    })).toBe(true);
+    await expect(upgraded.locator("body")).toHaveAttribute("data-version", "revision-b");
+    failNavigation = true;
+    await upgraded.reload();
+    await expect(upgraded.locator("body")).toHaveAttribute("data-version", "revision-b");
+  } finally {
+    await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
+  }
+});
 
 async function downloadCsv(page, label, filename, { touch = false } = {}) {
   const button = page.getByRole("button", { name: label, exact: true });
@@ -723,6 +907,138 @@ test("legacy session-only sale is placed directly into review after store confir
   await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
 });
 
+test("legacy session sale can be backed up offline in the same tab before binding", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  const raw = JSON.stringify(payload);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("บิลเดิมยังไม่ระบุร้าน");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await page.locator("#sale-store-blocked").getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  await expect(page.locator("#backup-queue-count")).toContainText("0 บิล");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  const file = await readFile(await download.path());
+  const backup = JSON.parse(file);
+  expect(backup.version).toBe(1);
+  expect(backup.legacy_raw).toBe(raw);
+  expect(backup.entries).toEqual([{ payload, state: "conflict", error: "บิลรุ่นเดิมไม่ระบุร้าน กรุณาตรวจสอบก่อนส่ง" }]);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  await context.setOffline(false);
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await other.goto(pos + "/checkout/backup");
+  await other.locator("#backup-queue-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: file });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้า 1 บิล");
+  const entries = await other.evaluate(() => window.PosOffline.list());
+  expect(entries).toHaveLength(1);
+  expect(entries[0].payload).toEqual(payload);
+  expect(entries[0].state).toBe("conflict");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  await other.locator("#backup-queue-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: file });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("มีอยู่แล้ว 1 บิล");
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(entries);
+  const conflicting = structuredClone(backup);
+  conflicting.entries[0].payload.items[0].quantity = "2";
+  await other.locator("#backup-queue-file").setInputFiles({ name: "conflict.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(conflicting)) });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้าไม่สำเร็จ");
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(entries);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+});
+
+test("malformed legacy session data is exported unchanged and cannot be imported", async ({ page, pos }) => {
+  const raw = '{"id":"unfinished",';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  expect(download.suggestedFilename()).toMatch(/^pos-legacy-sale-raw-.*\.txt$/);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+  await expect(page.locator("#backup-queue-message")).toContainText("นำเข้าอัตโนมัติไม่ได้");
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  await page.locator("#backup-queue-file").setInputFiles({ name: "raw.json", mimeType: "application/json", buffer: await readFile(await download.path()) });
+  await page.locator("#backup-queue-confirm").check();
+  await page.locator("#backup-queue-submit").click();
+  await expect(page.locator("#backup-queue-message")).toContainText("รูปแบบหรือรุ่นไฟล์นี้ไม่รองรับ");
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+});
+
+test("malformed session sale blocks sales and queue sync without changing data", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const queued = await page.evaluate(() => window.PosOffline.list());
+  const raw = '{"id":"unfinished",';
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.reload();
+  await expect(page.locator("#sale-store-message")).toContainText("ข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่สมบูรณ์");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  await expect(page.locator("#sale-retry")).toBeDisabled();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  await context.setOffline(false);
+  await expect(page.locator("#sale-store-message")).toContainText("สำรองบิลจากแท็บนี้");
+  expect((await request.get(pos + "/sales/" + queued[0].payload.id)).status()).toBe(404);
+  await page.locator("#sale-store-blocked").getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+});
+
+test("unreadable legacy session storage blocks checkout and keeps existing bytes", async ({ page, pos }) => {
+  await page.goto(pos + "/");
+  const raw = '{"id":"unfinished",';
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.addInitScript(() => {
+    const original = Storage.prototype.getItem;
+    window.originalStorageGetItem = original;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-sale") throw new Error("storage unavailable");
+      return original.call(this, key);
+    };
+  });
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+});
+
+test("legacy session storage errors do not hide the normal queue backup", async ({ page, pos }) => {
+  await page.addInitScript(() => {
+    const original = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-sale") throw new Error("storage unavailable");
+      return original.call(this, key);
+    };
+  });
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#backup-legacy-count")).toContainText("อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้");
+  await expect(page.locator("#backup-legacy-export")).toBeDisabled();
+  await expect(page.locator("#backup-queue-count")).toContainText("0 บิล");
+});
+
 test("checkout without any known store identity is blocked while offline", async ({ page, context, pos }) => {
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
@@ -1155,6 +1471,85 @@ test("warns when pending inventory actions cannot be saved in session storage", 
   const products = await (await request.get(pos + "/products")).json();
   expect(products.find(({ id }) => id === product.id).quantity).toBe("2");
   expect(await (await request.get(`${pos}/products/${product.id}/stock-counts`)).json()).toHaveLength(1);
+});
+
+test("invalid inventory requests remain intact and can be exported without starting new operations", async ({ page, request, pos }) => {
+  await createProduct(request, pos);
+  const receiptRaw = '{"productId":"unfinished",';
+  const countRaw = JSON.stringify({ product: { id: randomUUID() }, payload: { id: randomUUID() } });
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await expect(page.getByRole("button", { name: "รับสินค้า", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "ปรับยอดจากการตรวจนับ" })).toBeDisabled();
+  for (const [button, expected] of [["#receipt-restore-export", receiptRaw], ["#count-restore-export", countRaw]]) {
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator(button).click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(expected);
+  }
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-stock-count"))).toBe(countRaw);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+});
+
+test("unreadable inventory request storage never triggers deletion", async ({ page, pos }) => {
+  const receiptRaw = '{"unexpected":true}', countRaw = 'not-json';
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.inventoryRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) window.inventoryRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await expect(page.locator("#receipt-restore-export")).toBeHidden();
+  await expect(page.locator("#count-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.inventoryRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-stock-count"))).toBe(countRaw);
+});
+
+test("valid pending receipt is not rewritten on load and retries its original id", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const initialQuantity = Number((await (await request.get(pos + "/products")).json())[0].quantity);
+  const payload = { id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10" };
+  const raw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", payload }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-receipt", value), raw);
+  await page.reload();
+  await expect(page.locator("#receipt-pending")).toBeVisible();
+  await expect(page.locator("#receipt-restore-error")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(raw);
+  await page.getByRole("button", { name: "ตรวจสอบรายการรับสินค้าที่ค้าง" }).click();
+  await page.locator("#receipt").getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(page.locator("#receipt-pending")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBeNull();
+  const beforeReplay = (await (await request.get(pos + "/products")).json())[0].quantity;
+  expect(Number(beforeReplay)).toBe(initialQuantity + 2);
+  const replay = await request.post(pos + `/products/${product.id}/receipts`, { data: payload });
+  expect(replay.status()).toBe(201);
+  expect(await replay.json()).toEqual({ id: payload.id });
+  expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe(beforeReplay);
+  const receipts = await (await request.get(pos + `/products/${product.id}/receipts`)).json();
+  expect(receipts.filter((receipt) => receipt.id === payload.id)).toHaveLength(1);
 });
 
 test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {

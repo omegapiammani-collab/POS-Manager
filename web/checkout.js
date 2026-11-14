@@ -11,6 +11,7 @@ let products = [];
 let catalogLoaded = false;
 let confirmingPrice = false;
 let customers = [];
+let legacyProblem = null;
 let legacyPending = restorePending();
 let staging = false;
 let syncing = false;
@@ -100,6 +101,10 @@ async function verifyServerStore() {
 
 async function initializeStore() {
   if (initializingStore) return;
+  if (legacyProblem) {
+    blockStore(legacyProblem);
+    return;
+  }
   initializingStore = true;
   try {
     storeId = await store.getBinding();
@@ -407,12 +412,20 @@ function renderCustomers(selected = "") {
 }
 
 function restorePending() {
+  let raw;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey));
-    return typeof saved?.id === "string" && Array.isArray(saved.items) && saved.payments ? saved : null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    legacyProblem = "อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้ กรุณาตรวจสอบพื้นที่จัดเก็บและสำรองบิลจากแท็บนี้ก่อนโหลดหน้าใหม่";
     return null;
   }
+  if (raw === null) return null;
+  try {
+    const saved = JSON.parse(raw);
+    if (typeof saved?.id === "string" && Array.isArray(saved.items) && saved.payments) return saved;
+  } catch { /* Preserve the original string for backup. */ }
+  legacyProblem = "ข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่สมบูรณ์ กรุณาสำรองบิลจากแท็บนี้และติดต่อผู้ดูแลก่อนโหลดหน้าใหม่";
+  return null;
 }
 
 function setConnected(value) {

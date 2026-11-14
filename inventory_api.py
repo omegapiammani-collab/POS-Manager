@@ -1,5 +1,6 @@
 """Local HTTP entry point for the POS inventory foundation."""
 import argparse
+import hashlib
 from contextlib import closing
 from decimal import Decimal
 from functools import partial
@@ -23,6 +24,7 @@ from sale_corrections import (
 )
 from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checkout, customer_list, read_sale, require_store, uuid_field
 from sales_reports import sales_report
+from shell_manifest import MANIFEST, SHELL_FILES
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
 from store_binding import SCHEMA as BINDING_SCHEMA, ensure_binding
@@ -52,6 +54,37 @@ WEB_ASSETS = {
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
+SHELL_PATHS = ("/checkout", "/checkout/backup", "/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js")
+
+
+def checkout_shell():
+    # Validate each byte string against the release manifest and retain those
+    # same bytes. Never reopen a validated file when serving this snapshot.
+    try:
+        manifest = json.loads((WEB_DIR / MANIFEST).read_bytes())
+        hashes = manifest["sha256"]
+        if manifest.get("version") != 1 or set(hashes) != set(SHELL_FILES):
+            raise ValueError("invalid manifest")
+        files = {name: (WEB_DIR / name).read_bytes() for name in SHELL_FILES}
+        if any(hashlib.sha256(files[name]).hexdigest() != hashes[name] for name in SHELL_FILES):
+            raise ValueError("file checksum mismatch")
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise RuntimeError("Checkout shell manifest invalid or stale; install one complete release or run python3 shell_manifest.py after development changes") from error
+    paths = {path: files[WEB_ASSETS[path][0]] for path in SHELL_PATHS}
+    worker = files["sw.js"]
+    digest = hashlib.sha256()
+    for path, body in sorted(paths.items()):
+        digest.update(path.encode() + b"\0" + body + b"\0")
+    digest.update(worker)
+    revision = digest.hexdigest()
+    for path in ("/checkout", "/checkout/backup"):
+        for asset in SHELL_PATHS[2:]:
+            paths[path] = paths[path].replace(('"' + asset + '"').encode(),
+                                               ('"' + asset + '?shell=' + revision + '"').encode())
+    shell_hashes = {path: hashlib.sha256(body).hexdigest() for path, body in paths.items()}
+    paths["/sw.js"] = (worker.replace(b"__SHELL_REVISION__", revision.encode())
+                       .replace(b"__SHELL_HASHES__", json.dumps(shell_hashes, sort_keys=True).encode()))
+    return revision, paths
 
 
 class RequestError(Exception):
@@ -148,8 +181,9 @@ def edit_unit_price(db, product_id, unit_id, data):
 
 
 class InventoryHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, database, **kwargs):
+    def __init__(self, *args, database, shell, **kwargs):
         self.database = database
+        self.shell = shell
         super().__init__(*args, **kwargs)
 
     def send_json(self, status, data):
@@ -164,8 +198,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def serve_asset(self, name, content_type):
-        body = (WEB_DIR / name).read_bytes()
+    def serve_asset(self, route, name, content_type):
+        revision, paths = self.shell
+        requested = parse_qs(route.query, keep_blank_values=True).get("shell")
+        if requested is not None and (route.path not in SHELL_PATHS or requested != [revision]):
+            raise RequestError(409, "Checkout shell revision unavailable")
+        body = paths.get(route.path)
+        if body is None:
+            body = (WEB_DIR / name).read_bytes()
         self.send_bytes(200, body, content_type, "no-cache")
 
     def send_database_backup(self):
@@ -359,7 +399,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if self.command == "GET" and route.path == "/database-backup":
                 return self.send_database_backup()
             if self.command == "GET" and route.path in WEB_ASSETS:
-                return self.serve_asset(*WEB_ASSETS[route.path])
+                return self.serve_asset(route, *WEB_ASSETS[route.path])
             if self.command == "GET" and route.path == "/payment-qr":
                 amount = parse_qs(route.query).get("amount", [""])[0]
                 return self.send_bytes(200, payment_qr_svg(amount), "image/svg+xml", "no-store")
@@ -393,7 +433,9 @@ class InventoryHandler(BaseHTTPRequestHandler):
     do_POST = handle_request
 
 
-def make_server(database, port):
+def make_server(database, port, *, shell=None):
+    if shell is None:
+        shell = checkout_shell()
     # Initialize the file before accepting requests.
     with closing(connect(database)) as db:
         db.executescript(SALES_SCHEMA)
@@ -405,7 +447,7 @@ def make_server(database, port):
         db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
         db.executescript(BINDING_SCHEMA)
         ensure_binding(db)
-    handler = partial(InventoryHandler, database=database)
+    handler = partial(InventoryHandler, database=database, shell=shell)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
 
@@ -419,6 +461,7 @@ def main():
         parser.error("--create-database requires --database")
     database = args.database or Path("inventory.sqlite3")
     try:
+        shell = checkout_shell()
         if args.create_database or (args.database is None and not database.exists()):
             # Exclusive creation prevents accidentally replacing an existing store.
             with database.open("xb"):
@@ -432,9 +475,11 @@ def main():
             with closing(read_only_database(database)) as db:
                 db.execute("PRAGMA trusted_schema = OFF")
                 validate_backup(db)
+    except RuntimeError as exc:
+        parser.exit(1, f"Cannot start server: {exc}\n")
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"Cannot open database: {exc}\n")
-    with make_server(database, args.port) as server:
+    with make_server(database, args.port, shell=shell) as server:
         print(f"Inventory API: http://127.0.0.1:{server.server_port}", flush=True)
         try:
             server.serve_forever()
