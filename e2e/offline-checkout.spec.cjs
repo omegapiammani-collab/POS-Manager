@@ -1069,6 +1069,33 @@ test("automatically retries a queued bill when the server recovers without an on
   expect(products.find(({ id }) => id === product.id).quantity).toBe("0");
 });
 
+test("retries pending sales when the first online store identity check fails", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const [queued] = await page.evaluate(() => window.PosOffline.list());
+  let identityAttempts = 0;
+  await page.route("**/store-identity", (route) => {
+    identityAttempts++;
+    if (identityAttempts === 1) return route.abort("connectionfailed");
+    return route.continue();
+  });
+  await context.setOffline(false);
+  await expect(page.locator("#sale-message")).toContainText("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
+  await expect(page.locator("#sale-message")).toContainText("ส่งสำเร็จ 1 บิล", { timeout: 25000 });
+  expect(identityAttempts).toBeGreaterThanOrEqual(2);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  expect((await request.get(pos + "/sales/" + queued.payload.id)).status()).toBe(200);
+  const products = await (await request.get(pos + "/products")).json();
+  expect(Number(products.find(({ id }) => id === product.id).quantity)).toBe(0);
+  expect((await (await request.get(pos + "/sale-history")).json())).toHaveLength(1);
+});
+
 test("offline bill survives reload and syncs once after another device sells the last unit",
   async ({ browser, context, page, request, pos }) => {
     const product = await createProduct(request, pos);
@@ -1129,6 +1156,8 @@ test("offline bill survives reload and syncs once after another device sells the
       if (attempts <= 2) return route.abort("connectionfailed");
       return route.continue();
     });
+    const expectedStore = await page.evaluate(() => storeId);
+    await page.route("**/store-identity", (route) => route.fulfill({ json: { id: expectedStore } }));
     await context.setOffline(false);
     await expect(page.locator("#sale-message")).toContainText("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
     expect(await queue()).toEqual([{ payload, state: "pending", error: null }]);

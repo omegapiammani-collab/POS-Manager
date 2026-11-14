@@ -1062,7 +1062,22 @@ if (storageStatus && persistButton) checkStorage();
 window.addEventListener("online", async () => {
   setConnected(true);
   if (!storeReady) { initializeStore(); return; }
-  if (!(await verifyServerStore())) return;
+  if (!(await verifyServerStore())) {
+    // The online event can fire before the server is reachable. Keep the
+    // automatic retry timer active even when the identity check fails.
+    await showQueue();
+    if (storeReady) {
+      try {
+        const entries = await store.listForStore(storeId);
+        if (entries.some(({ state }) => state === "pending") || legacyPending) {
+          status("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้", true);
+        }
+      } catch {
+        status("อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์", true);
+      }
+    }
+    return;
+  }
   loadProducts();
   loadCustomers();
   syncRequested = true;
