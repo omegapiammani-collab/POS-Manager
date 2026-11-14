@@ -1473,6 +1473,79 @@ test("warns when pending inventory actions cannot be saved in session storage", 
   expect(await (await request.get(`${pos}/products/${product.id}/stock-counts`)).json()).toHaveLength(1);
 });
 
+test("invalid inventory requests remain intact and can be exported without starting new operations", async ({ page, request, pos }) => {
+  await createProduct(request, pos);
+  const receiptRaw = '{"productId":"unfinished",';
+  const countRaw = JSON.stringify({ product: { id: randomUUID() }, payload: { id: randomUUID() } });
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await expect(page.getByRole("button", { name: "รับสินค้า", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "ปรับยอดจากการตรวจนับ" })).toBeDisabled();
+  for (const [button, expected] of [["#receipt-restore-export", receiptRaw], ["#count-restore-export", countRaw]]) {
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator(button).click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(expected);
+  }
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-stock-count"))).toBe(countRaw);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+});
+
+test("unreadable inventory request storage never triggers deletion", async ({ page, pos }) => {
+  const receiptRaw = '{"unexpected":true}', countRaw = 'not-json';
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.inventoryRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) window.inventoryRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await expect(page.locator("#receipt-restore-export")).toBeHidden();
+  await expect(page.locator("#count-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.inventoryRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-stock-count"))).toBe(countRaw);
+});
+
+test("valid pending receipt is not rewritten on load and retries its original id", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const payload = { id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10" };
+  const raw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", payload }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-receipt", value), raw);
+  await page.reload();
+  await expect(page.locator("#receipt-pending")).toBeVisible();
+  await expect(page.locator("#receipt-restore-error")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(raw);
+  await page.getByRole("button", { name: "ตรวจสอบรายการรับสินค้าที่ค้าง" }).click();
+  await page.locator("#receipt").getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(page.locator("#receipt-pending")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBeNull();
+  const beforeReplay = (await (await request.get(pos + "/products")).json())[0].quantity;
+  expect((await request.post(pos + `/products/${product.id}/receipts`, { data: payload })).status()).toBe(200);
+  expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe(beforeReplay);
+});
+
 test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/");
