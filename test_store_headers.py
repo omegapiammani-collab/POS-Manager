@@ -5,5 +5,5 @@ from urllib.request import urlopen
 
 def store_headers(origin):
     with urlopen(origin + "/store-identity", timeout=3) as response:
-        store_id = json.load(response)["id"]
+        store_id = json.load(response)["binding_id"]
     return {"Content-Type": "application/json", "X-POS-Store-ID": store_id}

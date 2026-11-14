@@ -3,6 +3,7 @@ import argparse
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+from store_binding import SCHEMA as BINDING_SCHEMA, rotate_binding
 
 
 CORE_COLUMNS = {
@@ -49,6 +50,9 @@ def restore_database(source, target):
         try:
             with closing(sqlite3.connect(target)) as target_db:
                 source_db.backup(target_db)
+                target_db.executescript(BINDING_SCHEMA)
+                rotate_binding(target_db)
+                target_db.commit()
         except BaseException:
             target.unlink()
             raise

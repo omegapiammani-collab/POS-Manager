@@ -232,7 +232,7 @@ def offline_sale_time(data, *, offline):
 
 
 def require_store(db, expected):
-    row = db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()
+    row = db.execute("SELECT id FROM store_binding WHERE singleton = 1").fetchone()
     if not isinstance(expected, str) or row is None or expected != row[0]:
         raise SaleConflict("store_mismatch", "This request belongs to a different or unknown store")
 

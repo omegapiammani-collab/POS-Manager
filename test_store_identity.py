@@ -90,6 +90,33 @@ class StoreIdentityTests(unittest.TestCase):
         self.assertEqual(self.identity(self.open_server(restored)), identity)
         self.assertEqual(self.identity(self.open_server(source)), identity)
 
+    def test_repeated_restores_record_binding_ancestry_without_changing_sources(self):
+        source = self.directory / "source.sqlite3"
+        origin = self.open_server(source)
+        with urlopen(origin + "/store-identity") as response:
+            initial = json.load(response)
+        self.assertEqual(initial["id"], initial["binding_id"])
+        backup1 = self.directory / "backup1.sqlite3"
+        copy_database(source, backup1)
+        backup_bytes = backup1.read_bytes()
+        restored1 = self.directory / "restore1.sqlite3"
+        restore_database(backup1, restored1)
+        self.assertEqual(backup1.read_bytes(), backup_bytes)
+        with urlopen(self.open_server(restored1) + "/store-identity") as response:
+            second = json.load(response)
+        backup2 = self.directory / "backup2.sqlite3"
+        copy_database(restored1, backup2)
+        restored2 = self.directory / "restore2.sqlite3"
+        restore_database(backup2, restored2)
+        with urlopen(self.open_server(restored2) + "/store-identity") as response:
+            third = json.load(response)
+        self.assertEqual(initial["id"], second["id"])
+        self.assertEqual(initial["id"], third["id"])
+        self.assertEqual(len({initial["binding_id"], second["binding_id"], third["binding_id"]}), 3)
+        self.assertEqual(set(third["restore_ancestors"]), {initial["binding_id"], second["binding_id"]})
+        with urlopen(origin + "/store-identity") as response:
+            self.assertEqual(json.load(response), initial)
+
     def test_backup_from_before_identity_gets_an_id_on_first_open(self):
         legacy = self.directory / "legacy.sqlite3"
         with closing(connect(legacy)):

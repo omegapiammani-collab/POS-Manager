@@ -71,8 +71,9 @@
     });
   }
 
-  async function bindStore(id, { acceptLegacy = false, allowSwitch = false, expectedCurrent = null } = {}) {
+  async function bindStore(id, { acceptLegacy = false, allowSwitch = false, acceptRestore = false, ancestors = null, expectedCurrent = null } = {}) {
     id = saleId(id);
+    if (ancestors !== null) ancestors = ancestors.map(saleId);
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([SNAPSHOTS, QUEUE], "readwrite");
@@ -86,9 +87,9 @@
         const countRequest = queue.count();
         countRequest.onsuccess = () => {
           const count = countRequest.result;
-          if (current === id) { result = { bound: true }; return; }
+          if (current === id) { if (ancestors !== null) snapshots.put(ancestors, "restoreAncestors"); result = { bound: true }; return; }
           if (current !== expectedCurrent) { result = { bound: false, current, count }; return; }
-          if ((!current && count && !acceptLegacy) || (current && current !== id && (count || !allowSwitch))) {
+          if ((!current && count && !acceptLegacy) || (current && current !== id && ((count && !acceptRestore) || (!allowSwitch && !acceptRestore)))) {
             result = { bound: false, current, count };
             return;
           }
@@ -97,7 +98,18 @@
             snapshots.delete("customers");
           }
           snapshots.put(id, "storeId");
-          result = { bound: true };
+          snapshots.put(ancestors ?? [], "restoreAncestors");
+          if (acceptRestore || (!current && acceptLegacy)) {
+            const cursor = queue.openCursor();
+            cursor.onsuccess = () => {
+              const item = cursor.result;
+              if (!item) { result = { bound: true }; return; }
+              if (item.value.state === "pending") {
+                item.update({ ...item.value, state: "conflict", error: "ฐานข้อมูลถูกกู้คืนหรือคิวเดิมไม่ระบุรุ่น กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" });
+              }
+              item.continue();
+            };
+          } else result = { bound: true };
         };
       };
     });
@@ -157,6 +169,13 @@
     });
   }
 
+  async function getRestoreAncestors(expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get("restoreAncestors");
+      request.onsuccess = () => setResult(request.result ?? []);
+    });
+  }
+
   async function putSnapshot(key, value, expected) {
     validatedKey(key);
     await guarded(expected, (queue, snapshots) => { snapshots.put(value, key); });
@@ -190,7 +209,7 @@
     });
   }
 
-  async function put(payload, expected) {
+  async function put(payload, expected, { reviewRequired = false } = {}) {
     const id = saleId(payload?.id);
     const submitted = structuredClone({ ...payload, id });
     const signature = canonicalJson(submitted);
@@ -203,10 +222,15 @@
             abort(new Error("This offline sale ID already has different data"));
             return;
           }
-          setResult(queueEntry(existing));
+          if (reviewRequired && existing.state === "pending") {
+            const reviewed = { ...existing, state: "conflict", error: "คิวเดิมไม่ระบุรุ่นฐานข้อมูล กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" };
+            store.put(reviewed);
+            setResult(queueEntry(reviewed));
+          } else setResult(queueEntry(existing));
           return;
         }
-        const row = { id, signature, payload: submitted, state: "pending", error: null };
+        const row = { id, signature, payload: submitted, state: reviewRequired ? "conflict" : "pending",
+          error: reviewRequired ? "คิวเดิมไม่ระบุรุ่นฐานข้อมูล กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" : null };
         store.add(row);
         setResult(queueEntry(row));
       };
@@ -351,5 +375,5 @@
     });
   }
 
-  window.PosOffline = { getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore };
+  window.PosOffline = { getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
 })();

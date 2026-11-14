@@ -29,6 +29,7 @@ let customersRequest = 0;
 let storeId = null;
 let storeReady = false;
 let observedStoreId = null;
+let observedAncestors = [];
 let initializingStore = false;
 let negativePayload = null;
 let abandonPayload = null;
@@ -86,9 +87,9 @@ function blockStore(text, canBind = false, refreshQueue = true) {
 async function verifyServerStore() {
   if (!storeReady || !storeId || navigator.onLine === false) return false;
   try {
-    const observed = (await api("/store-identity")).id;
+    const observed = (await api("/store-identity")).binding_id;
     if (observed !== storeId) {
-      blockStore("ฐานข้อมูลร้านเปลี่ยน กรุณากลับไปเปิดฐานข้อมูลเดิมแล้วโหลดหน้านี้ใหม่เพื่อตรวจสอบบิลค้าง");
+      blockStore("ฐานข้อมูลร้านเปลี่ยนหรือถูกกู้คืน กรุณาโหลดหน้านี้ใหม่เพื่อตรวจสอบบิลค้าง");
       return false;
     }
     return true;
@@ -104,21 +105,38 @@ async function initializeStore() {
     storeId = await store.getBinding();
     const queued = await store.list();
     if (navigator.onLine !== false) {
-      try { observedStoreId = (await api("/store-identity")).id; } catch { observedStoreId = null; }
+      try {
+        const identity = await api("/store-identity");
+        observedStoreId = identity.binding_id;
+        observedAncestors = identity.restore_ancestors;
+        if (!observedStoreId || !Array.isArray(observedAncestors)) {
+          blockStore("เซิร์ฟเวอร์ไม่รองรับการตรวจรุ่นฐานข้อมูล กรุณาอัปเดตระบบก่อนขายหรือส่งบิล");
+          return;
+        }
+      } catch (error) {
+        if ((error.status && error.status < 500) || error instanceof SyntaxError) {
+          blockStore("ตรวจรุ่นฐานข้อมูลจากเซิร์ฟเวอร์ไม่ได้ กรุณาตรวจสอบหรืออัปเดตระบบก่อนขาย");
+          return;
+        }
+        observedStoreId = null; observedAncestors = [];
+      }
     }
     if (observedStoreId) {
       if (!storeId && !queued.length && !legacyPending) {
-        const result = await store.bindStore(observedStoreId);
+        const result = await store.bindStore(observedStoreId, { ancestors: observedAncestors });
         if (!result.bound) throw new Error("Store binding changed");
         storeId = observedStoreId;
       }
       if (storeId !== observedStoreId || legacyPending) {
-        const canBind = (!storeId || storeId === observedStoreId || (!queued.length && !legacyPending));
+        const fromRestore = Boolean(storeId && observedAncestors.includes(storeId));
+        const canBind = (!storeId || storeId === observedStoreId || fromRestore || (!queued.length && !legacyPending));
         blockStore(storeId && storeId !== observedStoreId
-          ? "ฐานข้อมูลร้านไม่ตรงกับข้อมูลในเครื่อง (ในเครื่อง " + storeId + " · เซิร์ฟเวอร์ " + observedStoreId + ") กรุณาตรวจสอบบิลค้างก่อนเปลี่ยนร้าน"
+          ? (fromRestore ? "ตรวจพบฐานข้อมูลที่กู้คืน บิลค้างต้องตรวจสอบกับแหล่งข้อมูลอื่นก่อนส่ง" : "ฐานข้อมูลร้านไม่ตรงกับข้อมูลในเครื่อง (ในเครื่อง " + storeId + " · เซิร์ฟเวอร์ " + observedStoreId + ") กรุณาตรวจสอบบิลค้างก่อนเปลี่ยนร้าน")
           : "บิลเดิมยังไม่ระบุร้าน กรุณาตรวจสอบว่าเป็นของฐานข้อมูลนี้ก่อนยืนยัน", canBind);
         return;
       }
+      const result = await store.bindStore(observedStoreId, { expectedCurrent: storeId, ancestors: observedAncestors });
+      if (!result.bound) throw new Error("Store binding changed");
     } else if (!storeId || legacyPending) {
       blockStore("ยังไม่ทราบฐานข้อมูลของเครื่องนี้ กรุณาเชื่อมต่อและตรวจสอบก่อนขาย");
       return;
@@ -142,9 +160,11 @@ async function initializeStore() {
 byId("sale-store-bind")?.addEventListener("click", () => {
   if (!observedStoreId) return;
   byId("sale-store-confirm-id").textContent = "รหัสฐานข้อมูล " + observedStoreId;
-  byId("sale-store-confirm-message").textContent = storeId && storeId !== observedStoreId
+  byId("sale-store-confirm-message").textContent = storeId && observedAncestors.includes(storeId)
+    ? "ฐานข้อมูลนี้กู้คืนจากรุ่นเดิม บิลรอส่งจะเปลี่ยนเป็นต้องตรวจสอบ กรุณาตรวจประวัติและการรับเงินจากแหล่งอื่นก่อนส่งแต่ละบิล"
+    : storeId && storeId !== observedStoreId
     ? "เปลี่ยนไปใช้ฐานข้อมูลนี้ได้เมื่อไม่มีบิลค้าง ข้อมูลสินค้าและลูกค้าในเครื่องจะถูกโหลดใหม่"
-    : "บิลเดิมไม่มีรหัสร้าน กรุณายืนยันว่าบิลค้างทั้งหมดเป็นของฐานข้อมูลนี้ การยืนยันผิดอาจส่งบิลเข้าร้านผิด";
+    : "บิลเดิมไม่มีรหัสร้าน กรุณายืนยันว่าเป็นของฐานข้อมูลนี้ บิลรอส่งจะเปลี่ยนเป็นต้องตรวจสอบก่อนส่ง การยืนยันผิดอาจส่งบิลเข้าร้านผิด";
   byId("sale-store-confirm").showModal();
 });
 byId("sale-store-cancel")?.addEventListener("click", () => byId("sale-store-confirm").close());
@@ -152,9 +172,11 @@ byId("sale-store-confirm-button")?.addEventListener("click", async () => {
   const button = byId("sale-store-confirm-button");
   button.disabled = true;
   try {
-    const current = (await api("/store-identity")).id;
-    if (current !== observedStoreId) throw new Error("Store changed");
-    const result = await store.bindStore(current, { acceptLegacy: !storeId, allowSwitch: Boolean(storeId), expectedCurrent: storeId });
+    const identity = await api("/store-identity");
+    const current = identity.binding_id;
+    if (current !== observedStoreId || !Array.isArray(identity.restore_ancestors)) throw new Error("Store changed");
+    const acceptRestore = Boolean(storeId && current !== storeId && identity.restore_ancestors.includes(storeId));
+    const result = await store.bindStore(current, { acceptLegacy: !storeId, allowSwitch: Boolean(storeId), acceptRestore, ancestors: identity.restore_ancestors, expectedCurrent: storeId });
     if (!result.bound) throw new Error("Pending queue or store changed");
     storeId = current;
     if (legacyPending) await migrateLegacy();
@@ -535,7 +557,7 @@ byId("sale-queue-detail-close")?.addEventListener("click", () => byId("sale-queu
 
 async function migrateLegacy() {
   if (!legacyPending) return;
-  await store.put(legacyPending, storeId);
+  await store.put(legacyPending, storeId, { reviewRequired: true });
   legacyPending = null;
   try {
     sessionStorage.removeItem(storageKey);

@@ -10,7 +10,7 @@ const { test: base, expect } = require("@playwright/test");
 const test = base.extend({
   request: async ({ playwright, pos }, use) => {
     const bootstrap = await playwright.request.newContext();
-    const id = (await (await bootstrap.get(pos + "/store-identity")).json()).id;
+    const id = (await (await bootstrap.get(pos + "/store-identity")).json()).binding_id;
     await bootstrap.dispose();
     const client = await playwright.request.newContext({ extraHTTPHeaders: { "X-POS-Store-ID": id } });
     try { await use(client); } finally { await client.dispose(); }
@@ -408,6 +408,123 @@ test("store binding rejects stale tab writes and cannot switch while a queue exi
   expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
 });
 
+test("restoring an old database blocks an existing queue until explicit review", async ({ page, context, playwright }) => {
+  const directory = await mkdtemp(join(tmpdir(), "pos-generation-restore-"));
+  const originalFile = join(directory, "original.sqlite3"), backupFile = join(directory, "backup.sqlite3"), restoredFile = join(directory, "restored.sqlite3");
+  let active, client;
+  async function start(database, port, create) {
+    const args = ["inventory_api.py", "--port", String(port), "--database", database];
+    if (create) args.push("--create-database");
+    const process = spawn(process.env.POS_PYTHON || "python3", args, { cwd: join(__dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+    const closed = once(process, "close");
+    closed.catch(() => {});
+    const lines = createInterface({ input: process.stdout });
+    const [line] = await Promise.race([once(lines, "line"), closed.then(([code]) => { throw new Error("server exited " + code); })]);
+    const match = /^Inventory API: (http:\/\/127\.0\.0\.1:\d+)$/.exec(line);
+    expect(match).not.toBeNull();
+    return { process, closed, origin: match[1] };
+  }
+  try {
+    active = await start(originalFile, 0, true);
+    const bootstrap = await playwright.request.newContext();
+    const oldIdentity = await (await bootstrap.get(active.origin + "/store-identity")).json();
+    await bootstrap.dispose();
+    client = await playwright.request.newContext({ extraHTTPHeaders: { "X-POS-Store-ID": oldIdentity.binding_id } });
+    const product = await createProduct(client, active.origin);
+    await writeFile(backupFile, await (await client.get(active.origin + "/database-backup")).body());
+    await page.goto(active.origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+    const staleTab = await context.newPage();
+    await staleTab.goto(active.origin + "/checkout");
+    await expect(staleTab.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await context.setOffline(true);
+    await sellOne(page);
+    await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+    const [queued] = await page.evaluate(() => window.PosOffline.list());
+    // The server commits, but this browser never receives the result before restore.
+    expect((await client.post(active.origin + "/offline-sales", { data: queued.payload })).status()).toBe(201);
+    const port = new URL(active.origin).port;
+    active.process.kill();
+    await active.closed;
+    active = null;
+    const restore = spawn(process.env.POS_PYTHON || "python3", ["database_backup.py", "restore", backupFile, restoredFile],
+      { cwd: join(__dirname, ".."), stdio: "ignore" });
+    expect((await once(restore, "close"))[0]).toBe(0);
+    active = await start(restoredFile, port, false);
+    const identityClient = await playwright.request.newContext();
+    const restoredIdentity = await (await identityClient.get(active.origin + "/store-identity")).json();
+    await identityClient.dispose();
+    expect(restoredIdentity.id).toBe(oldIdentity.id);
+    expect(restoredIdentity.binding_id).not.toBe(oldIdentity.binding_id);
+    expect(restoredIdentity.restore_ancestors).toContain(oldIdentity.binding_id);
+    expect((await client.post(active.origin + "/offline-sales", { data: queued.payload })).status()).toBe(409);
+    await context.setOffline(false);
+    await expect(page.locator("#sale-store-message")).toContainText("ฐานข้อมูลร้านเปลี่ยน", { timeout: 20000 });
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual([queued]);
+    await page.reload();
+    await expect(page.locator("#sale-store-message")).toContainText("ฐานข้อมูลที่กู้คืน");
+    await page.getByRole("button", { name: "ตรวจสอบและยืนยันฐานข้อมูล" }).click();
+    const dialog = page.getByRole("dialog", { name: "ยืนยันฐานข้อมูลร้าน" });
+    await expect(dialog).toContainText("ตรวจประวัติและการรับเงินจากแหล่งอื่น");
+    await dialog.getByRole("button", { name: "ยืนยันฐานข้อมูลนี้" }).click();
+    await expect(page.locator("#sale-queue")).toContainText("ตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง");
+    const [review] = await page.evaluate(() => window.PosOffline.list());
+    expect(review.payload).toEqual(queued.payload);
+    expect(review.state).toBe("conflict");
+    const stale = await staleTab.evaluate(async (old) => {
+      try { await window.PosOffline.remove((await window.PosOffline.list())[0].payload.id, old); return false; } catch { return true; }
+    }, oldIdentity.binding_id);
+    expect(stale).toBe(true);
+    await page.waitForTimeout(11000);
+    expect((await client.get(active.origin + "/sales/" + queued.payload.id)).status()).toBe(404);
+    await page.getByRole("button", { name: `ลองส่งบิล ${queued.payload.id} อีกครั้ง` }).click();
+    await expect.poll(async () => (await client.get(active.origin + "/sales/" + queued.payload.id)).status()).toBe(200);
+    await expect.poll(() => page.evaluate(() => window.PosOffline.list())).toEqual([]);
+    expect(product.id).toBe(queued.payload.items[0].product_id);
+  } finally {
+    if (client) await client.dispose();
+    if (active) { active.process.kill(); await active.closed; }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restore rebinding marks only pending entries for review atomically across tabs", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => other.evaluate(() => syncing)).toBe(false);
+  const current = await page.evaluate(() => storeId), restored = randomUUID();
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  const priorConflict = { ...payload, id: randomUUID() };
+  await page.evaluate(async ({ payload, priorConflict, current }) => {
+    await window.PosOffline.put(payload, current);
+    await window.PosOffline.put(priorConflict, current);
+    await window.PosOffline.update(priorConflict.id, "conflict", "เหตุเดิม", current);
+  }, { payload, priorConflict, current });
+  const unconfirmed = await other.evaluate(async ({ current, restored }) =>
+    window.PosOffline.bindStore(restored, { expectedCurrent: current, allowSwitch: true }), { current, restored });
+  expect(unconfirmed.bound).toBe(false);
+  const accepted = await other.evaluate(async ({ current, restored }) =>
+    window.PosOffline.bindStore(restored, { expectedCurrent: current, acceptRestore: true, ancestors: [current] }), { current, restored });
+  expect(accepted.bound).toBe(true);
+  const rows = await other.evaluate(() => window.PosOffline.list());
+  expect(rows).toEqual([
+    { payload, state: "conflict", error: "ฐานข้อมูลถูกกู้คืนหรือคิวเดิมไม่ระบุรุ่น กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" },
+    { payload: priorConflict, state: "conflict", error: "เหตุเดิม" },
+  ]);
+  const stale = await page.evaluate(async ({ current, payload }) => {
+    try { await window.PosOffline.remove(payload.id, current); return false; } catch { return true; }
+  }, { current, payload });
+  expect(stale).toBe(true);
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(rows);
+});
+
 test("a changed server store blocks a queued sale without rebinding or sending it", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/checkout");
@@ -421,7 +538,7 @@ test("a changed server store blocks a queued sale without rebinding or sending i
     await window.PosOffline.update(payload.id, "conflict", "ต้องตรวจสอบ", original);
   }, { payload, original });
   const other = randomUUID();
-  await page.route("**/store-identity", (route) => route.fulfill({ json: { id: other } }));
+  await page.route("**/store-identity", (route) => route.fulfill({ json: { id: other, binding_id: other, restore_ancestors: [] } }));
   await page.reload();
   await expect(page.locator("#sale-store-message")).toContainText("ฐานข้อมูลร้านไม่ตรง");
   await expect(page.locator("#sale-store-bind")).toBeHidden();
@@ -502,6 +619,9 @@ test("a blocked IndexedDB v1 migration preserves the queue and requires explicit
   expect(oldVersion).toBe("VersionError");
   await upgraded.getByRole("button", { name: "ตรวจสอบและยืนยันฐานข้อมูล" }).click();
   await upgraded.getByRole("dialog", { name: "ยืนยันฐานข้อมูลร้าน" }).getByRole("button", { name: "ยืนยันฐานข้อมูลนี้" }).click();
+  await expect(upgraded.locator("#sale-queue")).toContainText("ตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  await upgraded.getByRole("button", { name: `ลองส่งบิล ${payload.id} อีกครั้ง` }).click();
   await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
   await expect.poll(() => upgraded.evaluate(() => window.PosOffline.list())).toEqual([]);
   const products = await (await request.get(pos + "/products")).json();
@@ -537,6 +657,29 @@ test("legacy queued sale requires explicit store confirmation before sync", asyn
   const dialog = page.getByRole("dialog", { name: "ยืนยันฐานข้อมูลร้าน" });
   await expect(dialog).toContainText("บิลเดิมไม่มีรหัสร้าน");
   await dialog.getByRole("button", { name: "ยืนยันฐานข้อมูลนี้" }).click();
+  await expect(page.locator("#sale-queue")).toContainText("ตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  await page.getByRole("button", { name: `ลองส่งบิล ${payload.id} อีกครั้ง` }).click();
+  await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
+});
+
+test("legacy session-only sale is placed directly into review after store confirmation", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await page.goto(pos + "/");
+  await page.evaluate((payload) => sessionStorage.setItem("pos-pending-sale", JSON.stringify(payload)), payload);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("บิลเดิมยังไม่ระบุร้าน");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  await page.getByRole("button", { name: "ตรวจสอบและยืนยันฐานข้อมูล" }).click();
+  await page.getByRole("dialog", { name: "ยืนยันฐานข้อมูลร้าน" }).getByRole("button", { name: "ยืนยันฐานข้อมูลนี้" }).click();
+  await expect(page.locator("#sale-queue")).toContainText("คิวเดิมไม่ระบุรุ่นฐานข้อมูล");
+  const [entry] = await page.evaluate(() => window.PosOffline.list());
+  expect(entry.payload).toEqual(payload);
+  expect(entry.state).toBe("conflict");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  await page.getByRole("button", { name: `ลองส่งบิล ${payload.id} อีกครั้ง` }).click();
   await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
 });
 
@@ -1303,7 +1446,7 @@ test("offline bill survives reload and syncs once after another device sells the
       return route.continue();
     });
     const expectedStore = await page.evaluate(() => storeId);
-    await page.route("**/store-identity", (route) => route.fulfill({ json: { id: expectedStore } }));
+    await page.route("**/store-identity", (route) => route.fulfill({ json: { id: expectedStore, binding_id: expectedStore, restore_ancestors: [] } }));
     await context.setOffline(false);
     // Some browser navigations do not deliver an online event; the pending
     // timer still starts a retry, at most one interval later.

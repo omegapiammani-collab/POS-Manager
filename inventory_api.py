@@ -25,6 +25,7 @@ from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checko
 from sales_reports import sales_report
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
+from store_binding import SCHEMA as BINDING_SCHEMA, ensure_binding
 
 MAX_BODY = 8192
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -263,7 +264,9 @@ class InventoryHandler(BaseHTTPRequestHandler):
             return 200, abandon_sale(db, parts[1], expected_store=self.headers.get("X-POS-Store-ID", ""))
 
         if parts == ["store-identity"] and self.command == "GET":
-            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0]}
+            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0],
+                         "binding_id": db.execute("SELECT id FROM store_binding WHERE singleton = 1").fetchone()[0],
+                         "restore_ancestors": [row[0] for row in db.execute("SELECT id FROM store_binding_ancestors ORDER BY id")]}
 
         if parts == ["stock-shortages"] and self.command == "GET":
             return 200, list_stock_shortages(db)
@@ -400,6 +403,8 @@ def make_server(database, port):
         db.executescript(EXPENSE_SCHEMA)
         db.executescript(DRAWER_SCHEMA)
         db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
+        db.executescript(BINDING_SCHEMA)
+        ensure_binding(db)
     handler = partial(InventoryHandler, database=database)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 

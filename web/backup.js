@@ -113,8 +113,11 @@ form.addEventListener("submit", async (event) => {
       return;
     }
     if (backup.version === 2 && backup.store_id && backup.store_id !== storeId) {
-      message("ไฟล์นี้เป็นของฐานข้อมูลร้านอื่น กรุณาตรวจสอบฐานข้อมูลก่อนนำเข้า", true);
-      return;
+      const ancestors = await queueStore.getRestoreAncestors(storeId);
+      if (!ancestors.includes(backup.store_id)) {
+        message("ไฟล์นี้เป็นของฐานข้อมูลร้านอื่น กรุณาตรวจสอบฐานข้อมูลก่อนนำเข้า", true);
+        return;
+      }
     }
     const result = await queueStore.importQueue(backup.entries, storeId);
     form.reset();
