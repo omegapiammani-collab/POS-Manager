@@ -435,14 +435,13 @@ async function showQueue() {
   }
   const pendingCount = entries.filter(({ state }) => state === "pending").length;
   const conflictCount = entries.filter(({ state }) => state === "conflict").length;
-  if ((!pendingCount && !legacyPending) || navigator.onLine === false || queueProblem) {
+  if ((!pendingCount && !legacyPending) || !storeReady || queueProblem) {
     clearTimeout(retryTimer);
     retryTimer = null;
   } else if (retryTimer === null) {
     retryTimer = setTimeout(() => {
       retryTimer = null;
-      if (navigator.onLine === false) return;
-      if (syncing || staging) {
+      if (navigator.onLine === false || syncing || staging) {
         showQueue();
       } else {
         syncQueue();
@@ -1088,6 +1087,7 @@ window.addEventListener("offline", () => {
   retryTimer = null;
   setConnected(false);
   setCatalogStale(catalogLoaded);
+  showQueue();
 });
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js", { scope: "/checkout" })
