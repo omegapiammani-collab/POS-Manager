@@ -6,10 +6,11 @@ const { join } = require("node:path");
 const vm = require("node:vm");
 
 function harness(initial, network) {
-  const entries = new Map(Object.entries(initial));
+  const entries = initial instanceof Map ? initial : new Map(Object.entries(initial));
   const cache = { match: async (path) => entries.get(path) };
   const context = vm.createContext({
     self: { addEventListener() {} }, caches: { open: async () => cache }, fetch: network,
+    Response: { error: () => ({ type: "error", status: 0 }) },
   });
   const source = readFileSync(join(__dirname, "..", "web", "sw.js"), "utf8")
     .replaceAll("__SHELL_REVISION__", "v1");
@@ -38,9 +39,21 @@ test("non-5xx navigation and 5xx with no cached HTML are returned unchanged", as
   await assert.rejects(h.navigation("/checkout"), /snapshot unavailable/);
 });
 
-test("a missing cached asset requests the exact old revision rather than newer bytes", async () => {
-  let requested;
-  const h = harness({}, async (request) => { requested = request.url; return response("unavailable", 409); });
-  assert.equal((await h.asset("/checkout.js")).status, 409);
-  assert.equal(requested, "/checkout.js?shell=v1");
+test("a missing asset never fetches from a server that ignores the revision", async () => {
+  let requests = 0;
+  const h = harness({}, async () => { requests++; return response("wrong-release", 200); });
+  assert.equal((await h.asset("/checkout.js")).type, "error");
+  assert.equal(requests, 0);
+});
+
+test("worker restart preserves fail-closed behavior and cached backup assets", async () => {
+  const entries = new Map([["/checkout/backup?shell=v1", response("backup-v1")],
+    ["/backup.js?shell=v1", response("backup-js-v1")]]);
+  let requests = 0;
+  const network = async () => { requests++; return response("wrong-release", 200); };
+  const restarted = harness(entries, network);
+  assert.equal((await restarted.asset("/backup.js")).body, "backup-js-v1");
+  entries.delete("/backup.js?shell=v1");
+  assert.equal((await harness(entries, network).asset("/backup.js")).type, "error");
+  assert.equal(requests, 0);
 });

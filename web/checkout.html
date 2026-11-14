@@ -5,11 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ขายสินค้า | POS Manager</title>
   <link rel="icon" href="data:,">
+  <script>
+    window.addEventListener("error", (event) => {
+      if (!["SCRIPT", "LINK"].includes(event.target?.tagName)) return;
+      const show = () => { document.getElementById("shell-load-error").hidden = false; };
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", show, { once: true });
+      else show();
+    }, true);
+  </script>
   <link rel="stylesheet" href="/inventory.css">
   <script defer src="/offline-store.js"></script>
   <script defer src="/checkout.js"></script>
 </head>
 <body class="checkout">
+  <p id="shell-load-error" role="alert" hidden>ไฟล์หน้าจอโหลดไม่ครบ กรุณาติดต่อผู้ดูแลและอย่าลบข้อมูลเว็บไซต์ บิลในเครื่องไม่ถูกลบจากข้อผิดพลาดนี้</p>
   <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
   <main class="frame">
     <div class="page-title"><h1>ขายสินค้า</h1><nav class="actions" aria-label="เมนู POS"><a class="pos-link" href="/">สินค้าและสต๊อก</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/checkout/backup">สำรองข้อมูล</a></nav></div>

@@ -4,11 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>สำรองและกู้คืนข้อมูล | POS Manager</title>
+  <script>
+    window.addEventListener("error", (event) => {
+      if (!["SCRIPT", "LINK"].includes(event.target?.tagName)) return;
+      const show = () => { document.getElementById("shell-load-error").hidden = false; };
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", show, { once: true });
+      else show();
+    }, true);
+  </script>
   <link rel="stylesheet" href="/inventory.css">
   <script src="/offline-store.js" defer></script>
   <script src="/backup.js" defer></script>
 </head>
 <body class="backup">
+  <p id="shell-load-error" role="alert" hidden>ไฟล์หน้าจอโหลดไม่ครบ กรุณาติดต่อผู้ดูแลและอย่าลบข้อมูลเว็บไซต์ บิลในเครื่องไม่ถูกลบจากข้อผิดพลาดนี้</p>
   <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
   <main class="frame">
     <div class="page-title">

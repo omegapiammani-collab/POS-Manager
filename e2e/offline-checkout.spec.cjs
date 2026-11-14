@@ -105,6 +105,30 @@ test("checkout snapshot handles 503 without mixing assets and leaves 404 intact"
   }
 });
 
+test("missing cached backup script warns offline and preserves the queued bill", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const queued = await page.evaluate(() => window.PosOffline.list());
+  expect(queued).toHaveLength(1);
+  const removed = await page.evaluate(async () => {
+    const names = await caches.keys();
+    const name = names.find((item) => item.startsWith("pos-checkout-snapshot-"));
+    const cache = await caches.open(name);
+    const request = (await cache.keys()).find((item) => new URL(item.url).pathname === "/backup.js");
+    return cache.delete(request);
+  });
+  expect(removed).toBe(true);
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#shell-load-error")).toContainText("อย่าลบข้อมูลเว็บไซต์");
+  await expect(page.locator("#shell-load-error")).toBeVisible();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+});
+
 test("a new shell waits for both old tabs and then serves its own offline snapshot", async ({ page, context }) => {
   const worker = await readFile(join(__dirname, "..", "web", "sw.js"), "utf8");
   let revision = "revision-a", failNavigation = false;

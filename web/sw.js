@@ -49,9 +49,9 @@ async function fetchAsset(request, path) {
   const cache = await caches.open(SHELL_CACHE);
   const cached = await cache.match(snapshotUrl(path));
   if (cached) return cached;
-  // The server refuses a revision it cannot serve, so this cannot silently
-  // substitute a newer file if the snapshot is incomplete.
-  return fetch(request);
+  // A downgraded server or intermediary may ignore the revision query.
+  // Refuse to mix that response with the cached document.
+  return Response.error();
 }
 
 self.addEventListener("fetch", (event) => {
