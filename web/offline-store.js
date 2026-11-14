@@ -11,6 +11,7 @@
     if (!opening) {
       opening = new Promise((resolve, reject) => {
       const request = indexedDB.open(DATABASE, 2);
+        let blocked = false;
       request.onupgradeneeded = (event) => {
           const db = request.result;
         if (event.oldVersion === 0) {
@@ -20,8 +21,14 @@
         }
         };
         request.onerror = () => reject(request.error);
+        request.onblocked = () => {
+          blocked = true;
+          reject(new Error("Offline database upgrade blocked by another tab"));
+        };
         request.onsuccess = () => {
           const db = request.result;
+          // A blocked request may succeed later, after its promise has rejected.
+          if (blocked) { db.close(); return; }
           db.onversionchange = () => {
             db.close();
             opening = null;

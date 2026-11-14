@@ -389,6 +389,59 @@ test("server store mismatch leaves an offline sale pending and blocks further ch
   expect((await request.get(pos + "/sales/" + queue[0].payload.id)).status()).toBe(404);
 });
 
+test("a blocked IndexedDB v1 migration preserves the queue and requires explicit confirmation", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await page.goto(pos + "/");
+  await page.evaluate(async (payload) => {
+    const request = indexedDB.open("pos-checkout-offline", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("snapshots");
+      const queue = request.result.createObjectStore("saleQueue", { keyPath: "sequence", autoIncrement: true });
+      queue.createIndex("saleId", "id", { unique: true });
+    };
+    const db = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    window.__legacyDb = db;
+    window.__legacyVersionChanges = 0;
+    db.onversionchange = () => { window.__legacyVersionChanges++; };
+    const canonical = (value) => Array.isArray(value) ? "[" + value.map(canonical).join(",") + "]"
+      : value !== null && typeof value === "object" ? "{" + Object.keys(value).sort().map((key) => JSON.stringify(key) + ":" + canonical(value[key])).join(",") + "}"
+      : JSON.stringify(value);
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("saleQueue", "readwrite");
+      tx.objectStore("saleQueue").add({ id: payload.id, signature: canonical(payload), payload, state: "pending", error: null });
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error);
+    });
+  }, payload);
+  const upgraded = await context.newPage();
+  await upgraded.goto(pos + "/checkout");
+  await expect(upgraded.locator("#sale-store-message")).toContainText("ปิดแท็บ POS รุ่นเก่า");
+  await expect(upgraded.locator("#sale-submit")).toBeDisabled();
+  expect(await page.evaluate(() => window.__legacyVersionChanges)).toBeGreaterThan(0);
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  await page.evaluate(() => window.__legacyDb.close());
+  await upgraded.reload();
+  await expect(upgraded.locator("#sale-store-message")).toContainText("บิลเดิมยังไม่ระบุร้าน");
+  expect(await upgraded.evaluate(() => window.PosOffline.list())).toEqual([{ payload, state: "pending", error: null }]);
+  const oldVersion = await page.evaluate(() => new Promise((resolve) => {
+    const request = indexedDB.open("pos-checkout-offline", 1);
+    request.onerror = () => resolve(request.error.name);
+    request.onsuccess = () => { request.result.close(); resolve("opened"); };
+  }));
+  expect(oldVersion).toBe("VersionError");
+  await upgraded.getByRole("button", { name: "ตรวจสอบและยืนยันฐานข้อมูล" }).click();
+  await upgraded.getByRole("dialog", { name: "ยืนยันฐานข้อมูลร้าน" }).getByRole("button", { name: "ยืนยันฐานข้อมูลนี้" }).click();
+  await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
+  await expect.poll(() => upgraded.evaluate(() => window.PosOffline.list())).toEqual([]);
+  const products = await (await request.get(pos + "/products")).json();
+  expect(Number(products.find(({ id }) => id === product.id).quantity)).toBe(0);
+});
+
 test("legacy queued sale requires explicit store confirmation before sync", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.goto(pos + "/checkout");

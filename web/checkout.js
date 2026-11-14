@@ -130,8 +130,10 @@ async function initializeStore() {
     loadProducts();
     loadCustomers();
     syncQueue();
-  } catch {
-    blockStore("ตรวจสอบข้อมูลร้านในเครื่องไม่ได้ กรุณาตรวจสอบพื้นที่จัดเก็บและสำรองบิล");
+  } catch (error) {
+    blockStore(error.message === "Offline database upgrade blocked by another tab"
+      ? "มีแท็บ POS รุ่นเก่าเปิดอยู่ กรุณาปิดแท็บนั้นแล้วโหลดหน้านี้ใหม่ ข้อมูลบิลค้างยังอยู่ในเครื่อง"
+      : "ตรวจสอบข้อมูลร้านในเครื่องไม่ได้ กรุณาตรวจสอบพื้นที่จัดเก็บและสำรองบิล");
   } finally {
     initializingStore = false;
   }
