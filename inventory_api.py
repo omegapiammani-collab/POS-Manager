@@ -21,7 +21,7 @@ from payment_qr import PaymentQrUnavailable, payment_qr_svg
 from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
 )
-from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checkout, customer_list, read_sale, uuid_field
+from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checkout, customer_list, read_sale, require_store, uuid_field
 from sales_reports import sales_report
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
@@ -201,12 +201,20 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def dispatch(self, db, route):
         parts = route.path.strip("/").split("/")
-        if parts == ["store-identity"] and self.command == "GET":
-            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0]}
+        if self.command == "GET" and parts in (["products"], ["customers"]) and self.headers.get("X-POS-Store-ID"):
+            db.execute("BEGIN")
+            require_store(db, self.headers["X-POS-Store-ID"])
         if parts == ["customers"]:
             if self.command == "GET":
                 return 200, customer_list(db)
-            return 201, add_customer(db, required_text(self.read_json(), "name"))
+            name = required_text(self.read_json(), "name")
+            expected_store = self.headers.get("X-POS-Store-ID")
+            if expected_store:
+                with db:
+                    db.execute("BEGIN IMMEDIATE")
+                    require_store(db, expected_store)
+                    return 201, add_customer(db, name)
+            return 201, add_customer(db, name)
 
         if parts == ["customer-debts"] and self.command == "GET":
             return 200, customer_debt_list(db)
@@ -252,7 +260,10 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
         if len(parts) == 3 and parts[0] == "sales" and parts[2] == "abandon" and self.command == "POST":
             self.read_json()
-            return 200, abandon_sale(db, parts[1])
+            return 200, abandon_sale(db, parts[1], expected_store=self.headers.get("X-POS-Store-ID", ""))
+
+        if parts == ["store-identity"] and self.command == "GET":
+            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0]}
 
         if parts == ["stock-shortages"] and self.command == "GET":
             return 200, list_stock_shortages(db)
@@ -261,7 +272,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
             data = self.read_json()
             if parts == ["sales", "allow-negative"] and ("offline" in data or "sold_at" in data):
                 raise ValueError("Stock override is only for online sales")
-            created, sale = checkout(db, data, allow_negative=parts == ["sales", "allow-negative"], offline=parts == ["offline-sales"])
+            created, sale = checkout(db, data, allow_negative=parts == ["sales", "allow-negative"], offline=parts == ["offline-sales"], expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), sale
 
         if len(parts) == 2 and parts[0] == "sales" and self.command == "GET":

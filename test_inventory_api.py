@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from uuid import uuid4
+from test_store_headers import store_headers
 
 from inventory_api import make_server
 
@@ -26,7 +27,7 @@ class InventoryApiTests(unittest.TestCase):
         self.origin = f"http://127.0.0.1:{server.server_port}"
 
     def request(self, path, data=None):
-        headers = {"Content-Type": "application/json"}
+        headers = store_headers(self.origin)
         body = json.dumps(data).encode() if data is not None else None
         request = Request(self.origin + path, data=body, headers=headers)
         try:

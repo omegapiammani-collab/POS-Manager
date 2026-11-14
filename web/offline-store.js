@@ -10,12 +10,14 @@
   function openDatabase() {
     if (!opening) {
       opening = new Promise((resolve, reject) => {
-        const request = indexedDB.open(DATABASE, 1);
-        request.onupgradeneeded = () => {
+      const request = indexedDB.open(DATABASE, 2);
+      request.onupgradeneeded = (event) => {
           const db = request.result;
+        if (event.oldVersion === 0) {
           db.createObjectStore(SNAPSHOTS);
           const queue = db.createObjectStore(QUEUE, { keyPath: "sequence", autoIncrement: true });
           queue.createIndex("saleId", "id", { unique: true });
+        }
         };
         request.onerror = () => reject(request.error);
         request.onsuccess = () => {
@@ -33,6 +35,65 @@
       });
     }
     return opening;
+  }
+
+  async function guarded(expected, run) {
+    expected = saleId(expected);
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([SNAPSHOTS, QUEUE], "readwrite");
+      let result, failure;
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error("Offline transaction was aborted"));
+      const snapshots = tx.objectStore(SNAPSHOTS);
+      const queue = tx.objectStore(QUEUE);
+      const abort = (error) => { failure = error; tx.abort(); };
+      const request = snapshots.get("storeId");
+      request.onsuccess = () => {
+        if (request.result !== expected) return abort(new Error("Store binding changed"));
+        try { run(queue, snapshots, (value) => { result = value; }, abort); }
+        catch (error) { abort(error); }
+      };
+    });
+  }
+
+  async function getBinding() {
+    return transaction(SNAPSHOTS, "readonly", (store, setResult) => {
+      const request = store.get("storeId");
+      request.onsuccess = () => setResult(request.result ?? null);
+    });
+  }
+
+  async function bindStore(id, { acceptLegacy = false, allowSwitch = false, expectedCurrent = null } = {}) {
+    id = saleId(id);
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([SNAPSHOTS, QUEUE], "readwrite");
+      let result, failure;
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error("Cannot bind store"));
+      const snapshots = tx.objectStore(SNAPSHOTS), queue = tx.objectStore(QUEUE);
+      const currentRequest = snapshots.get("storeId");
+      currentRequest.onsuccess = () => {
+        const current = currentRequest.result ?? null;
+        const countRequest = queue.count();
+        countRequest.onsuccess = () => {
+          const count = countRequest.result;
+          if (current === id) { result = { bound: true }; return; }
+          if (current !== expectedCurrent) { result = { bound: false, current, count }; return; }
+          if ((!current && count && !acceptLegacy) || (current && current !== id && (count || !allowSwitch))) {
+            result = { bound: false, current, count };
+            return;
+          }
+          if (current !== id) {
+            snapshots.delete("products");
+            snapshots.delete("customers");
+          }
+          snapshots.put(id, "storeId");
+          result = { bound: true };
+        };
+      };
+    });
   }
 
   async function transaction(storeName, mode, run) {
@@ -81,17 +142,17 @@
     return { payload, state, error };
   }
 
-  async function getSnapshot(key) {
+  async function getSnapshot(key, expected) {
     validatedKey(key);
-    return transaction(SNAPSHOTS, "readonly", (store, setResult) => {
-      const request = store.get(key);
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get(key);
       request.onsuccess = () => setResult(request.result ?? null);
     });
   }
 
-  async function putSnapshot(key, value) {
+  async function putSnapshot(key, value, expected) {
     validatedKey(key);
-    await transaction(SNAPSHOTS, "readwrite", (store) => { store.put(value, key); });
+    await guarded(expected, (queue, snapshots) => { snapshots.put(value, key); });
   }
 
   async function list() {
@@ -101,11 +162,32 @@
     });
   }
 
-  async function put(payload) {
+  async function listForStore(expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = queue.getAll();
+      request.onsuccess = () => setResult(request.result.map(queueEntry));
+    });
+  }
+
+  async function exportQueue() {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([SNAPSHOTS, QUEUE], "readonly");
+      let id = null, entries = [];
+      tx.oncomplete = () => resolve({ storeId: id, entries });
+      tx.onabort = () => reject(tx.error ?? new Error("Cannot read queue"));
+      const binding = tx.objectStore(SNAPSHOTS).get("storeId");
+      const rows = tx.objectStore(QUEUE).getAll();
+      binding.onsuccess = () => { id = binding.result ?? null; };
+      rows.onsuccess = () => { entries = rows.result.map(queueEntry); };
+    });
+  }
+
+  async function put(payload, expected) {
     const id = saleId(payload?.id);
     const submitted = structuredClone({ ...payload, id });
     const signature = canonicalJson(submitted);
-    return transaction(QUEUE, "readwrite", (store, setResult, abort) => {
+    return guarded(expected, (store, snapshots, setResult, abort) => {
       const request = store.index("saleId").get(id);
       request.onsuccess = () => {
         const existing = request.result;
@@ -192,12 +274,12 @@
     return { id, signature: canonicalJson(submitted), payload: submitted, state, error };
   }
 
-  async function importQueue(entries) {
+  async function importQueue(entries, expected) {
     if (!Array.isArray(entries)) {
       throw new TypeError("A queue backup must contain an array of entries");
     }
     const rows = Array.from(entries, validatedImportEntry);
-    return transaction(QUEUE, "readwrite", (store, setResult, abort) => {
+    return guarded(expected, (store, snapshots, setResult, abort) => {
       const index = store.index("saleId");
       const totals = { imported: 0, duplicates: 0 };
       let position = 0;
@@ -228,11 +310,11 @@
     });
   }
 
-  async function update(id, state, error = null) {
+  async function update(id, state, error = null, expected) {
     id = saleId(id);
     if (!STATES.has(state)) throw new TypeError("Unknown offline sale state");
     if (error !== null && typeof error !== "string") throw new TypeError("Invalid offline error");
-    return transaction(QUEUE, "readwrite", (store, setResult) => {
+    return guarded(expected, (store, snapshots, setResult) => {
       const request = store.index("saleId").get(id);
       request.onsuccess = () => {
         const existing = request.result;
@@ -247,9 +329,9 @@
     });
   }
 
-  async function remove(id) {
+  async function remove(id, expected) {
     id = saleId(id);
-    await transaction(QUEUE, "readwrite", (store) => {
+    await guarded(expected, (store) => {
       const request = store.index("saleId").getKey(id);
       request.onsuccess = () => {
         if (request.result !== undefined) store.delete(request.result);
@@ -257,5 +339,5 @@
     });
   }
 
-  window.PosOffline = { getSnapshot, putSnapshot, list, put, update, remove, importQueue };
+  window.PosOffline = { getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore };
 })();

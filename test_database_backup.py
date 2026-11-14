@@ -10,6 +10,7 @@ from threading import Thread
 import unittest
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from test_store_headers import store_headers
 from uuid import uuid4
 
 from inventory_api import make_server
@@ -40,7 +41,7 @@ class DatabaseBackupTests(unittest.TestCase):
         request = Request(
             (origin or self.origin) + path,
             data=None if payload is None else json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=store_headers(origin or self.origin),
         )
         with urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, 200 if payload is None else 201)
@@ -113,6 +114,8 @@ class DatabaseBackupTests(unittest.TestCase):
         result = self.restore(backup, restored)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         origin = self.start_server(restored)
+        with urlopen(self.origin + "/store-identity") as original_response, urlopen(origin + "/store-identity") as restored_response:
+            self.assertEqual(json.load(original_response), json.load(restored_response))
         self.assertEqual(self.request(f"/sales/{sale['id']}", origin=origin), sale)
         self.assertEqual(self.request(f"/expenses?from={DAY}&to={DAY}", origin=origin), [expense])
         self.assertEqual(self.request(f"/cash-drawer?date={DAY}", origin=origin), drawer)
@@ -132,14 +135,14 @@ class DatabaseBackupTests(unittest.TestCase):
         sale = {"id": sale_id, "items": [{"product_id": product["id"], "unit_id": product["base_unit_id"],
                  "quantity": "1", "expected_unit_price": "10"}],
                 "payments": {"cash": "10", "qr": "0", "credit": "0"}, "customer_id": None, "qr_confirmed": False}
-        req = Request(self.origin + f"/sales/{sale_id}/abandon", data=b"{}", headers={"Content-Type": "application/json"})
+        req = Request(self.origin + f"/sales/{sale_id}/abandon", data=b"{}", headers=store_headers(self.origin))
         with urlopen(req, timeout=5) as response:
             self.assertEqual(response.status, 200)
         backup = self.download()
         restored = self.directory / "abandoned-restored.sqlite3"
         self.assertEqual(self.restore(backup, restored).returncode, 0)
         origin = self.start_server(restored)
-        req = Request(origin + "/offline-sales", data=json.dumps(sale).encode(), headers={"Content-Type": "application/json"})
+        req = Request(origin + "/offline-sales", data=json.dumps(sale).encode(), headers=store_headers(origin))
         with self.assertRaises(HTTPError) as raised:
             urlopen(req, timeout=5)
         self.assertEqual(raised.exception.code, 409)

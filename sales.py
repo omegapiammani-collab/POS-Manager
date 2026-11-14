@@ -231,20 +231,29 @@ def offline_sale_time(data, *, offline):
     return value
 
 
-def checkout(db, data, *, allow_negative=False, offline=False):
+def require_store(db, expected):
+    row = db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()
+    if not isinstance(expected, str) or row is None or expected != row[0]:
+        raise SaleConflict("store_mismatch", "This request belongs to a different or unknown store")
+
+
+def checkout(db, data, *, allow_negative=False, offline=False, expected_store=None):
     validated = validate_checkout(data)
     sold_at = offline_sale_time(data, offline=offline)
     with db:
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         return checkout_in_transaction(
             db, validated, allow_negative=allow_negative or offline, sold_at=sold_at, check_availability=True,
         )
 
 
-def abandon_sale(db, sale_id):
+def abandon_sale(db, sale_id, *, expected_store):
     sale_id = uuid_field(sale_id, "id")
     with db:
         db.execute("BEGIN IMMEDIATE")
+        require_store(db, expected_store)
         if db.execute("SELECT 1 FROM sales WHERE id = ?", (sale_id,)).fetchone():
             raise SaleConflict("sale_already_recorded", "This sale has already been recorded")
         db.execute("INSERT OR IGNORE INTO abandoned_sales (id) VALUES (?)", (sale_id,))

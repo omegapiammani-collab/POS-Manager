@@ -76,6 +76,7 @@ dialog .error { margin-top: 12px; padding: 8px; }
 .checkout .sale-message.error { background: #fff1f0; }
 .checkout .sale-pending button { margin-top: 8px; }
 .checkout #sale-receipt-id { overflow-wrap: anywhere; }
+.checkout #sale-store-message, .checkout #sale-store-confirm-id { overflow-wrap: anywhere; }
 .checkout #sale-queue-detail-reference, .checkout #sale-queue-detail-customer { overflow-wrap: anywhere; }
 @media (max-width: 390px) {
   .checkout .sale-payment-grid { grid-template-columns: 1fr; }

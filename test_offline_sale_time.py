@@ -8,6 +8,7 @@ from threading import Thread
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from test_store_headers import store_headers
 from uuid import uuid4
 
 from inventory import connect
@@ -42,7 +43,7 @@ class OfflineSaleTimeTests(unittest.TestCase):
         request = Request(
             self.origin + path,
             data=None if data is None else json.dumps(data).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=store_headers(self.origin),
         )
         try:
             response = urlopen(request, timeout=3)

@@ -10,6 +10,7 @@ from threading import Thread
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from test_store_headers import store_headers
 from uuid import uuid4
 
 from inventory_api import make_server
@@ -19,7 +20,8 @@ class SalesApiTests(unittest.TestCase):
     def setUp(self):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        server = make_server(Path(directory.name) / "sales.sqlite3", 0)
+        self.database = Path(directory.name) / "sales.sqlite3"
+        server = make_server(self.database, 0)
         self.addCleanup(server.server_close)
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
@@ -37,7 +39,7 @@ class SalesApiTests(unittest.TestCase):
         request = Request(
             self.origin + path,
             data=None if data is None else json.dumps(data).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=store_headers(self.origin),
         )
         try:
             response = urlopen(request, timeout=3)
@@ -196,6 +198,50 @@ class SalesApiTests(unittest.TestCase):
                 self.assertEqual((status, body["code"]), (409, "sale_abandoned"))
         self.assertEqual(self.stock()["E01"], Decimal("2"))
         self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 404)
+
+    def test_all_sale_routes_reject_missing_or_wrong_store_identity(self):
+        sale = self.sale([self.line(self.eggs, "1", "5")], cash="5")
+        for path in ("/sales", "/offline-sales", "/sales/allow-negative", f"/sales/{sale['id']}/abandon"):
+            for store_id in (None, str(uuid4())):
+                headers = {"Content-Type": "application/json"}
+                if store_id is not None:
+                    headers["X-POS-Store-ID"] = store_id
+                payload = {} if path.endswith("/abandon") else sale
+                req = Request(self.origin + path, data=json.dumps(payload).encode(), headers=headers)
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(req, timeout=3)
+                self.assertEqual(error.exception.code, 409)
+                self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        self.assertEqual(self.stock()["E01"], Decimal("2"))
+        self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 404)
+        self.assertEqual(self.request("/sales", sale)[0], 201)
+
+    def test_database_swapped_after_identity_lookup_rejects_old_store_header(self):
+        old_id = store_headers(self.origin)["X-POS-Store-ID"]
+        sale = self.sale([self.line(self.eggs, "1", "5")], cash="5")
+        recorded = self.post_created("/sales", sale)
+        other = self.database.with_name("other.sqlite3")
+        replacement_server = make_server(other, 0)
+        replacement_server.server_close()
+        old_path = self.database.with_name("original.sqlite3")
+        self.database.rename(old_path)
+        other.rename(self.database)
+        for path, payload in (("/sales", sale), ("/offline-sales", sale),
+                              ("/sales/allow-negative", sale), (f"/sales/{sale['id']}/abandon", {}),
+                              ("/customers", {"name": "ลูกค้าไม่ควรข้ามร้าน"})):
+            req = Request(self.origin + path, data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json", "X-POS-Store-ID": old_id})
+            with self.subTest(path=path), self.assertRaises(HTTPError) as error:
+                urlopen(req, timeout=3)
+            self.assertEqual(error.exception.code, 409)
+            self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        self.assertNotEqual(store_headers(self.origin)["X-POS-Store-ID"], old_id)
+        self.assertEqual(self.request("/customers")[1], [])
+        self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 404)
+        self.database.rename(other)
+        old_path.rename(self.database)
+        self.assertEqual(self.request("/sales", sale), (200, recorded))
+        self.assertEqual(self.stock()["E01"], Decimal("1"))
 
     def test_abandon_races_with_sale_and_never_removes_a_recorded_bill(self):
         sale = self.sale([self.line(self.eggs, "1", "5")], cash="5")

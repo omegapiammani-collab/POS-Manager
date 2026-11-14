@@ -26,6 +26,10 @@ let queueRequest = 0;
 let queueProblem = false;
 let productsRequest = 0;
 let customersRequest = 0;
+let storeId = null;
+let storeReady = false;
+let observedStoreId = null;
+let initializingStore = false;
 let negativePayload = null;
 let abandonPayload = null;
 const store = window.PosOffline;
@@ -44,11 +48,12 @@ function status(message, error = false) {
   node.hidden = !message;
 }
 
-async function api(path, data) {
+async function api(path, data, expectedStore = storeId) {
   const options = { signal: AbortSignal.timeout(15000) };
+  if (expectedStore) options.headers = { "X-POS-Store-ID": expectedStore };
   if (data !== undefined) {
     options.method = "POST";
-    options.headers = { "Content-Type": "application/json" };
+    options.headers = { ...options.headers, "Content-Type": "application/json" };
     options.body = JSON.stringify(data);
   }
   let response;
@@ -64,8 +69,99 @@ async function api(path, data) {
   const error = new Error(result.error || "บันทึกไม่สำเร็จ");
   error.status = response.status;
   error.code = result.code;
+  if (error.code === "store_mismatch") blockStore("ฐานข้อมูลร้านเปลี่ยน กรุณาตรวจสอบก่อนขายหรือส่งบิล");
   throw error;
 }
+
+function blockStore(text, canBind = false, refreshQueue = true) {
+  storeReady = false;
+  byId("sale-new-customer").disabled = true;
+  byId("sale-store-message").textContent = text;
+  byId("sale-store-blocked").hidden = false;
+  byId("sale-store-bind").hidden = !canBind;
+  updatePayment();
+  if (refreshQueue) showQueue();
+}
+
+async function verifyServerStore() {
+  if (!storeReady || !storeId || navigator.onLine === false) return false;
+  try {
+    const observed = (await api("/store-identity")).id;
+    if (observed !== storeId) {
+      blockStore("ฐานข้อมูลร้านเปลี่ยน กรุณากลับไปเปิดฐานข้อมูลเดิมแล้วโหลดหน้านี้ใหม่เพื่อตรวจสอบบิลค้าง");
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function initializeStore() {
+  if (initializingStore) return;
+  initializingStore = true;
+  try {
+    storeId = await store.getBinding();
+    const queued = await store.list();
+    if (navigator.onLine !== false) {
+      try { observedStoreId = (await api("/store-identity")).id; } catch { observedStoreId = null; }
+    }
+    if (observedStoreId) {
+      if (!storeId && !queued.length && !legacyPending) {
+        const result = await store.bindStore(observedStoreId);
+        if (!result.bound) throw new Error("Store binding changed");
+        storeId = observedStoreId;
+      }
+      if (storeId !== observedStoreId || legacyPending) {
+        const canBind = (!storeId || storeId === observedStoreId || (!queued.length && !legacyPending));
+        blockStore(storeId && storeId !== observedStoreId
+          ? "ฐานข้อมูลร้านไม่ตรงกับข้อมูลในเครื่อง (ในเครื่อง " + storeId + " · เซิร์ฟเวอร์ " + observedStoreId + ") กรุณาตรวจสอบบิลค้างก่อนเปลี่ยนร้าน"
+          : "บิลเดิมยังไม่ระบุร้าน กรุณาตรวจสอบว่าเป็นของฐานข้อมูลนี้ก่อนยืนยัน", canBind);
+        return;
+      }
+    } else if (!storeId || legacyPending) {
+      blockStore("ยังไม่ทราบฐานข้อมูลของเครื่องนี้ กรุณาเชื่อมต่อและตรวจสอบก่อนขาย");
+      return;
+    }
+    storeReady = true;
+    byId("sale-store-blocked").hidden = true;
+    setConnected(connected);
+    updatePayment();
+    loadProducts();
+    loadCustomers();
+    syncQueue();
+  } catch {
+    blockStore("ตรวจสอบข้อมูลร้านในเครื่องไม่ได้ กรุณาตรวจสอบพื้นที่จัดเก็บและสำรองบิล");
+  } finally {
+    initializingStore = false;
+  }
+}
+
+byId("sale-store-bind")?.addEventListener("click", () => {
+  if (!observedStoreId) return;
+  byId("sale-store-confirm-id").textContent = "รหัสฐานข้อมูล " + observedStoreId;
+  byId("sale-store-confirm-message").textContent = storeId && storeId !== observedStoreId
+    ? "เปลี่ยนไปใช้ฐานข้อมูลนี้ได้เมื่อไม่มีบิลค้าง ข้อมูลสินค้าและลูกค้าในเครื่องจะถูกโหลดใหม่"
+    : "บิลเดิมไม่มีรหัสร้าน กรุณายืนยันว่าบิลค้างทั้งหมดเป็นของฐานข้อมูลนี้ การยืนยันผิดอาจส่งบิลเข้าร้านผิด";
+  byId("sale-store-confirm").showModal();
+});
+byId("sale-store-cancel")?.addEventListener("click", () => byId("sale-store-confirm").close());
+byId("sale-store-confirm-button")?.addEventListener("click", async () => {
+  const button = byId("sale-store-confirm-button");
+  button.disabled = true;
+  try {
+    const current = (await api("/store-identity")).id;
+    if (current !== observedStoreId) throw new Error("Store changed");
+    const result = await store.bindStore(current, { acceptLegacy: !storeId, allowSwitch: Boolean(storeId), expectedCurrent: storeId });
+    if (!result.bound) throw new Error("Pending queue or store changed");
+    storeId = current;
+    if (legacyPending) await migrateLegacy();
+    byId("sale-store-confirm").close();
+    location.reload();
+  } catch {
+    byId("sale-store-confirm-message").textContent = "ยืนยันไม่สำเร็จ กรุณาตรวจสอบฐานข้อมูลและบิลค้างแล้วลองใหม่";
+  } finally { button.disabled = false; }
+});
 
 function scaledDecimal(value, digits, allowExponent = false) {
   const match = /^(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(value);
@@ -238,7 +334,7 @@ function updatePayment() {
   else balance.textContent = "ยอดชำระครบ";
 
   byId("sale-cash-all").disabled = !cart.size || total === null;
-  byId("sale-submit").disabled = staging || confirmingPrice || !cart.size || [...cart.values()].some((item) => item.issue) || difference !== 0n || tenderInvalid
+  byId("sale-submit").disabled = !storeReady || staging || confirmingPrice || !cart.size || [...cart.values()].some((item) => item.issue) || difference !== 0n || tenderInvalid
     || (paid.credit > 0n && !payment.customer_id.value)
     || (paid.qr > 0n && !payment.qr_confirmed.checked);
 }
@@ -306,7 +402,7 @@ function setConnected(value) {
   connection.textContent = connectionMessage + preparation;
   connection.classList.toggle("sale-offline", !connected || cacheProblems.size > 0);
   byId("sale-show-qr").disabled = !connected;
-  byId("sale-new-customer").disabled = !connected;
+  byId("sale-new-customer").disabled = !connected || !storeReady;
   if (!connected && byId("sale-qr-image").hidden) {
     byId("sale-qr-state").textContent = "สร้าง QR ตามยอดได้เมื่อออนไลน์ ใช้ QR ร้านและตรวจสอบเงินโอนด้วยตนเอง";
     byId("sale-qr-state").hidden = false;
@@ -328,11 +424,12 @@ async function showQueue() {
   const summary = byId("sale-queue-summary");
   let entries;
   try {
-    entries = await store.list();
+    entries = storeReady ? await store.listForStore(storeId) : await store.list();
     if (request !== queueRequest) return;
     queueProblem = false;
-  } catch {
+  } catch (error) {
     if (request !== queueRequest) return;
+    if (error.message === "Store binding changed") blockStore("ฐานข้อมูลที่ผูกกับแท็บนี้เปลี่ยน กรุณาโหลดหน้าใหม่เพื่อตรวจสอบ", false, false);
     queueProblem = true;
     entries = [];
   }
@@ -353,7 +450,7 @@ async function showQueue() {
     }, retryDelay);
   }
   byId("sale-pending").hidden = !entries.length && !legacyPending && !queueProblem;
-  byId("sale-retry").disabled = syncing || staging || (!pendingCount && !legacyPending);
+  byId("sale-retry").disabled = !storeReady || syncing || staging || (!pendingCount && !legacyPending);
   summary.textContent = queueProblem
     ? "อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์"
     : "รอส่ง " + (pendingCount + Number(Boolean(legacyPending))) + " บิล · ต้องตรวจสอบ " + conflictCount + " บิล";
@@ -376,14 +473,14 @@ async function showQueue() {
     if (state === "conflict") {
       const retry = element("button", "ลองส่งอีกครั้ง", "secondary");
       retry.type = "button";
-      retry.disabled = syncing || staging;
+      retry.disabled = !storeReady || syncing || staging;
       retry.setAttribute("aria-label", "ลองส่งบิล " + payload.id + " อีกครั้ง");
       retry.addEventListener("click", () => retryQueue(payload.id));
       row.append(retry);
       if (byId("sale-abandon")) {
         const abandon = element("button", "ยกเลิกบิลค้าง", "secondary");
         abandon.type = "button";
-        abandon.disabled = syncing || staging;
+        abandon.disabled = !storeReady || syncing || staging;
         abandon.setAttribute("aria-label", "ยกเลิกบิลค้าง " + payload.id);
         abandon.addEventListener("click", () => {
           if (syncing || staging) return;
@@ -396,7 +493,7 @@ async function showQueue() {
       if (!payload.offline && error === saleErrors.insufficient_stock && byId("sale-negative")) {
         const confirm = element("button", "ขายต่อแม้สต๊อกไม่พอ", "secondary");
         confirm.type = "button";
-        confirm.disabled = syncing || staging;
+        confirm.disabled = !storeReady || syncing || staging;
         confirm.setAttribute("aria-label", "ขายบิล " + payload.id + " แม้สต๊อกไม่พอ");
         confirm.addEventListener("click", () => openNegativeConfirmation(payload));
         row.append(confirm);
@@ -437,7 +534,7 @@ byId("sale-queue-detail-close")?.addEventListener("click", () => byId("sale-queu
 
 async function migrateLegacy() {
   if (!legacyPending) return;
-  await store.put(legacyPending);
+  await store.put(legacyPending, storeId);
   legacyPending = null;
   try {
     sessionStorage.removeItem(storageKey);
@@ -513,13 +610,14 @@ const saleErrors = {
 byId("sale-abandon-cancel")?.addEventListener("click", () => byId("sale-abandon").close());
 byId("sale-abandon-confirm")?.addEventListener("click", async () => {
   const payload = abandonPayload;
-  if (!payload || syncing || staging) return;
+  if (!storeReady || !payload || syncing || staging) return;
+  const expectedStore = storeId;
   syncing = true;
   byId("sale-abandon").close();
   try {
     await showQueue();
-    await api("/sales/" + encodeURIComponent(payload.id) + "/abandon", {});
-    await store.remove(payload.id);
+    await api("/sales/" + encodeURIComponent(payload.id) + "/abandon", {}, expectedStore);
+    await store.remove(payload.id, expectedStore);
     status("ยกเลิกบิลค้างแล้ว สามารถเริ่มบิลใหม่ได้");
   } catch (error) {
     if (error.code === "sale_already_recorded") {
@@ -535,18 +633,18 @@ byId("sale-abandon-confirm")?.addEventListener("click", async () => {
   }
 });
 
-async function syncSale(payload, allowNegative = false) {
+async function syncSale(payload, allowNegative = false, expectedStore = storeId) {
   let sale;
   try {
-    sale = await api(allowNegative ? "/sales/allow-negative" : payload.offline ? "/offline-sales" : "/sales", payload);
+    sale = await api(allowNegative ? "/sales/allow-negative" : payload.offline ? "/offline-sales" : "/sales", payload, expectedStore);
   } catch (failure) {
-    if (![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
+    if (failure.code === "store_mismatch" || ![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
     const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
-    await store.update(payload.id, "conflict", reason);
+    await store.update(payload.id, "conflict", reason, expectedStore);
     return { state: "conflict", reason };
   }
   try {
-    await store.remove(payload.id);
+    await store.remove(payload.id, expectedStore);
   } catch {
     // The server has confirmed the sale. Retrying the retained identifier is safe.
     status("บันทึกบิลแล้ว แต่ล้างคิวในเครื่องไม่สำเร็จ", true);
@@ -555,7 +653,7 @@ async function syncSale(payload, allowNegative = false) {
 }
 
 function openNegativeConfirmation(payload) {
-  if (syncing || staging || payload.offline) return;
+  if (!storeReady || syncing || staging || payload.offline) return;
   negativePayload = payload;
   byId("sale-negative-reference").textContent = "เลขบิล " + payload.id;
   byId("sale-negative-items").replaceChildren(...payload.items.map((item) => {
@@ -574,12 +672,13 @@ function openNegativeConfirmation(payload) {
 byId("sale-negative-cancel")?.addEventListener("click", () => byId("sale-negative").close());
 byId("sale-negative-confirm")?.addEventListener("click", async () => {
   const payload = negativePayload;
-  if (!payload || syncing || staging) return;
+  if (!storeReady || !payload || syncing || staging) return;
+  const expectedStore = storeId;
   syncing = true;
   byId("sale-negative").close();
   try {
     await showQueue();
-    const result = await syncSale(payload, true);
+    const result = await syncSale(payload, true, expectedStore);
     if (result.state === "synced") {
       const shortage = hasStockShortage(result.sale);
       status(shortage ? "บันทึกบิลแล้ว · ตรวจสอบสต๊อกติดลบที่หน้าสินค้าและสต๊อก" : "บันทึกบิลแล้ว", shortage);
@@ -601,7 +700,8 @@ byId("sale-negative-confirm")?.addEventListener("click", async () => {
 });
 
 async function syncQueue(onlyId) {
-  if (syncing || staging) return;
+  if (!storeReady || syncing || staging) return;
+  const expectedStore = storeId;
   syncing = true;
   stagedDuringSync = new Set();
   let synced = 0;
@@ -611,16 +711,16 @@ async function syncQueue(onlyId) {
   try {
     await showQueue();
     await migrateLegacy();
-    if (navigator.onLine === false) return;
-    for (const entry of await store.list()) {
+    if (navigator.onLine === false || !(await verifyServerStore()) || storeId !== expectedStore) return;
+    for (const entry of await store.listForStore(expectedStore)) {
       if (stagedDuringSync.has(entry.payload.id)) continue;
       if (onlyId ? entry.payload.id !== onlyId : entry.state !== "pending") continue;
-      let result = await syncSale(entry.payload);
+      let result = await syncSale(entry.payload, false, expectedStore);
       if (result.state === "pending" && navigator.onLine !== false) {
         // The online event can arrive before the network can carry requests.
         // Reuse the queued identifier if the server accepted the first attempt.
         await new Promise((resolve) => setTimeout(resolve, 500));
-        if (navigator.onLine !== false) result = await syncSale(entry.payload);
+        if (navigator.onLine !== false) result = await syncSale(entry.payload, false, expectedStore);
       }
       if (result.state === "synced") {
         synced++;
@@ -658,7 +758,8 @@ function flushRequestedSync() {
 
 paymentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (staging || byId("sale-submit").disabled) return;
+  if (!storeReady || staging || byId("sale-submit").disabled) return;
+  const expectedStore = storeId;
   const paid = amounts();
   const tenderText = payment.tender?.value.trim() ?? "";
   const tender = tenderText ? boundedDecimal(tenderText, 2, false, 10n ** 22n) : null;
@@ -683,10 +784,10 @@ paymentForm.addEventListener("submit", async (event) => {
   lockSaleFields();
   let staged = false;
   try {
-    await store.put(payload);
+    await store.put(payload, expectedStore);
     staged = true;
     let result = { state: "pending" };
-    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(payload);
+    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(payload, false, expectedStore);
     if (queuedDuringSync) syncRequested = true;
     cart.clear();
     paymentForm.reset();
@@ -702,7 +803,7 @@ paymentForm.addEventListener("submit", async (event) => {
       status("บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล");
     }
     showReceipt(result.sale ?? receipt, result.state, change);
-  } catch {
+  } catch (error) {
     if (staged) {
       cart.clear();
       paymentForm.reset();
@@ -710,6 +811,9 @@ paymentForm.addEventListener("submit", async (event) => {
       renderCart();
       status("บันทึกบิลในเครื่องแล้ว · ตรวจสอบคิวก่อนส่งอีกครั้ง", true);
       showReceipt(receipt, "pending", change);
+    } else if (error.message === "Store binding changed") {
+      blockStore("ฐานข้อมูลที่ผูกกับแท็บนี้เปลี่ยน กรุณาโหลดหน้าใหม่เพื่อตรวจสอบ");
+      status("ยังไม่ได้บันทึกบิล กรุณาตรวจสอบฐานข้อมูล", true);
     } else {
       status("บันทึกบิลในเครื่องไม่สำเร็จ กรุณาลองอีกครั้ง", true);
     }
@@ -769,7 +873,7 @@ const customerForm = customerDialog.querySelector("form");
 const customerError = customerForm.querySelector(".error");
 const customerSave = customerForm.querySelector("button:not([type])");
 byId("sale-new-customer").addEventListener("click", () => {
-  if (!connected) return;
+  if (!connected || !storeReady) return;
   customerForm.reset();
   customerError.hidden = true;
   customerDialog.showModal();
@@ -782,7 +886,7 @@ customerDialog.addEventListener("cancel", (event) => {
 customerForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (customerSave.disabled) return;
-  if (!connected) {
+  if (!connected || !storeReady) {
     customerError.textContent = "เพิ่มลูกค้าได้เมื่อเชื่อมต่อกับระบบ";
     customerError.hidden = false;
     return;
@@ -790,12 +894,14 @@ customerForm.addEventListener("submit", async (event) => {
   const name = customerForm.elements.name.value.trim();
   if (!name) return;
   customerSave.disabled = customerClose.disabled = true;
+  const expectedStore = storeId;
   customerError.hidden = true;
   try {
-    const customer = await api("/customers", { name });
+    const customer = await api("/customers", { name }, expectedStore);
+    if (storeId !== expectedStore || !storeReady) throw new Error("Store changed");
     customers.push(customer);
     renderCustomers(customer.id);
-    saveSnapshot("customers", customers);
+    saveSnapshot("customers", customers, expectedStore);
     customerDialog.close();
   } catch {
     customerError.textContent = "บันทึกลูกค้าไม่สำเร็จ กรุณาลองอีกครั้ง";
@@ -805,26 +911,27 @@ customerForm.addEventListener("submit", async (event) => {
   }
 });
 
-async function saveSnapshot(key, value) {
+async function saveSnapshot(key, value, expectedStore = storeId) {
   try {
-    await store.putSnapshot(key, value);
+    await store.putSnapshot(key, value, expectedStore);
     snapshotKeys.add(key);
     cacheProblems.delete(key);
-  } catch {
+  } catch (error) {
+    if (error.message === "Store binding changed") blockStore("ฐานข้อมูลที่ผูกกับแท็บนี้เปลี่ยน กรุณาโหลดหน้าใหม่เพื่อตรวจสอบ");
     cacheProblems.add(key);
   }
   setConnected(connected);
 }
 
-async function cachedRead(key, path) {
+async function cachedRead(key, path, expectedStore) {
   if (navigator.onLine !== false) {
     try {
-      return { data: await api(path), fresh: true };
+      return { data: await api(path, undefined, expectedStore), fresh: true };
     } catch {
       // Keep the last successful server snapshot for disconnected sales.
     }
   }
-  const data = await store.getSnapshot(key);
+  const data = await store.getSnapshot(key, expectedStore);
   if (Array.isArray(data)) snapshotKeys.add(key);
   setConnected(connected);
   return { data, fresh: false };
@@ -832,9 +939,10 @@ async function cachedRead(key, path) {
 
 async function loadProducts() {
   const request = ++productsRequest;
+  const expectedStore = storeId;
   try {
-    const { data, fresh } = await cachedRead("products", "/products");
-    if (request !== productsRequest) return false;
+    const { data, fresh } = await cachedRead("products", "/products", expectedStore);
+    if (request !== productsRequest || storeId !== expectedStore || !storeReady) return false;
     if (!Array.isArray(data)) throw new Error("Missing products");
     products = data;
     catalogLoaded = true;
@@ -850,7 +958,7 @@ async function loadProducts() {
       }
       renderCart();
     }
-    if (fresh) saveSnapshot("products", data);
+    if (fresh) saveSnapshot("products", data, expectedStore);
     return fresh && navigator.onLine !== false;
   } catch {
     if (request !== productsRequest) return;
@@ -903,15 +1011,16 @@ byId("sale-products-refresh")?.addEventListener("click", loadProducts);
 
 async function loadCustomers() {
   const request = ++customersRequest;
+  const expectedStore = storeId;
   try {
-    const { data, fresh } = await cachedRead("customers", "/customers");
-    if (request !== customersRequest) return;
+    const { data, fresh } = await cachedRead("customers", "/customers", expectedStore);
+    if (request !== customersRequest || storeId !== expectedStore || !storeReady) return;
     if (!Array.isArray(data)) throw new Error("Missing customers");
     const knownIds = new Set(data.map(({ id }) => id));
     customers = [...data, ...customers.filter(({ id }) => !knownIds.has(id))];
     renderCustomers(payment.customer_id.value);
     byId("sale-customer-state").hidden = true;
-    if (fresh) saveSnapshot("customers", customers);
+    if (fresh) saveSnapshot("customers", customers, expectedStore);
   } catch {
     if (request !== customersRequest) return;
     byId("sale-customer-state").hidden = false;
@@ -950,8 +1059,10 @@ persistButton?.addEventListener("click", async () => {
 });
 if (storageStatus && persistButton) checkStorage();
 
-window.addEventListener("online", () => {
+window.addEventListener("online", async () => {
   setConnected(true);
+  if (!storeReady) { initializeStore(); return; }
+  if (!(await verifyServerStore())) return;
   loadProducts();
   loadCustomers();
   syncRequested = true;
@@ -979,6 +1090,4 @@ if ("serviceWorker" in navigator) {
 }
 setConnected(connected);
 renderCustomers();
-loadProducts();
-loadCustomers();
-syncQueue();
+initializeStore();

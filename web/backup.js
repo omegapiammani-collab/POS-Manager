@@ -1,5 +1,5 @@
 const queueFormat = "pos-sale-queue";
-const queueVersion = 1;
+const queueVersion = 2;
 const byId = (id) => document.getElementById(id);
 const queueStore = window.PosOffline;
 const queueCount = byId("backup-queue-count");
@@ -38,8 +38,8 @@ async function refreshQueue() {
   updateControls();
 }
 
-function downloadQueue(entries) {
-  const backup = { format: queueFormat, version: queueVersion, entries };
+function downloadQueue(entries, storeId) {
+  const backup = { format: queueFormat, version: queueVersion, store_id: storeId, entries };
   const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -59,9 +59,9 @@ exportButton.addEventListener("click", async () => {
   updateControls();
   message("");
   try {
-    const entries = await queueStore.list();
+    const { entries, storeId } = await queueStore.exportQueue();
     if (entries.length) {
-      downloadQueue(entries);
+      downloadQueue(entries, storeId);
       message("สร้างไฟล์สำรอง " + integers.format(entries.length) + " บิลแล้ว");
     } else {
       message("ไม่มีบิลรอส่งให้สำรอง");
@@ -84,7 +84,8 @@ fileInput.addEventListener("change", () => {
 confirm.addEventListener("change", updateControls);
 
 function validBackup(value) {
-  return value?.format === queueFormat && value.version === queueVersion && Array.isArray(value.entries);
+  return value?.format === queueFormat && [1, queueVersion].includes(value.version) && Array.isArray(value.entries)
+    && (value.version === 1 || value.store_id === null || typeof value.store_id === "string");
 }
 
 form.addEventListener("submit", async (event) => {
@@ -106,7 +107,16 @@ form.addEventListener("submit", async (event) => {
       message("รูปแบบหรือรุ่นไฟล์นี้ไม่รองรับ กรุณาใช้ไฟล์ที่ดาวน์โหลดจากหน้าสำรองบิล", true);
       return;
     }
-    const result = await queueStore.importQueue(backup.entries);
+    const storeId = await queueStore.getBinding();
+    if (!storeId) {
+      message("ยังไม่ได้ยืนยันฐานข้อมูลร้าน กรุณาเปิดหน้าขายออนไลน์และตรวจสอบร้านก่อนนำเข้า", true);
+      return;
+    }
+    if (backup.version === 2 && backup.store_id && backup.store_id !== storeId) {
+      message("ไฟล์นี้เป็นของฐานข้อมูลร้านอื่น กรุณาตรวจสอบฐานข้อมูลก่อนนำเข้า", true);
+      return;
+    }
+    const result = await queueStore.importQueue(backup.entries, storeId);
     form.reset();
     selected.textContent = "";
     message("นำเข้า " + integers.format(result.imported) + " บิล · มีอยู่แล้ว " + integers.format(result.duplicates) + " บิล");

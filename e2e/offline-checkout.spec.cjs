@@ -8,6 +8,13 @@ const { createInterface } = require("node:readline");
 const { test: base, expect } = require("@playwright/test");
 
 const test = base.extend({
+  request: async ({ playwright, pos }, use) => {
+    const bootstrap = await playwright.request.newContext();
+    const id = (await (await bootstrap.get(pos + "/store-identity")).json()).id;
+    await bootstrap.dispose();
+    const client = await playwright.request.newContext({ extraHTTPHeaders: { "X-POS-Store-ID": id } });
+    try { await use(client); } finally { await client.dispose(); }
+  },
   pos: async ({}, use) => {
     const directory = await mkdtemp(join(tmpdir(), "pos-playwright-"));
     const server = spawn(process.env.POS_PYTHON || "python3", [
@@ -273,6 +280,171 @@ test("blocks a product paused after it was placed in the cart", async ({ page, c
   await expect(page.locator("#sale-empty")).toBeVisible();
 });
 
+test("queue backup rejects a different store and requires explicit confirmation for legacy files", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  const entries = [{ payload, state: "conflict", error: "ต้องตรวจสอบ" }];
+  await page.goto(pos + "/backup");
+  const input = page.locator("#backup-queue-file"), check = page.locator("#backup-queue-confirm");
+  await input.setInputFiles({ name: "wrong.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "pos-sale-queue", version: 2, store_id: randomUUID(), entries })) });
+  await check.check();
+  await page.getByRole("button", { name: "นำเข้าบิล" }).click();
+  await expect(page.locator("#backup-queue-message")).toContainText("ฐานข้อมูลร้านอื่น");
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(0);
+  await input.setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "pos-sale-queue", version: 1, entries })) });
+  await expect(page.getByRole("button", { name: "นำเข้าบิล" })).toBeDisabled();
+  await check.check();
+  await page.getByRole("button", { name: "นำเข้าบิล" }).click();
+  await expect(page.locator("#backup-queue-message")).toContainText("นำเข้า 1 บิล");
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
+});
+
+test("store binding rejects stale tab writes and cannot switch while a queue exists", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => other.evaluate(() => syncing)).toBe(false);
+  const current = await page.evaluate(() => storeId);
+  const different = randomUUID();
+  const same = await other.evaluate((current) => window.PosOffline.bindStore(current, { expectedCurrent: null }), current);
+  expect(same.bound).toBe(true);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await page.evaluate(async ({ payload, current }) => window.PosOffline.put(payload, current), { payload, current });
+  const blocked = await other.evaluate(async ({ current, different }) =>
+    window.PosOffline.bindStore(different, { allowSwitch: true, expectedCurrent: current }), { current, different });
+  expect(blocked.bound).toBe(false);
+  expect(blocked.count).toBe(1);
+  await page.evaluate(async ({ payload, current }) => window.PosOffline.remove(payload.id, current), { payload, current });
+  const changed = await other.evaluate(async ({ current, different }) =>
+    window.PosOffline.bindStore(different, { allowSwitch: true, expectedCurrent: current }), { current, different });
+  expect(changed.bound).toBe(true);
+  expect(await other.evaluate((different) => window.PosOffline.getSnapshot("products", different), different)).toBeNull();
+  const stale = await page.evaluate(async ({ payload, current }) => {
+    try { await window.PosOffline.put(payload, current); return false; } catch { return true; }
+  }, { payload, current });
+  expect(stale).toBe(true);
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(0);
+  await other.evaluate(async ({ payload, different }) => window.PosOffline.put(payload, different), { payload, different });
+  const staleActions = await page.evaluate(async ({ payload, current }) => {
+    const actions = [() => window.PosOffline.listForStore(current), () => window.PosOffline.remove(payload.id, current),
+      () => window.PosOffline.update(payload.id, "conflict", "stale", current)];
+    return Promise.all(actions.map(async (action) => { try { await action(); return false; } catch { return true; } }));
+  }, { payload, current });
+  expect(staleActions).toEqual([true, true, true]);
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
+});
+
+test("a changed server store blocks a queued sale without rebinding or sending it", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  const original = await page.evaluate(() => storeId);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await page.evaluate(async ({ payload, original }) => {
+    await window.PosOffline.put(payload, original);
+    await window.PosOffline.update(payload.id, "conflict", "ต้องตรวจสอบ", original);
+  }, { payload, original });
+  const other = randomUUID();
+  await page.route("**/store-identity", (route) => route.fulfill({ json: { id: other } }));
+  await page.reload();
+  await expect(page.locator("#sale-store-message")).toContainText("ฐานข้อมูลร้านไม่ตรง");
+  await expect(page.locator("#sale-store-bind")).toBeHidden();
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(original);
+  expect(await page.evaluate(() => window.PosOffline.list())).toHaveLength(1);
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+});
+
+test("server store mismatch leaves an offline sale pending and blocks further checkout", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  const original = await page.evaluate(() => storeId);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  let header;
+  await page.route("**/offline-sales", (route) => {
+    header = route.request().headers()["x-pos-store-id"];
+    return route.fulfill({ status: 409, json: { code: "store_mismatch", error: "wrong store" } });
+  });
+  await context.setOffline(false);
+  await expect(page.locator("#sale-store-message")).toContainText("ฐานข้อมูลร้านเปลี่ยน");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  expect(header).toBe(original);
+  const queue = await page.evaluate(() => window.PosOffline.list());
+  expect(queue).toHaveLength(1);
+  expect(queue[0].state).toBe("pending");
+  expect((await request.get(pos + "/sales/" + queue[0].payload.id)).status()).toBe(404);
+});
+
+test("legacy queued sale requires explicit store confirmation before sync", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await page.evaluate(async (payload) => {
+    await window.PosOffline.put(payload, storeId);
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("pos-checkout-offline", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("snapshots", "readwrite");
+      tx.objectStore("snapshots").delete("storeId");
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  }, payload);
+  await page.reload();
+  await expect(page.locator("#sale-store-message")).toContainText("บิลเดิมยังไม่ระบุร้าน");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  await page.getByRole("button", { name: "ตรวจสอบและยืนยันฐานข้อมูล" }).click();
+  const dialog = page.getByRole("dialog", { name: "ยืนยันฐานข้อมูลร้าน" });
+  await expect(dialog).toContainText("บิลเดิมไม่มีรหัสร้าน");
+  await dialog.getByRole("button", { name: "ยืนยันฐานข้อมูลนี้" }).click();
+  await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
+});
+
+test("checkout without any known store identity is blocked while offline", async ({ page, context, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("pos-checkout-offline", 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("snapshots", "readwrite");
+      tx.objectStore("snapshots").delete("storeId");
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  });
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.locator("#sale-store-message")).toContainText("ยังไม่ทราบฐานข้อมูล");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+});
+
 test("shows queued sale details offline using captured prices and safe name fallbacks", async ({ page, context, request, pos }) => {
   const product = await createProduct(request, pos);
   expect((await request.post(`${pos}/products/${product.id}/edit`, { data: {
@@ -291,9 +463,9 @@ test("shows queued sale details offline using captured prices and safe name fall
   const online = { id: randomUUID(), items: [offline.items[0]],
     payments: { cash: "37.51", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
   await page.evaluate(async ({ offline, online }) => {
-    await window.PosOffline.put(offline);
-    await window.PosOffline.update(offline.id, "conflict", "ราคาต้องตรวจสอบ");
-    await window.PosOffline.put(online);
+    await window.PosOffline.put(offline, storeId);
+    await window.PosOffline.update(offline.id, "conflict", "ราคาต้องตรวจสอบ", storeId);
+    await window.PosOffline.put(online, storeId);
     await window.showQueue();
   }, { offline, online });
   const before = await page.evaluate(() => window.PosOffline.list());
@@ -371,8 +543,8 @@ test("does not abandon or delete a queue entry if the sale was already recorded"
   await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
   await expect.poll(() => page.evaluate(() => syncing)).toBe(false);
   await page.evaluate(async (payload) => {
-    await window.PosOffline.put(payload);
-    await window.PosOffline.update(payload.id, "conflict", "ต้องตรวจสอบ");
+    await window.PosOffline.put(payload, storeId);
+    await window.PosOffline.update(payload.id, "conflict", "ต้องตรวจสอบ", storeId);
   }, sale);
   await page.reload();
   await page.getByRole("button", { name: `ยกเลิกบิลค้าง ${sale.id}` }).click();
@@ -930,7 +1102,7 @@ test("offline bill survives reload and syncs once after another device sells the
       page.getByRole("button", { name: "ดาวน์โหลดบิลรอส่ง" }).click(),
     ]);
     const savedQueue = JSON.parse(await readFile(await backup.path(), "utf8"));
-    expect(savedQueue).toMatchObject({ format: "pos-sale-queue", version: 1, entries: [{ payload }] });
+    expect(savedQueue).toMatchObject({ format: "pos-sale-queue", version: 2, entries: [{ payload }] });
     await page.getByRole("link", { name: "ขายสินค้า", exact: true }).click();
     await expect(page.locator("#sale-queue")).toContainText(payload.id);
 
