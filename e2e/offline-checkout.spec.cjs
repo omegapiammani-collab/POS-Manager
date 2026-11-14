@@ -105,6 +105,72 @@ test("checkout snapshot handles 503 without mixing assets and leaves 404 intact"
   }
 });
 
+test("a new shell waits for both old tabs and then serves its own offline snapshot", async ({ page, context }) => {
+  const worker = await readFile(join(__dirname, "..", "web", "sw.js"), "utf8");
+  let revision = "revision-a", failNavigation = false;
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, "http://localhost");
+    const requested = url.searchParams.get("shell");
+    if (url.pathname === "/observer") {
+      response.writeHead(200, { "Content-Type": "text/html" }); response.end("observer"); return;
+    }
+    if (requested && requested !== revision) {
+      response.writeHead(409); response.end("old revision"); return;
+    }
+    if ((url.pathname === "/checkout" || url.pathname === "/checkout/backup") && !requested && failNavigation) {
+      response.writeHead(503); response.end("unavailable"); return;
+    }
+    if (url.pathname === "/sw.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
+      response.end(worker.replaceAll("__SHELL_REVISION__", revision)); return;
+    }
+    if (url.pathname === "/checkout" || url.pathname === "/checkout/backup") {
+      response.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+      response.end(`<body><script>navigator.serviceWorker.register('/sw.js', {scope:'/checkout'})</script><script src="/checkout.js?shell=${revision}"></script></body>`); return;
+    }
+    response.writeHead(200, { "Content-Type": url.pathname.endsWith(".css") ? "text/css" : "text/javascript", "Cache-Control": "no-store" });
+    response.end(url.pathname === "/checkout.js" ? `document.body.dataset.version = '${revision}';` : "");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const second = await context.newPage();
+    await second.goto(origin + "/checkout");
+    await expect.poll(() => second.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    revision = "revision-b";
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+    await expect.poll(() => page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration()).waiting))).toBe(true);
+    failNavigation = true;
+    for (const tab of [page, second]) {
+      await tab.reload();
+      await expect(tab.locator("body")).toHaveAttribute("data-version", "revision-a");
+    }
+    failNavigation = false;
+    const observer = await context.newPage();
+    await observer.goto(origin + "/observer");
+    await page.close();
+    await second.close();
+    await expect.poll(() => observer.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/checkout");
+      return Boolean(registration && !registration.waiting && registration.active);
+    })).toBe(true);
+    const upgraded = await context.newPage();
+    await upgraded.goto(origin + "/checkout");
+    await expect.poll(() => upgraded.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return Boolean(registration && !registration.waiting && registration.active);
+    })).toBe(true);
+    await expect(upgraded.locator("body")).toHaveAttribute("data-version", "revision-b");
+    failNavigation = true;
+    await upgraded.reload();
+    await expect(upgraded.locator("body")).toHaveAttribute("data-version", "revision-b");
+  } finally {
+    await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
+  }
+});
+
 async function downloadCsv(page, label, filename, { touch = false } = {}) {
   const button = page.getByRole("button", { name: label, exact: true });
   const [download] = await Promise.all([

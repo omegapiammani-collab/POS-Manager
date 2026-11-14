@@ -24,6 +24,7 @@ from sale_corrections import (
 )
 from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checkout, customer_list, read_sale, require_store, uuid_field
 from sales_reports import sales_report
+from shell_manifest import MANIFEST, SHELL_FILES
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
 from store_binding import SCHEMA as BINDING_SCHEMA, ensure_binding
@@ -57,9 +58,20 @@ SHELL_PATHS = ("/checkout", "/checkout/backup", "/checkout.js", "/offline-store.
 
 
 def checkout_shell():
-    # Keep a single immutable set for the lifetime of this server process.
-    paths = {path: (WEB_DIR / WEB_ASSETS[path][0]).read_bytes() for path in SHELL_PATHS}
-    worker = (WEB_DIR / "sw.js").read_bytes()
+    # Validate each byte string against the release manifest and retain those
+    # same bytes. Never reopen a validated file when serving this snapshot.
+    try:
+        manifest = json.loads((WEB_DIR / MANIFEST).read_bytes())
+        hashes = manifest["sha256"]
+        if manifest.get("version") != 1 or set(hashes) != set(SHELL_FILES):
+            raise ValueError("invalid manifest")
+        files = {name: (WEB_DIR / name).read_bytes() for name in SHELL_FILES}
+        if any(hashlib.sha256(files[name]).hexdigest() != hashes[name] for name in SHELL_FILES):
+            raise ValueError("file checksum mismatch")
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise RuntimeError("Checkout shell manifest invalid or stale; install one complete release or run python3 shell_manifest.py after development changes") from error
+    paths = {path: files[WEB_ASSETS[path][0]] for path in SHELL_PATHS}
+    worker = files["sw.js"]
     digest = hashlib.sha256()
     for path, body in sorted(paths.items()):
         digest.update(path.encode() + b"\0" + body + b"\0")
@@ -419,7 +431,9 @@ class InventoryHandler(BaseHTTPRequestHandler):
     do_POST = handle_request
 
 
-def make_server(database, port):
+def make_server(database, port, *, shell=None):
+    if shell is None:
+        shell = checkout_shell()
     # Initialize the file before accepting requests.
     with closing(connect(database)) as db:
         db.executescript(SALES_SCHEMA)
@@ -431,7 +445,7 @@ def make_server(database, port):
         db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
         db.executescript(BINDING_SCHEMA)
         ensure_binding(db)
-    handler = partial(InventoryHandler, database=database, shell=checkout_shell())
+    handler = partial(InventoryHandler, database=database, shell=shell)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
 
@@ -445,6 +459,7 @@ def main():
         parser.error("--create-database requires --database")
     database = args.database or Path("inventory.sqlite3")
     try:
+        shell = checkout_shell()
         if args.create_database or (args.database is None and not database.exists()):
             # Exclusive creation prevents accidentally replacing an existing store.
             with database.open("xb"):
@@ -458,9 +473,11 @@ def main():
             with closing(read_only_database(database)) as db:
                 db.execute("PRAGMA trusted_schema = OFF")
                 validate_backup(db)
+    except RuntimeError as exc:
+        parser.exit(1, f"Cannot start server: {exc}\n")
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"Cannot open database: {exc}\n")
-    with make_server(database, args.port) as server:
+    with make_server(database, args.port, shell=shell) as server:
         print(f"Inventory API: http://127.0.0.1:{server.server_port}", flush=True)
         try:
             server.serve_forever()

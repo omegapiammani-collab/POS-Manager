@@ -37,8 +37,37 @@ class CheckoutShellTests(TestCase):
                     with self.assertRaises(HTTPError) as error:
                         get("/checkout.js?shell=" + "0" * 64)
                     self.assertEqual(error.exception.code, 409)
-                    self.assertEqual(inventory_api.checkout_shell()[0] == revision, False)
+                    with self.assertRaisesRegex(RuntimeError, "manifest invalid or stale"):
+                        inventory_api.checkout_shell()
                 finally:
                     server.shutdown()
                     worker.join()
                     server.server_close()
+
+    def test_partial_install_is_rejected_before_database_initialization(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = root / "web"
+            shutil.copytree(inventory_api.WEB_DIR, web)
+            original_read = Path.read_bytes
+            def changing_read(path):
+                data = original_read(path)
+                if path == web / "backup.html":
+                    (web / "checkout.js").write_text("new release already installed")
+                return data
+            with patch.object(inventory_api, "WEB_DIR", web), patch.object(Path, "read_bytes", changing_read):
+                with self.assertRaisesRegex(RuntimeError, "manifest invalid or stale"):
+                    inventory_api.make_server(root / "not-created.sqlite", 0)
+            self.assertFalse((root / "not-created.sqlite").exists())
+
+    def test_cli_does_not_create_database_when_manifest_is_stale(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = root / "web"
+            shutil.copytree(inventory_api.WEB_DIR, web)
+            (web / "checkout.js").write_text("incomplete update")
+            target = root / "not-created.sqlite"
+            with patch.object(inventory_api, "WEB_DIR", web), patch("sys.argv", ["inventory_api.py", "--create-database", "--database", str(target)]):
+                with self.assertRaises(SystemExit):
+                    inventory_api.main()
+            self.assertFalse(target.exists())
