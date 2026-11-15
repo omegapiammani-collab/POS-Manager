@@ -1421,6 +1421,83 @@ test("warns when a pending repayment cannot be saved and retries the same reques
   expect(debt.repayments[0].amount).toBe("10.00");
 });
 
+for (const [label, raw] of [
+  ["malformed", '{"customerId":"unfinished",'],
+  ["incomplete", JSON.stringify({ customerId: randomUUID(), payload: { id: randomUUID() } })],
+]) {
+  test(`repayment ${label} session data is preserved and new payments are blocked`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos);
+    const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
+    expect((await request.post(pos + "/sales", { data: {
+      id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "0", qr: "0", credit: "25" }, customer_id: customer.id, qr_confirmed: false,
+    } })).status()).toBe(201);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
+    await page.goto(pos + "/debts");
+    await expect(page.locator("#debt-restore-error")).toBeVisible();
+    await page.getByRole("button", { name: /ลูกค้า ก/ }).click();
+    await expect(page.locator("#debt-repayment-fields")).toBeDisabled();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#debt-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
+    expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+    const debt = await (await request.get(`${pos}/customers/${customer.id}/debt`)).json();
+    expect(debt.repayments).toHaveLength(0);
+  });
+}
+
+test("unreadable repayment storage blocks payments without deleting the original", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.repaymentRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-repayment") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-repayment") window.repaymentRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/debts");
+  await expect(page.locator("#debt-restore-error")).toBeVisible();
+  await expect(page.locator("#debt-restore-export")).toBeHidden();
+  await expect(page.locator("#debt-repayment-fields")).toBeDisabled();
+  expect(await page.evaluate(() => window.repaymentRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-repayment"))).toBe(raw);
+});
+
+test("a valid repayment restored after a lost response reuses its id once", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
+  expect((await request.post(pos + "/sales", { data: {
+    id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "0", qr: "0", credit: "25" }, customer_id: customer.id, qr_confirmed: false,
+  } })).status()).toBe(201);
+  const payload = { id: randomUUID(), amount: "10.00", method: "cash", note: "" };
+  expect((await request.post(`${pos}/customers/${customer.id}/repayments`, { data: payload })).status()).toBe(201);
+  const raw = JSON.stringify({ customerId: customer.id, payload }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
+  await page.goto(pos + "/debts");
+  await expect(page.locator("#debt-pending")).toBeVisible();
+  await expect(page.locator("#debt-restore-error")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
+  await page.getByRole("button", { name: "ส่งรายการเดิมอีกครั้ง" }).click();
+  await expect(page.locator("#debt-message")).toContainText("บันทึกรับชำระ 10.00 บาท แล้ว");
+  await expect(page.locator("#debt-pending")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBeNull();
+  const debt = await (await request.get(`${pos}/customers/${customer.id}/debt`)).json();
+  expect(debt.repayments).toHaveLength(1);
+  expect(debt.repayments[0].id).toBe(payload.id);
+  expect(debt.outstanding).toBe("15.00");
+});
+
 test("warns when pending inventory actions cannot be saved in session storage", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.addInitScript(() => {

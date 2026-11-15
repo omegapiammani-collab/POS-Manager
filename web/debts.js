@@ -10,6 +10,8 @@ const dateFormat = new Intl.DateTimeFormat("th-TH", {
 });
 let customers = [];
 let customersLoaded = false;
+let pendingProblem = false;
+let pendingRawAvailable = false;
 let pending = restorePending();
 let pendingStored = true;
 let selectedId = pending?.customerId ?? null;
@@ -149,7 +151,7 @@ function updateForm() {
   else if (outstanding !== null && amount > outstanding) balance.textContent = "ยอดชำระสูงกว่ายอดค้าง";
   else balance.textContent = "";
   byId("debt-submit").disabled = !amount || outstanding === null || amount > outstanding
-    || (isQr && !fields.confirmed.checked) || Boolean(pending) || sending;
+    || (isQr && !fields.confirmed.checked) || Boolean(pending) || sending || pendingProblem;
 }
 
 async function loadCustomers() {
@@ -184,16 +186,30 @@ async function loadDetail() {
 }
 
 function restorePending() {
+  let raw;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey));
-    return typeof saved?.customerId === "string" && typeof saved.payload?.id === "string"
-      ? saved : null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    pendingProblem = true;
     return null;
   }
+  if (raw === null) return null;
+  pendingRawAvailable = true;
+  try {
+    const saved = JSON.parse(raw);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const payload = saved?.payload;
+    if (typeof saved?.customerId === "string" && uuid.test(saved.customerId)
+      && typeof payload?.id === "string" && uuid.test(payload.id)
+      && typeof payload.amount === "string" && payload.amount.length <= 40 && satang(payload.amount) > 0n
+      && ["cash", "qr"].includes(payload.method) && typeof payload.note === "string") return saved;
+  } catch { /* Preserve raw data for manual recovery. */ }
+  pendingProblem = true;
+  return null;
 }
 
 function setPending(request) {
+  if (pendingProblem) return;
   pending = request;
   pendingStored = true;
   try {
@@ -206,19 +222,21 @@ function setPending(request) {
 }
 
 function renderPending() {
-  const locked = Boolean(pending) || sending;
+  const locked = Boolean(pending) || sending || pendingProblem;
   byId("debt-repayment-fields").disabled = locked;
   for (const button of byId("debt-customers").querySelectorAll("button")) {
-    button.disabled = locked;
+    button.disabled = Boolean(pending) || sending;
   }
   byId("debt-pending").hidden = !pending || sending;
   byId("debt-storage-warning").hidden = !pending || pendingStored;
   byId("debt-retry").disabled = sending;
+  byId("debt-restore-error").hidden = !pendingProblem;
+  byId("debt-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
   updateForm();
 }
 
 async function submitPending() {
-  if (!pending || sending) return;
+  if (!pending || sending || pendingProblem) return;
   sending = true;
   renderPending();
   message("กำลังบันทึกรับชำระ…");
@@ -256,7 +274,7 @@ form.addEventListener("input", (event) => {
 });
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (!selectedDebt || pending || sending || byId("debt-submit").disabled) return;
+  if (!selectedDebt || pending || sending || pendingProblem || byId("debt-submit").disabled) return;
   setPending({
     customerId: selectedDebt.id,
     payload: {
@@ -270,12 +288,26 @@ form.addEventListener("submit", (event) => {
 });
 byId("debt-search").addEventListener("input", renderCustomers);
 byId("debt-retry").addEventListener("click", submitPending);
+byId("debt-restore-export").addEventListener("click", () => {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pos-repayment-raw.txt";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+});
 renderPending();
 loadCustomers();
 loadDetail();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending) {
+  if (pending || pendingProblem) {
     event.preventDefault();
     event.returnValue = "";
   }
