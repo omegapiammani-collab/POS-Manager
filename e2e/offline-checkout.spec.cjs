@@ -1317,6 +1317,91 @@ test("warns when expense request cannot be stored and safely retries after a los
   expect(expenses[0]).toMatchObject({ id: ids[0], amount: "25.00", description: "ค่าไฟ" });
 });
 
+for (const [label, raw] of [
+  ["malformed", '{"path":"/expenses",'],
+  ["incomplete", JSON.stringify({ path: "/expenses", payload: { id: randomUUID() } })],
+  ["incomplete void", JSON.stringify({ path: `/expenses/${randomUUID()}/void`, payload: {} })],
+  ["unapproved path", JSON.stringify({ path: "https://example.invalid/expenses", payload: { id: randomUUID(), reason: "test" } })],
+]) {
+  test(`expense ${label} session data remains intact and cannot create or void`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const existing = { id: randomUUID(), date, description: "ค่าเช่า", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: existing })).status()).toBe(201);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-restore-error")).toBeVisible();
+    await expect(page.locator("#expense-create fieldset")).toHaveJSProperty("disabled", true);
+    for (const control of await page.locator("#expense-create :is(input, select, button)").all()) await expect(control).toBeDisabled();
+    await page.locator('#expense-filter [name="from"]').fill(date);
+    await page.locator('#expense-filter [name="to"]').fill(date);
+    await page.locator("#expense-filter button").click();
+    await expect(page.getByRole("button", { name: "ยกเลิกค่าใช้จ่าย ค่าเช่า" })).toBeDisabled();
+    await page.evaluate(() => {
+      document.querySelector("#expense-create fieldset").disabled = false;
+      document.querySelector('#expense-create [name="description"]').value = "ค่าใหม่";
+      document.querySelector('#expense-create [name="amount"]').value = "5";
+      document.querySelector("#expense-create").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+}
+
+test("unreadable expense session data blocks writes without deletion", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-expense", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.expenseRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-expense") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-expense") window.expenseRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/expense-entry");
+  await expect(page.locator("#expense-restore-error")).toBeVisible();
+  await expect(page.locator("#expense-restore-export")).toBeHidden();
+  await expect(page.locator("#expense-create fieldset")).toHaveJSProperty("disabled", true);
+  expect(await page.evaluate(() => window.expenseRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-expense"))).toBe(raw);
+});
+
+for (const mode of ["create", "void"]) {
+  test(`restored valid expense ${mode} retries after a lost response without duplication`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const payload = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: payload })).status()).toBe(201);
+    const pending = mode === "create" ? { path: "/expenses", payload }
+      : { path: `/expenses/${payload.id}/void`, payload: { reason: "ลงรายการผิด" } };
+    if (mode === "void") expect((await request.post(pos + pending.path, { data: pending.payload })).status()).toBe(200);
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-pending")).toBeVisible();
+    await expect(page.locator("#expense-restore-error")).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    await page.locator("#expense-retry").click();
+    await expect(page.locator("#expense-message")).toContainText(mode === "create" ? "บันทึกค่าใช้จ่ายแล้ว" : "ยกเลิกค่าใช้จ่ายแล้ว");
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBeNull();
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(payload.id);
+    expect(rows[0].status).toBe(mode === "create" ? "active" : "voided");
+  });
+}
+
 test("warns when drawer request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
   await page.addInitScript(() => {
     const original = Storage.prototype.setItem;

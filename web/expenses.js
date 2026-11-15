@@ -10,6 +10,8 @@ const storageKey = "pos-pending-expense";
 const sourceNames = { cash_drawer: "เงินสดในลิ้นชัก", external: "จ่ายจากแหล่งอื่น" };
 const amounts = new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const dates = new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeZone: "Asia/Bangkok" });
+let pendingProblem = false;
+let pendingRawAvailable = false;
 let pending = restorePending();
 let pendingStored = true;
 let saving = false;
@@ -25,14 +27,45 @@ function bangkokToday() {
 }
 
 function restorePending() {
+  let raw;
   try {
-    return JSON.parse(sessionStorage.getItem(storageKey)) || null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    pendingProblem = true;
     return null;
   }
+  if (raw === null) return null;
+  pendingRawAvailable = true;
+  try {
+    const saved = JSON.parse(raw);
+    if (validPending(saved)) return saved;
+  } catch { /* Retain raw data for manual recovery. */ }
+  pendingProblem = true;
+  return null;
+}
+
+function validPending(saved) {
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) || typeof saved.path !== "string") return false;
+  const payload = saved.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const text = (value) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= 300;
+  if (new RegExp("^/expenses/" + uuid + "/void$", "i").test(saved.path)) return text(payload.reason);
+  if (saved.path !== "/expenses" || typeof payload.id !== "string" || !(new RegExp("^" + uuid + "$", "i")).test(payload.id)) return false;
+  if (typeof payload.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(payload.date) || payload.date.startsWith("0000-")) return false;
+  const date = new Date(payload.date + "T00:00:00Z");
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== payload.date) return false;
+  if (typeof payload.amount !== "string" || payload.amount.length > 40) return false;
+  const match = /^\+?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/i.exec(payload.amount.trim());
+  if (!match) return false;
+  const exponent = Number(match[4] || 0) - (match[2] ?? match[3] ?? "").length;
+  const amount = Number(payload.amount);
+  return Number.isSafeInteger(exponent) && exponent >= -2 && Number.isFinite(amount) && amount > 0 && amount <= 1e9
+    && text(payload.description) && ["cash_drawer", "external"].includes(payload.source);
 }
 
 function savePending(value) {
+  if (pendingProblem) return;
   pending = value;
   pendingStored = true;
   try {
@@ -48,8 +81,10 @@ function renderPending() {
   byId("expense-pending").hidden = !pending;
   byId("expense-storage-warning").hidden = !pending || pendingStored;
   byId("expense-retry").disabled = saving;
-  entry.querySelector("fieldset").disabled = Boolean(pending) || saving;
-  for (const button of list.querySelectorAll("button")) button.disabled = Boolean(pending) || saving;
+  entry.querySelector("fieldset").disabled = Boolean(pending) || saving || pendingProblem;
+  for (const button of list.querySelectorAll("button")) button.disabled = Boolean(pending) || saving || pendingProblem;
+  byId("expense-restore-error").hidden = !pendingProblem;
+  byId("expense-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
 }
 
 function message(text, error = false) {
@@ -125,7 +160,7 @@ async function loadHistory() {
 }
 
 async function submitPending() {
-  if (!pending || saving) return;
+  if (!pending || saving || pendingProblem) return;
   const attempt = pending;
   saving = true;
   renderPending();
@@ -173,7 +208,7 @@ async function submitPending() {
 
 entry.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (pending || saving) return;
+  if (pending || saving || pendingProblem) return;
   const values = Object.fromEntries(new FormData(entry));
   values.description = values.description.trim();
   if (!values.description) {
@@ -186,7 +221,7 @@ entry.addEventListener("submit", (event) => {
 
 voidForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (!selected || pending || saving) return;
+  if (!selected || pending || saving || pendingProblem) return;
   const reason = voidForm.elements.namedItem("reason").value.trim();
   if (!reason) {
     const input = voidForm.elements.namedItem("reason");
@@ -202,6 +237,20 @@ voidForm.addEventListener("submit", (event) => {
 voidForm.elements.namedItem("reason").addEventListener("input", (event) => event.target.setCustomValidity(""));
 byId("expense-void-close").addEventListener("click", () => dialog.close());
 byId("expense-retry").addEventListener("click", submitPending);
+byId("expense-restore-export").addEventListener("click", () => {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pos-expense-raw.txt";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+});
 filter.addEventListener("submit", (event) => {
   event.preventDefault();
   loadHistory();
@@ -211,7 +260,7 @@ renderPending();
 loadHistory();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending) {
+  if (pending || pendingProblem) {
     event.preventDefault();
     event.returnValue = "";
   }
