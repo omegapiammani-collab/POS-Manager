@@ -1437,7 +1437,23 @@ for (const [label, raw] of [
     await page.goto(pos + "/debts");
     await expect(page.locator("#debt-restore-error")).toBeVisible();
     await page.getByRole("button", { name: /ลูกค้า ก/ }).click();
-    await expect(page.locator("#debt-repayment-fields")).toBeDisabled();
+    await expect(page.locator("#debt-repayment")).toBeVisible();
+    await expect(page.locator("#debt-repayment-fields")).toHaveJSProperty("disabled", true);
+    const controls = page.locator("#debt-repayment-fields :is(input, select, textarea, button)");
+    expect(await controls.count()).toBeGreaterThan(0);
+    for (const control of await controls.all()) await expect(control).toBeDisabled();
+    let posts = 0;
+    await page.route(`**/customers/${customer.id}/repayments`, (route) => {
+      if (route.request().method() === "POST") posts++;
+      return route.continue();
+    });
+    await page.evaluate(() => {
+      document.querySelector('#debt-repayment [name="amount"]').value = "10";
+      document.querySelector("#debt-submit").disabled = false;
+      document.querySelector("#debt-repayment").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
+    expect(posts).toBe(0);
     const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#debt-restore-export").click()]);
     expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
     expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
@@ -1467,7 +1483,10 @@ test("unreadable repayment storage blocks payments without deleting the original
   await page.goto(pos + "/debts");
   await expect(page.locator("#debt-restore-error")).toBeVisible();
   await expect(page.locator("#debt-restore-export")).toBeHidden();
-  await expect(page.locator("#debt-repayment-fields")).toBeDisabled();
+  await expect(page.locator("#debt-repayment-fields")).toHaveJSProperty("disabled", true);
+  const controls = page.locator("#debt-repayment-fields :is(input, select, textarea, button)");
+  expect(await controls.count()).toBeGreaterThan(0);
+  for (const control of await controls.all()) await expect(control).toBeDisabled();
   expect(await page.evaluate(() => window.repaymentRemovals)).toBe(0);
   expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-repayment"))).toBe(raw);
 });
