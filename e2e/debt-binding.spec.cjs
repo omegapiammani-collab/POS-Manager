@@ -83,13 +83,19 @@ test('list, detail and normal repayment use the selected store binding', async (
   await page.getByRole('button', { name: /ลูกค้า ก/ }).click();
   await expect(page.locator('#debt-outstanding')).toHaveText('25.00 บาท');
   await page.getByLabel('ยอดชำระ (บาท)').fill('10');
-  await page.getByRole('button', { name: 'บันทึกรับชำระ' }).click();
-  await expect(page.locator('#debt-message')).toContainText('บันทึกรับชำระ');
+  const [response] = await Promise.all([
+    page.waitForResponse((result) => result.url() === pos + `/customers/${customer.id}/repayments` && result.request().method() === 'POST'),
+    page.getByRole('button', { name: 'บันทึกรับชำระ' }).click(),
+  ]);
+  expect(response.status()).toBe(201);
+  const recorded = await response.json();
+  await expect(page.locator('#debt-message')).toHaveText('บันทึกรับชำระ 10.00 บาท แล้ว');
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBeNull();
   expect(observed).toEqual({ list: binding, detail: binding, repayment: binding });
-  expect(await page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBeNull();
   const detail = await (await request.get(pos + `/customers/${customer.id}/debt`)).json();
   expect(detail.outstanding).toBe('15.00');
   expect(detail.repayments).toHaveLength(1);
+  expect(detail.repayments[0].id).toBe(recorded.id);
 });
 
 test('a server-side store change preserves the pending request on rejection', async ({ page, request, pos }) => {
