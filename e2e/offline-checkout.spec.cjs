@@ -1280,6 +1280,88 @@ for (const mode of ["edit", "void"]) {
   });
 }
 
+for (const [label, makeRaw] of [
+  ["malformed", () => '{"saleId":"unfinished",'],
+  ["incomplete void", () => JSON.stringify({ saleId: randomUUID(), payload: { id: randomUUID() } })],
+  ["incomplete replacement", () => JSON.stringify({ saleId: randomUUID(), payload: { id: randomUUID(), reason: "แก้ไข", replacement: { id: randomUUID(), items: [] } } })],
+]) {
+  test(`correction ${label} session data is retained and new corrections are blocked`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos), saleId = randomUUID();
+    expect((await request.post(pos + "/sales", { data: {
+      id: saleId, items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false,
+    } })).status()).toBe(201);
+    const raw = makeRaw();
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
+    await page.goto(pos + "/bills");
+    await expect(page.locator("#bill-restore-error")).toBeVisible();
+    await page.locator("#bill-list").getByRole("button", { name: new RegExp(saleId) }).click();
+    await expect(page.locator("#bill-edit")).toBeDisabled();
+    await expect(page.locator("#bill-void")).toBeDisabled();
+    await page.evaluate(() => openCorrection(false));
+    await expect(page.locator("#bill-correction")).not.toHaveAttribute("open", "");
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#bill-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-correction"))).toBe(raw);
+    const history = await (await request.get(pos + "/sale-history")).json();
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe("active");
+  });
+}
+
+test("unreadable correction session storage blocks edits without deleting it", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.correctionRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-correction") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-correction") window.correctionRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/bills");
+  await expect(page.locator("#bill-restore-error")).toBeVisible();
+  await expect(page.locator("#bill-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.correctionRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-correction"))).toBe(raw);
+});
+
+for (const mode of ["void", "edit"]) {
+  test(`valid stored ${mode} correction replays without changing stock twice`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos), saleId = randomUUID();
+    const original = { id: saleId, items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+    expect((await request.post(pos + "/sales", { data: original })).status()).toBe(201);
+    const replacement = mode === "edit" ? { ...original, id: randomUUID() } : null;
+    const payload = { id: randomUUID(), reason: "ตรวจสอบรายการ", replacement, excess_action: null, expected_excess: null };
+    expect((await request.post(`${pos}/sales/${saleId}/corrections`, { data: payload })).status()).toBe(201);
+    const before = (await (await request.get(pos + "/products")).json())[0].quantity;
+    const raw = JSON.stringify({ saleId, payload }, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
+    await page.goto(pos + "/bills");
+    await expect(page.locator("#bill-pending")).toBeVisible();
+    await expect(page.locator("#bill-restore-error")).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-correction"))).toBe(raw);
+    await page.locator("#bill-retry").click();
+    await expect(page.locator("#bill-message")).toContainText(mode === "edit" ? "แก้ไขบิลแล้ว" : "ยกเลิกบิลแล้ว");
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-correction"))).toBeNull();
+    const history = await (await request.get(pos + "/sale-history")).json();
+    expect(history).toHaveLength(mode === "edit" ? 2 : 1);
+    expect(history.find((bill) => bill.id === saleId).status).toBe("voided");
+    if (replacement) expect(history.filter((bill) => bill.id === replacement.id)).toHaveLength(1);
+    expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe(before);
+  });
+}
+
 test("warns when expense request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
   await page.addInitScript(() => {
     const original = Storage.prototype.setItem;

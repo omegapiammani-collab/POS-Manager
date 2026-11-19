@@ -23,6 +23,8 @@ let bills = [];
 let displayedBills = [];
 let catalog = new Map();
 let customers = [];
+let pendingProblem = false;
+let pendingRawAvailable = false;
 let pending = restorePending();
 let pendingStored = true;
 let selectedId = pending?.saleId ?? null;
@@ -303,7 +305,7 @@ function renderDetail() {
   }
   byId("bill-actions").hidden = voided;
   byId("bill-reprint").disabled = sending || opening;
-  for (const id of ["bill-edit", "bill-void"]) byId(id).disabled = Boolean(pending) || sending || opening;
+  for (const id of ["bill-edit", "bill-void"]) byId(id).disabled = Boolean(pending) || sending || opening || pendingProblem;
 }
 
 async function loadBills() {
@@ -432,7 +434,7 @@ function updateForm() {
   else if (difference < 0n) balance = "ยอดชำระเกิน " + money(-difference);
   byId("bill-balance").textContent = balance;
   byId("bill-add-item").disabled = !byId("bill-catalog").value;
-  byId("bill-submit").disabled = Boolean(pending) || sending || !fields.reason.value.trim() || !fields.reconciled.checked
+  byId("bill-submit").disabled = Boolean(pending) || sending || pendingProblem || !fields.reason.value.trim() || !fields.reconciled.checked
     || (editing && (!cart.size || difference !== 0n || (paid.credit > 0n && !fields.customer_id.value)
       || (paid.qr > 0n && !fields.qr_confirmed.checked)))
     || (!byId("bill-excess").hidden && !fields.excess_action.value) || (refund && !fields.refund_confirmed.checked);
@@ -440,7 +442,7 @@ function updateForm() {
 
 async function openCorrection(edit) {
   const bill = currentBill();
-  if (!bill || bill.status !== "active" || pending || sending || opening) return;
+  if (!bill || bill.status !== "active" || pending || sending || opening || pendingProblem) return;
   opening = true;
   renderList();
   renderDetail();
@@ -485,15 +487,69 @@ async function openCorrection(edit) {
 }
 
 function restorePending() {
+  let raw;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey));
-    return typeof saved?.saleId === "string" && typeof saved.payload?.id === "string" ? saved : null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    pendingProblem = true;
     return null;
   }
+  if (raw === null) return null;
+  pendingRawAvailable = true;
+  try {
+    const saved = JSON.parse(raw);
+    if (validPending(saved)) return saved;
+  } catch { /* Keep raw data for manual recovery. */ }
+  pendingProblem = true;
+  return null;
+}
+
+function validPending(saved) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isUuid = (value) => typeof value === "string" && uuid.test(value);
+  const number = (value, digits, max, positive = false) => {
+    if (typeof value !== "string" && (typeof value !== "number" || !Number.isFinite(value))) return null;
+    const text = String(value).trim();
+    if (text.length > 60) return null;
+    const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/i.exec(text);
+    if (!match) return null;
+    const fraction = match[3] ?? match[4] ?? "";
+    const exponent = Number(match[5] || 0) - fraction.length;
+    if (!Number.isSafeInteger(exponent) || exponent < -digits) return null;
+    const integer = BigInt((match[2] || "0") + fraction);
+    if (integer === 0n) return positive ? null : 0n;
+    if (match[1] === "-" || exponent > 30) return null;
+    const scaled = integer * 10n ** BigInt(exponent + digits);
+    return scaled <= max * 10n ** BigInt(digits) ? scaled : null;
+  };
+  const payload = saved?.payload;
+  if (!isUuid(saved?.saleId) || !payload || typeof payload !== "object" || Array.isArray(payload) || !isUuid(payload.id)
+      || typeof payload.reason !== "string" || !payload.reason.trim() || Array.from(payload.reason.trim()).length > 300) return false;
+  if (payload.excess_action != null && !["refund_cash", "refund_qr", "apply"].includes(payload.excess_action)) return false;
+  if (payload.expected_excess != null && number(payload.expected_excess, 2, 10n ** 22n) === null) return false;
+  if (payload.replacement == null) return true;
+  const replacement = payload.replacement;
+  if (typeof replacement !== "object" || Array.isArray(replacement) || !isUuid(replacement.id)
+      || !Array.isArray(replacement.items) || !replacement.items.length || !replacement.payments
+      || typeof replacement.payments !== "object" || Array.isArray(replacement.payments)
+      || Object.keys(replacement.payments).sort().join(",") !== "cash,credit,qr"
+      || (replacement.customer_id != null && !isUuid(replacement.customer_id))
+      || typeof replacement.qr_confirmed !== "boolean") return false;
+  const paid = ["cash", "credit", "qr"].map((method) => number(replacement.payments[method], 2, 10n ** 22n));
+  if (paid.includes(null) || (paid[1] > 0n && !replacement.customer_id) || (paid[2] > 0n && !replacement.qr_confirmed)) return false;
+  let total = 0n;
+  for (const item of replacement.items) {
+    if (!item || !isUuid(item.product_id) || !isUuid(item.unit_id)) return false;
+    const quantity = number(item.quantity, 6, 1000000000n, true);
+    const price = number(item.expected_unit_price, 6, 1000000000n);
+    if (quantity === null || price === null) return false;
+    total += (quantity * price + 5000000000n) / 10000000000n;
+  }
+  return total === paid.reduce((sum, value) => sum + value, 0n);
 }
 
 function setPending(request) {
+  if (pendingProblem) return;
   pending = request;
   pendingStored = true;
   try {
@@ -506,7 +562,7 @@ function setPending(request) {
 }
 
 function renderPending() {
-  const locked = Boolean(pending) || sending;
+  const locked = Boolean(pending) || sending || pendingProblem;
   byId("bill-fields").disabled = locked;
   byId("bill-pending").hidden = !pending || sending;
   byId("bill-pending-close-warning").hidden = !pending;
@@ -514,6 +570,8 @@ function renderPending() {
   byId("bill-dialog-storage-warning").hidden = !pending || pendingStored;
   byId("bill-retry").disabled = sending;
   byId("bill-close").disabled = sending;
+  byId("bill-restore-error").hidden = !pendingProblem;
+  byId("bill-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
   renderList();
   renderDetail();
   updateForm();
@@ -547,7 +605,7 @@ function showExcess(error) {
 }
 
 async function submitPending() {
-  if (!pending || sending) return;
+  if (!pending || sending || pendingProblem) return;
   sending = true;
   renderPending();
   const { saleId, payload } = pending;
@@ -621,7 +679,7 @@ form.addEventListener("input", (event) => {
 });
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (byId("bill-submit").disabled || !currentBill()) return;
+  if (pendingProblem || byId("bill-submit").disabled || !currentBill()) return;
   const paid = amounts();
   setPending({
     saleId: selectedId,
@@ -644,11 +702,25 @@ form.addEventListener("submit", (event) => {
   });
   submitPending();
 });
+byId("bill-restore-export").addEventListener("click", () => {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pos-correction-raw.txt";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+});
 renderPending();
 loadBills();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending) {
+  if (pending || pendingProblem) {
     event.preventDefault();
     event.returnValue = "";
   }
