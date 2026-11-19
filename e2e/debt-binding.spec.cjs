@@ -51,7 +51,8 @@ test('legacy pending repayment remains intact and can be exported', async ({ pag
   const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#debt-restore-export').click()]);
   expect(JSON.parse(await readFile(await download.path(), 'utf8'))).toBe(raw);
   expect(await page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBe(raw);
-  await expect(page.locator('#debt-repayment-fields')).toBeDisabled();
+  await expect(page.locator('#debt-repayment-fields')).toHaveAttribute('disabled', '');
+  await expect(page.locator('#debt-repayment-fields input[name=amount]')).toBeDisabled();
 });
 
 test('pending repayment from another store is retained and cannot be replayed', async ({ page, request, pos }) => {
@@ -121,7 +122,8 @@ for (const resource of ['list', 'detail']) {
     await page.goto(pos + '/debts');
     if (resource === 'detail') await page.getByRole('button', { name: /ลูกค้า ก/ }).click();
     await expect(page.locator('#debt-mismatch')).toBeVisible();
-    await expect(page.locator('#debt-repayment-fields')).toBeDisabled();
+    await expect(page.locator('#debt-repayment-fields')).toHaveAttribute('disabled', '');
+    await expect(page.locator('#debt-repayment-fields input[name=amount]')).toBeDisabled();
     await expect(page.locator('#debt-detail')).toBeHidden();
   });
 }

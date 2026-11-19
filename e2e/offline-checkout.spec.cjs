@@ -2767,7 +2767,8 @@ for (const mode of ["create", "void"]) {
     await page.goto(pos + "/expense-entry");
     await expect(page.locator("#expense-restore-error")).toBeVisible();
     await expect(page.locator("#expense-pending")).toBeHidden();
-    await expect(page.locator("#expense-create fieldset")).toBeDisabled();
+    await expect(page.locator("#expense-create fieldset")).toHaveAttribute("disabled", "");
+    for (const control of await page.locator("#expense-create fieldset :is(input, select, button)").all()) await expect(control).toBeDisabled();
     const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-restore-export").click()]);
     expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
     expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
@@ -2817,7 +2818,8 @@ test("expense list identity change during load blocks actions", async ({ page, r
   });
   await page.goto(pos + "/expense-entry");
   await expect(page.locator("#expense-history-status")).toContainText("โหลดค่าใช้จ่ายไม่สำเร็จ");
-  await expect(page.locator("#expense-create fieldset")).toBeDisabled();
+  await expect(page.locator("#expense-create fieldset")).toHaveAttribute("disabled", "");
+  for (const control of await page.locator("#expense-create fieldset :is(input, select, button)").all()) await expect(control).toBeDisabled();
   expect(reads).toBe(2);
 });
 
@@ -2860,7 +2862,8 @@ for (const mode of ["create", "void"]) {
     await page.goto(pos + "/expense-entry");
     await expect(page.locator("#expense-binding-warning")).toBeVisible();
     await expect(page.locator("#expense-retry")).toBeDisabled();
-    await expect(page.locator("#expense-create fieldset")).toBeDisabled();
+    await expect(page.locator("#expense-create fieldset")).toHaveAttribute("disabled", "");
+    for (const control of await page.locator("#expense-create fieldset :is(input, select, button)").all()) await expect(control).toBeDisabled();
     const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-pending-export").click()]);
     expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
     expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
