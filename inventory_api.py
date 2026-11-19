@@ -274,7 +274,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "cash-drawer" and self.command == "POST":
             if parts[1] not in DRAWER_ACTIONS:
                 raise RequestError(404, "Drawer action not found")
-            created, drawer = record_drawer(db, parts[1], self.read_json())
+            created, drawer = record_drawer(db, parts[1], self.read_json(), expected_store=self.headers.get("X-POS-Store-ID"))
             return (201 if created else 200), drawer
 
         if parts == ["expenses"]:

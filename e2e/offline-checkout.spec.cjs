@@ -1525,8 +1525,9 @@ test("warns when drawer request cannot be stored and safely retries after a lost
 
 for (const [label, raw] of [
   ["malformed", '{"action":"open",'],
-  ["invalid date", JSON.stringify({ action: "open", payload: { id: randomUUID(), date: "2026-02-30", opening_cash: "100" } })],
-  ["incomplete close", JSON.stringify({ action: "close", payload: { id: randomUUID(), date: "2026-11-13", actual_cash: "10" } })],
+  ["invalid date", JSON.stringify({ action: "open", binding_id: randomUUID(), payload: { id: randomUUID(), date: "2026-02-30", opening_cash: "100" } })],
+  ["incomplete close", JSON.stringify({ action: "close", binding_id: randomUUID(), payload: { id: randomUUID(), date: "2026-11-13", actual_cash: "10" } })],
+  ["legacy unbound", JSON.stringify({ action: "open", payload: { id: randomUUID(), date: "2026-11-13", opening_cash: "100" } })],
 ]) {
   test(`drawer ${label} session data blocks all actions and preserves raw data`, async ({ page, request, pos }) => {
     const date = "2026-11-13";
@@ -1589,7 +1590,8 @@ for (const action of ["open", "movements", "close"]) {
       ? { id: randomUUID(), date, direction: "in", amount: "20", reason: "เงินทอน" }
       : { id: randomUUID(), date, actual_cash: "100", expected_cash: "100.00" };
     if (action !== "open") expect((await request.post(pos + "/cash-drawer/" + action, { data: payload })).status()).toBe(201);
-    const raw = JSON.stringify({ action, payload }, null, 2);
+    const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const raw = JSON.stringify({ action, binding_id, payload }, null, 2);
     await page.goto(pos + "/");
     await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
     await page.goto(pos + "/drawer");
@@ -1606,6 +1608,72 @@ for (const action of ["open", "movements", "close"]) {
     expect(drawer.expected_cash).toBe(action === "movements" ? "120.00" : "100.00");
   });
 }
+
+test("restoring an older drawer database blocks pending requests in both tabs", async ({ page, context, playwright }) => {
+  const directory = await mkdtemp(join(tmpdir(), "pos-drawer-binding-"));
+  const originalFile = join(directory, "original.sqlite3"), backupFile = join(directory, "backup.sqlite3"), restoredFile = join(directory, "restored.sqlite3");
+  let active, originalAgain, client;
+  async function start(database, port, create) {
+    const args = ["inventory_api.py", "--port", String(port), "--database", database];
+    if (create) args.push("--create-database");
+    const server = spawn(process.env.POS_PYTHON || "python3", args, { cwd: join(__dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+    const closed = once(server, "close");
+    closed.catch(() => {});
+    const lines = createInterface({ input: server.stdout });
+    const [line] = await Promise.race([once(lines, "line"), closed.then(([code]) => { throw Error("server exited " + code); })]);
+    const match = /^Inventory API: (http:\/\/127\.0\.0\.1:\d+)$/.exec(line);
+    expect(match).not.toBeNull();
+    return { server, closed, origin: match[1] };
+  }
+  try {
+    active = await start(originalFile, 0, true);
+    const bootstrap = await playwright.request.newContext();
+    const oldIdentity = await (await bootstrap.get(active.origin + "/store-identity")).json();
+    await bootstrap.dispose();
+    client = await playwright.request.newContext({ extraHTTPHeaders: { "X-POS-Store-ID": oldIdentity.binding_id } });
+    const date = "2026-11-13";
+    expect((await client.post(active.origin + "/cash-drawer/open", { data: { id: randomUUID(), date, opening_cash: "100" } })).status()).toBe(201);
+    await writeFile(backupFile, await (await client.get(active.origin + "/database-backup")).body());
+    const payload = { id: randomUUID(), date, direction: "in", amount: "10", reason: "เงินทอน" };
+    expect((await client.post(active.origin + "/cash-drawer/movements", { data: payload })).status()).toBe(201);
+    const raw = JSON.stringify({ action: "movements", binding_id: oldIdentity.binding_id, payload });
+    const other = await context.newPage();
+    for (const tab of [page, other]) {
+      await tab.goto(active.origin + "/drawer");
+      await tab.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+      await tab.reload();
+      await expect(tab.locator("#drawer-pending")).toBeVisible();
+      await expect(tab.locator("#drawer-retry")).toBeEnabled();
+    }
+    const port = new URL(active.origin).port;
+    active.server.kill();
+    await active.closed;
+    active = null;
+    const restore = spawn(process.env.POS_PYTHON || "python3", ["database_backup.py", "restore", backupFile, restoredFile],
+      { cwd: join(__dirname, ".."), stdio: "ignore" });
+    expect((await once(restore, "close"))[0]).toBe(0);
+    active = await start(restoredFile, port, false);
+    const current = await (await client.get(active.origin + "/store-identity")).json();
+    expect(current.id).toBe(oldIdentity.id);
+    expect(current.binding_id).not.toBe(oldIdentity.binding_id);
+    for (const tab of [page, other]) {
+      await tab.reload();
+      await expect(tab.locator("#drawer-restore-error")).toBeVisible();
+      await expect(tab.locator("#drawer-retry")).toBeDisabled();
+      expect(await tab.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBe(raw);
+    }
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#drawer-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect((await client.post(active.origin + "/cash-drawer/movements", { data: payload })).status()).toBe(409);
+    expect((await (await client.get(active.origin + "/cash-drawer?date=" + date)).json()).movements).toHaveLength(0);
+    originalAgain = await start(originalFile, 0, false);
+    expect((await (await client.get(originalAgain.origin + "/cash-drawer?date=" + date)).json()).movements).toHaveLength(1);
+  } finally {
+    if (client) await client.dispose();
+    for (const instance of [active, originalAgain]) if (instance) { instance.server.kill(); await instance.closed; }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, pos }) => {
   const id = randomUUID();

@@ -7,8 +7,12 @@ const vm = require("node:vm");
 const source = readFileSync(join(__dirname, "..", "web", "drawer.js"), "utf8");
 const context = vm.createContext({ actionForms: { open: {}, movements: {}, close: {} } });
 vm.runInContext(source.slice(source.indexOf("function validPending("), source.indexOf("function setPending(")), context);
-const valid = (value) => context.validPending(value);
 const id = "c2669a6e-1772-4d77-a4f9-0298422c7a67", date = "2026-11-13";
+const valid = (value) => context.validPending({ ...value, binding_id: id });
+
+test("legacy drawer requests without binding cannot be sent automatically", () => {
+  assert.equal(context.validPending({ action: "open", payload: { id, date, opening_cash: "100" } }), false);
+});
 
 test("all supported drawer actions accept the original payload", () => {
   for (const value of [

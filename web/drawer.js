@@ -30,6 +30,7 @@ const labels = [
 const unavailable = "—";
 let state;
 let activeRequest;
+let storeId = null;
 let pendingProblem = false;
 let pendingRawAvailable = false;
 let pending = restorePending();
@@ -80,7 +81,8 @@ function validPending(saved) {
   if (!saved || typeof saved !== "object" || Array.isArray(saved) || !Object.hasOwn(actionForms, saved.action)) return false;
   const payload = saved.payload;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)
+  if (typeof saved.binding_id !== "string" || !uuid.test(saved.binding_id)
+      || !payload || typeof payload !== "object" || Array.isArray(payload)
       || typeof payload.id !== "string" || !uuid.test(payload.id)
       || typeof payload.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(payload.date)
       || payload.date.startsWith("0000-")) return false;
@@ -120,12 +122,13 @@ function setPending(value) {
 }
 
 function updateControls() {
-  const blocked = saving || Boolean(pending) || pendingProblem;
+  const mismatch = Boolean(pending && (!storeId || pending.binding_id !== storeId));
+  const blocked = saving || Boolean(pending) || pendingProblem || !storeId;
   byId("drawer-pending").hidden = !pending;
   byId("drawer-storage-warning").hidden = !pending || pendingStored;
-  byId("drawer-retry").disabled = saving;
-  byId("drawer-restore-error").hidden = !pendingProblem;
-  byId("drawer-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
+  byId("drawer-retry").disabled = saving || !storeId || mismatch;
+  byId("drawer-restore-error").hidden = !pendingProblem && !mismatch;
+  byId("drawer-restore-export").hidden = !(pendingProblem && pendingRawAvailable) && !mismatch;
   byId("drawer-pending-date").textContent = pending ? businessDate(pending.payload.date) : "";
   for (const form of Object.values(actionForms)) form.querySelector("fieldset").disabled = blocked;
 }
@@ -196,6 +199,8 @@ async function loadDrawer() {
   const loadStatus = byId("drawer-load-status");
   content.hidden = true;
   state = undefined;
+  storeId = null;
+  updateControls();
   if (!day) {
     loadStatus.textContent = "กรุณาเลือกวันที่";
     return;
@@ -204,11 +209,22 @@ async function loadDrawer() {
   activeRequest = request;
   loadStatus.textContent = "กำลังโหลดยอดเงินสด…";
   try {
+    const identity = async () => {
+      const response = await fetch("/store-identity", { signal: request.signal, cache: "no-store" });
+      if (!response.ok) throw new Error("Store unavailable");
+      const binding = (await response.json()).binding_id;
+      if (typeof binding !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(binding)) throw new Error("Store unavailable");
+      return binding;
+    };
+    const before = await identity();
     const query = new URLSearchParams({ date: day });
     const response = await fetch("/cash-drawer?" + query, { signal: request.signal });
     if (!response.ok) throw new Error("Drawer unavailable");
     const data = await response.json();
+    const after = await identity();
+    if (before !== after) throw new Error("Store changed");
     if (request.signal.aborted || dateInput.value !== day) return;
+    storeId = after;
     loadStatus.textContent = "";
     render(data);
   } catch {
@@ -219,7 +235,7 @@ async function loadDrawer() {
 }
 
 async function submitPending() {
-  if (!pending || saving || pendingProblem) return;
+  if (!pending || saving || pendingProblem || !storeId || pending.binding_id !== storeId) return;
   const attempt = pending;
   saving = true;
   updateControls();
@@ -227,13 +243,18 @@ async function submitPending() {
   try {
     const response = await fetch("/cash-drawer/" + attempt.action, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-POS-Store-ID": attempt.binding_id },
       body: JSON.stringify(attempt.payload),
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
       if ([400, 404, 409, 413, 415, 422].includes(response.status)) {
         const failure = await response.json().catch(() => ({}));
+        if (failure.code === "store_mismatch" || (response.status === 409 && !failure.code)) {
+          storeId = null;
+          message("ฐานข้อมูลเปลี่ยนหรือยืนยันไม่ได้ คำขอเดิมยังอยู่ กรุณาตรวจสอบก่อนส่ง", true);
+          return;
+        }
         setPending(null);
         if (failure.code === "drawer_changed") {
           message("ยอดที่ควรมีเปลี่ยนแล้ว กรุณาตรวจยอดล่าสุดและยืนยันปิดลิ้นชักอีกครั้ง", true);
@@ -271,7 +292,7 @@ async function submitPending() {
 for (const [action, form] of Object.entries(actionForms)) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!state || state.date !== dateInput.value || saving || pending || pendingProblem) return;
+    if (!state || !storeId || state.date !== dateInput.value || saving || pending || pendingProblem) return;
     const fields = Object.fromEntries(new FormData(form));
     if (action === "movements") {
       fields.reason = fields.reason.trim();
@@ -281,7 +302,7 @@ for (const [action, form] of Object.entries(actionForms)) {
       }
     }
     if (action === "close") fields.expected_cash = state.expected_cash;
-    setPending({ action, payload: { id: crypto.randomUUID(), date: state.date, ...fields } });
+    setPending({ action, binding_id: storeId, payload: { id: crypto.randomUUID(), date: state.date, ...fields } });
     submitPending();
   });
 }
@@ -298,7 +319,7 @@ dateInput.addEventListener("change", () => {
 byId("drawer-retry").addEventListener("click", submitPending);
 byId("drawer-restore-export").addEventListener("click", () => {
   try {
-    const raw = sessionStorage.getItem(storageKey);
+    const raw = pending && !pendingStored ? JSON.stringify(pending) : sessionStorage.getItem(storageKey);
     if (raw === null) throw new Error("Request unavailable");
     const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
     const link = document.createElement("a");
