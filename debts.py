@@ -2,7 +2,7 @@
 from collections import defaultdict
 from decimal import Decimal
 
-from sales import SaleConflict, checkout_number, uuid_field
+from sales import SaleConflict, checkout_number, require_store, uuid_field
 
 DEBT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS debt_repayments (
@@ -106,9 +106,11 @@ def repayment_allocations(db, customer_id):
     return allocations
 
 
-def customer_debt_list(db):
+def customer_debt_list(db, *, expected_store=None):
     with db:
         db.execute("BEGIN")
+        if expected_store is not None:
+            require_store(db, expected_store)
         customers = db.execute("SELECT id, name FROM customers ORDER BY name, id").fetchall()
         outstanding = defaultdict(int)
         for customer_id, credit in db.execute(
@@ -128,9 +130,11 @@ def customer_debt_list(db):
     ]
 
 
-def customer_debt(db, customer_id):
+def customer_debt(db, customer_id, *, expected_store=None):
     with db:
         db.execute("BEGIN")
+        if expected_store is not None:
+            require_store(db, expected_store)
         name = require_customer(db, customer_id)
         bills = bill_balances(db, customer_id)
         allocations = repayment_allocations(db, customer_id)
@@ -195,11 +199,13 @@ def read_repayment(db, repayment_id):
     return serialize_repayment(row, allocations)
 
 
-def record_repayment(db, customer_id, data):
+def record_repayment(db, customer_id, data, *, expected_store=None):
     repayment_id, amount, method, note = repayment_data(data)
     payment = (customer_id, baht(amount), method, note)
     with db:
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         existing = db.execute(
             "SELECT customer_id, amount, method, note FROM debt_repayments WHERE id = ?",
             (repayment_id,),

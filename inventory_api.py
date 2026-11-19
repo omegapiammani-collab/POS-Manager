@@ -242,7 +242,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def dispatch(self, db, route):
         parts = route.path.strip("/").split("/")
-        if self.command == "GET" and parts in (["products"], ["customers"]) and self.headers.get("X-POS-Store-ID"):
+        if self.command == "GET" and parts in (["products"], ["customers"], ["expenses"]) and self.headers.get("X-POS-Store-ID"):
             db.execute("BEGIN")
             require_store(db, self.headers["X-POS-Store-ID"])
         if parts == ["customers"]:
@@ -258,14 +258,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
             return 201, add_customer(db, name)
 
         if parts == ["customer-debts"] and self.command == "GET":
-            return 200, customer_debt_list(db)
+            return 200, customer_debt_list(db, expected_store=self.headers.get("X-POS-Store-ID"))
 
         if len(parts) == 3 and parts[0] == "customers":
             if parts[2] == "debt" and self.command == "GET":
-                return 200, customer_debt(db, uuid_field(parts[1], "customer_id"))
+                return 200, customer_debt(db, uuid_field(parts[1], "customer_id"), expected_store=self.headers.get("X-POS-Store-ID"))
             if parts[2] == "repayments" and self.command == "POST":
                 customer_id = uuid_field(parts[1], "customer_id")
-                created, repayment = record_repayment(db, customer_id, self.read_json())
+                created, repayment = record_repayment(db, customer_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
                 return (201 if created else 200), repayment
 
         if parts == ["cash-drawer"] and self.command == "GET":
@@ -281,11 +281,11 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if self.command == "GET":
                 dates = parse_qs(route.query)
                 return 200, list_expenses(db, dates.get("from", [""])[0], dates.get("to", [""])[0])
-            created, expense = record_expense(db, self.read_json())
+            created, expense = record_expense(db, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), expense
 
         if len(parts) == 3 and parts[0] == "expenses" and parts[2] == "void" and self.command == "POST":
-            return 200, void_expense(db, uuid_field(parts[1], "id"), self.read_json())
+            return 200, void_expense(db, uuid_field(parts[1], "id"), self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
 
         if parts == ["sales-report"] and self.command == "GET":
             dates = parse_qs(route.query)

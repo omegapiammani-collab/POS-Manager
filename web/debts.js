@@ -18,6 +18,9 @@ let selectedId = pending?.customerId ?? null;
 let selectedDebt = null;
 let detailRequest = 0;
 let sending = false;
+let storeId = null;
+let storeMismatch = false;
+let listRequest = 0;
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -58,11 +61,12 @@ function message(text, error = false) {
   node.hidden = !text;
 }
 
-async function api(path, data) {
-  const options = { signal: AbortSignal.timeout(15000) };
+async function api(path, data, binding = storeId) {
+  const options = { signal: AbortSignal.timeout(15000), headers: {} };
+  if (binding) options.headers["X-POS-Store-ID"] = binding;
   if (data !== undefined) {
     options.method = "POST";
-    options.headers = { "Content-Type": "application/json" };
+    options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(data);
   }
   const response = await fetch(path, options);
@@ -81,7 +85,7 @@ function renderCustomers() {
     const row = element("li");
     const button = element("button");
     button.type = "button";
-    button.disabled = Boolean(pending) || sending;
+    button.disabled = Boolean(pending) || sending || storeMismatch || !storeId;
     button.setAttribute("aria-pressed", String(customer.id === selectedId));
     button.append(element("span", customer.name), element("span", money(customer.outstanding)));
     button.addEventListener("click", () => {
@@ -151,15 +155,21 @@ function updateForm() {
   else if (outstanding !== null && amount > outstanding) balance.textContent = "ยอดชำระสูงกว่ายอดค้าง";
   else balance.textContent = "";
   byId("debt-submit").disabled = !amount || outstanding === null || amount > outstanding
-    || (isQr && !fields.confirmed.checked) || Boolean(pending) || sending || pendingProblem;
+    || (isQr && !fields.confirmed.checked) || Boolean(pending) || sending || pendingProblem || storeMismatch || !storeId;
 }
 
 async function loadCustomers() {
+  if (!storeId || storeMismatch) return;
+  const request = ++listRequest;
   try {
-    customers = await api("/customer-debts");
+    const result = await api("/customer-debts");
+    if (request !== listRequest || storeMismatch) return;
+    customers = result;
     customersLoaded = true;
     renderCustomers();
-  } catch {
+  } catch (error) {
+    if (request !== listRequest) return;
+    if (error.code === "store_mismatch") blockStore();
     const state = byId("debt-customers-state");
     state.textContent = "โหลดรายชื่อลูกค้าไม่สำเร็จ กรุณารีเฟรชหน้า";
     state.hidden = false;
@@ -167,8 +177,9 @@ async function loadCustomers() {
 }
 
 async function loadDetail() {
-  if (!selectedId) return;
+  if (!selectedId || !storeId || storeMismatch) return;
   const request = ++detailRequest;
+  const customerId = selectedId;
   const state = byId("debt-detail-state");
   selectedDebt = null;
   byId("debt-detail-title").textContent = "รายละเอียดลูกหนี้";
@@ -176,11 +187,12 @@ async function loadDetail() {
   state.textContent = "กำลังโหลดยอดค้างและประวัติชำระ…";
   state.hidden = false;
   try {
-    const debt = await api("/customers/" + encodeURIComponent(selectedId) + "/debt");
-    if (request !== detailRequest) return;
+    const debt = await api("/customers/" + encodeURIComponent(customerId) + "/debt");
+    if (request !== detailRequest || storeMismatch || customerId !== selectedId || debt.id !== customerId) return;
     selectedDebt = debt;
     renderDetail(debt);
-  } catch {
+  } catch (error) {
+    if (request === detailRequest && error.code === "store_mismatch") blockStore();
     if (request === detailRequest) state.textContent = "โหลดรายละเอียดไม่สำเร็จ กรุณาเลือกลูกค้าอีกครั้ง";
   }
 }
@@ -199,7 +211,8 @@ function restorePending() {
     const saved = JSON.parse(raw);
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const payload = saved?.payload;
-    if (typeof saved?.customerId === "string" && uuid.test(saved.customerId)
+    if (typeof saved?.binding_id === "string" && uuid.test(saved.binding_id)
+      && typeof saved?.customerId === "string" && uuid.test(saved.customerId)
       && typeof payload?.id === "string" && uuid.test(payload.id)
       && typeof payload.amount === "string" && payload.amount.length <= 40 && satang(payload.amount) > 0n
       && ["cash", "qr"].includes(payload.method) && typeof payload.note === "string") return saved;
@@ -222,33 +235,39 @@ function setPending(request) {
 }
 
 function renderPending() {
-  const locked = Boolean(pending) || sending || pendingProblem;
+  const mismatch = Boolean(pending && storeId && pending.binding_id !== storeId);
+  const locked = Boolean(pending) || sending || pendingProblem || storeMismatch || !storeId;
   byId("debt-repayment-fields").disabled = locked;
   for (const button of byId("debt-customers").querySelectorAll("button")) {
-    button.disabled = Boolean(pending) || sending;
+    button.disabled = Boolean(pending) || sending || storeMismatch || !storeId;
   }
   byId("debt-pending").hidden = !pending || sending;
   byId("debt-storage-warning").hidden = !pending || pendingStored;
-  byId("debt-retry").disabled = sending;
+  byId("debt-retry").disabled = sending || mismatch || storeMismatch || !storeId;
+  byId("debt-mismatch").hidden = !mismatch && !storeMismatch;
+  byId("debt-pending-export").hidden = !pending || (!mismatch && !storeMismatch);
   byId("debt-restore-error").hidden = !pendingProblem;
   byId("debt-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
   updateForm();
 }
 
 async function submitPending() {
-  if (!pending || sending || pendingProblem) return;
+  if (!pending || sending || pendingProblem || storeMismatch || !storeId || pending.binding_id !== storeId) return;
   sending = true;
   renderPending();
   message("กำลังบันทึกรับชำระ…");
-  const { customerId, payload } = pending;
+  const { customerId, payload, binding_id } = pending;
   try {
-    await api("/customers/" + encodeURIComponent(customerId) + "/repayments", payload);
+    await api("/customers/" + encodeURIComponent(customerId) + "/repayments", payload, binding_id);
     setPending(null);
     form.reset();
     message("บันทึกรับชำระ " + money(payload.amount) + " แล้ว");
     await Promise.all([loadCustomers(), loadDetail()]);
   } catch (failure) {
-    if ([400, 404, 409, 413, 415, 422].includes(failure.status)) {
+    if (failure.code === "store_mismatch") {
+      blockStore();
+      message("ร้านเปลี่ยนแล้ว เก็บรายการเดิมไว้และดาวน์โหลดเพื่อตรวจสอบ", true);
+    } else if ([400, 404, 409, 413, 415, 422].includes(failure.status)) {
       setPending(null);
       const error = failure.code === "overpayment"
         ? "ยอดค้างเปลี่ยนแล้ว กรุณาตรวจสอบยอดก่อนบันทึก"
@@ -276,6 +295,7 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   if (!selectedDebt || pending || sending || pendingProblem || byId("debt-submit").disabled) return;
   setPending({
+    binding_id: storeId,
     customerId: selectedDebt.id,
     payload: {
       id: crypto.randomUUID(),
@@ -302,9 +322,46 @@ byId("debt-restore-export").addEventListener("click", () => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
 });
+function blockStore() {
+  storeMismatch = true;
+  ++listRequest;
+  ++detailRequest;
+  customers = [];
+  selectedDebt = null;
+  byId("debt-detail").hidden = true;
+  byId("debt-detail-state").hidden = false;
+  byId("debt-detail-state").textContent = "ร้านเปลี่ยนแล้ว กรุณาโหลดหน้าใหม่เพื่อตรวจสอบ";
+  renderCustomers();
+  renderPending();
+}
+
+byId("debt-pending-export").addEventListener("click", () => {
+  if (!pending) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(pending)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "pos-repayment-pending.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+async function initialize() {
+  try {
+    const identity = await api("/store-identity", undefined, null);
+    if (typeof identity.binding_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identity.binding_id)) throw new Error("Invalid store");
+    storeId = identity.binding_id;
+    renderPending();
+    if (pending && pending.binding_id !== storeId) return;
+    await Promise.all([loadCustomers(), loadDetail()]);
+  } catch {
+    message("ตรวจสอบร้านไม่สำเร็จ กรุณาโหลดหน้าใหม่", true);
+    renderPending();
+  }
+}
 renderPending();
-loadCustomers();
-loadDetail();
+initialize();
 
 window.addEventListener("beforeunload", (event) => {
   if (pending || pendingProblem) {

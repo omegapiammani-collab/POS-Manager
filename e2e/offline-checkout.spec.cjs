@@ -1464,8 +1464,9 @@ for (const mode of ["create", "void"]) {
     const date = "2026-11-13";
     const payload = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
     expect((await request.post(pos + "/expenses", { data: payload })).status()).toBe(201);
-    const pending = mode === "create" ? { path: "/expenses", payload }
-      : { path: `/expenses/${payload.id}/void`, payload: { reason: "ลงรายการผิด" } };
+    const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const pending = mode === "create" ? { path: "/expenses", binding_id, payload }
+      : { path: `/expenses/${payload.id}/void`, binding_id, payload: { reason: "ลงรายการผิด" } };
     if (mode === "void") expect((await request.post(pos + pending.path, { data: pending.payload })).status()).toBe(200);
     const raw = JSON.stringify(pending, null, 2);
     await page.goto(pos + "/");
@@ -1675,12 +1676,13 @@ test("restoring an older drawer database blocks pending requests in both tabs", 
   }
 });
 
-test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, pos }) => {
+test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, request, pos }) => {
   const id = randomUUID();
+  const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
   const cases = [
     { path: "/", state: "#receipt-pending", storage: "pos-pending-receipt", setter: "setPendingReceipt", value: { productId: id, payload: { id } } },
     { path: "/", state: "#stock-count-pending", storage: "pos-pending-stock-count", setter: "setPendingCount", value: { product: { id }, payload: { id } } },
-    { path: "/debts", state: "#debt-pending", storage: "pos-pending-repayment", setter: "setPending", value: { customerId: id, payload: { id } } },
+    { path: "/debts", state: "#debt-pending", storage: "pos-pending-repayment", setter: "setPending", value: { binding_id: binding, customerId: id, payload: { id } } },
     { path: "/bills", state: "#bill-pending", storage: "pos-pending-correction", setter: "setPending", value: { saleId: id, payload: { id } } },
     { path: "/expense-entry", state: "#expense-pending", storage: "pos-pending-expense", setter: "savePending", value: { path: "/expenses", payload: { id } } },
     { path: "/drawer", state: "#drawer-pending", storage: "pos-pending-drawer", setter: "setPending", value: { action: "open", payload: { id, date: "2026-11-13" } } },
@@ -1819,7 +1821,8 @@ test("a valid repayment restored after a lost response reuses its id once", asyn
   } })).status()).toBe(201);
   const payload = { id: randomUUID(), amount: "10.00", method: "cash", note: "" };
   expect((await request.post(`${pos}/customers/${customer.id}/repayments`, { data: payload })).status()).toBe(201);
-  const raw = JSON.stringify({ customerId: customer.id, payload }, null, 2);
+  const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  const raw = JSON.stringify({ binding_id: binding, customerId: customer.id, payload }, null, 2);
   await page.goto(pos + "/");
   await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
   await page.goto(pos + "/debts");
@@ -2750,3 +2753,119 @@ test("inventory receipt retains original binding after a store mismatch", async 
   await expect(page.locator('#receipt')).not.toBeVisible();
   expect((await (await request.get(pos + "/products")).json()).find(p => p.id === product.id).quantity).toBe("3");
 });
+
+for (const mode of ["create", "void"]) {
+  test(`legacy expense ${mode} request remains intact and exportable`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const payload = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: payload })).status()).toBe(201);
+    const pending = mode === "create" ? { path: "/expenses", payload }
+      : { path: `/expenses/${payload.id}/void`, payload: { reason: "ลงรายการผิด" } };
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate(value => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-restore-error")).toBeVisible();
+    await expect(page.locator("#expense-pending")).toBeHidden();
+    await expect(page.locator("#expense-create fieldset")).toBeDisabled();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+
+  test(`expense ${mode} store mismatch retains and exports the original request`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const expense = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: expense })).status()).toBe(201);
+    const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const pending = mode === "create" ? { path: "/expenses", binding_id: binding, payload: { ...expense, id: randomUUID() } }
+      : { path: `/expenses/${expense.id}/void`, binding_id: binding, payload: { reason: "ลงรายการผิด" } };
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate(value => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-retry")).toBeEnabled();
+    let sentBinding;
+    await page.route("**/expenses**", async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      sentBinding = route.request().headers()["x-pos-store-id"];
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "store_mismatch" }) });
+    });
+    await page.locator("#expense-retry").click();
+    await expect(page.locator("#expense-binding-warning")).toBeVisible();
+    await expect(page.locator("#expense-retry")).toBeDisabled();
+    expect(sentBinding).toBe(binding);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-pending-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+}
+
+test("expense list identity change during load blocks actions", async ({ page, request, pos }) => {
+  const current = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  let reads = 0;
+  await page.route("**/store-identity", async route => {
+    reads++;
+    const binding = reads === 1 ? current : randomUUID();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ binding_id: binding }) });
+  });
+  await page.goto(pos + "/expense-entry");
+  await expect(page.locator("#expense-history-status")).toContainText("โหลดค่าใช้จ่ายไม่สำเร็จ");
+  await expect(page.locator("#expense-create fieldset")).toBeDisabled();
+  expect(reads).toBe(2);
+});
+
+test("void uses the binding of the displayed expense even after the store changes", async ({ page, request, pos }) => {
+  const date = "2026-11-13";
+  const expense = { id: randomUUID(), date, description: "ค่าเช่า", amount: "25", source: "external" };
+  expect((await request.post(pos + "/expenses", { data: expense })).status()).toBe(201);
+  const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  await page.goto(pos + "/expense-entry");
+  await page.locator('#expense-filter [name="from"]').fill(date);
+  await page.locator('#expense-filter [name="to"]').fill(date);
+  await page.locator("#expense-filter button").click();
+  await page.getByRole("button", { name: "ยกเลิกค่าใช้จ่าย ค่าเช่า" }).click();
+  await page.locator('#expense-void [name="reason"]').fill("ลงรายการผิด");
+  let sentBinding;
+  await page.route(`**/expenses/${expense.id}/void`, async route => {
+    sentBinding = route.request().headers()["x-pos-store-id"];
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "store_mismatch" }) });
+  });
+  await page.locator('#expense-void button[type="submit"]').click();
+  await expect(page.locator("#expense-binding-warning")).toBeVisible();
+  expect(sentBinding).toBe(binding);
+  const pending = JSON.parse(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense")));
+  expect(pending).toMatchObject({ path: `/expenses/${expense.id}/void`, binding_id: binding, payload: { reason: "ลงรายการผิด" } });
+  const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+  expect(rows[0].status).toBe("active");
+});
+
+for (const mode of ["create", "void"]) {
+  test(`restored expense ${mode} from another binding is blocked and exportable`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const expense = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: expense })).status()).toBe(201);
+    const binding_id = randomUUID();
+    const pending = mode === "create" ? { path: "/expenses", binding_id, payload: { ...expense, id: randomUUID() } }
+      : { path: `/expenses/${expense.id}/void`, binding_id, payload: { reason: "ลงรายการผิด" } };
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate(value => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-binding-warning")).toBeVisible();
+    await expect(page.locator("#expense-retry")).toBeDisabled();
+    await expect(page.locator("#expense-create fieldset")).toBeDisabled();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-pending-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+}

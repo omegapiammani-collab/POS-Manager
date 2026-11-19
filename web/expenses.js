@@ -17,6 +17,8 @@ let pendingStored = true;
 let saving = false;
 let request;
 let selected;
+let selectedBinding = null;
+let storeId = null;
 
 function bangkokToday() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -47,6 +49,7 @@ function restorePending() {
 function validPending(saved) {
   const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
   if (!saved || typeof saved !== "object" || Array.isArray(saved) || typeof saved.path !== "string") return false;
+  if (typeof saved.binding_id !== "string" || !(new RegExp("^" + uuid + "$", "i")).test(saved.binding_id)) return false;
   const payload = saved.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   const text = (value) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= 300;
@@ -80,9 +83,12 @@ function savePending(value) {
 function renderPending() {
   byId("expense-pending").hidden = !pending;
   byId("expense-storage-warning").hidden = !pending || pendingStored;
-  byId("expense-retry").disabled = saving;
-  entry.querySelector("fieldset").disabled = Boolean(pending) || saving || pendingProblem;
-  for (const button of list.querySelectorAll("button")) button.disabled = Boolean(pending) || saving || pendingProblem;
+  const mismatch = Boolean(pending && (!storeId || pending.binding_id !== storeId));
+  byId("expense-retry").disabled = saving || mismatch;
+  byId("expense-binding-warning").hidden = !mismatch;
+  byId("expense-pending-export").hidden = !mismatch;
+  entry.querySelector("fieldset").disabled = Boolean(pending) || saving || pendingProblem || !storeId;
+  for (const button of list.querySelectorAll("button")) button.disabled = Boolean(pending) || saving || pendingProblem || !storeId;
   byId("expense-restore-error").hidden = !pendingProblem;
   byId("expense-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
 }
@@ -129,7 +135,9 @@ function renderHistory(rows) {
 }
 
 function openVoid(item) {
+  if (!storeId || pending || saving || pendingProblem) return;
   selected = item;
+  selectedBinding = storeId;
   byId("expense-void-entry").textContent = item.description + " · " + money(item.amount);
   voidForm.reset();
   dialog.showModal();
@@ -137,7 +145,9 @@ function openVoid(item) {
 
 async function loadHistory() {
   request?.abort();
+  storeId = null;
   list.replaceChildren();
+  renderPending();
   const state = byId("expense-history-status");
   if (!from.value || !to.value || from.value > to.value) {
     state.textContent = "กรุณาเลือกวันสิ้นสุดให้ตรงกับหรืออยู่หลังวันเริ่มต้น";
@@ -148,10 +158,21 @@ async function loadHistory() {
   state.textContent = "กำลังโหลดค่าใช้จ่าย…";
   const query = new URLSearchParams({ from: from.value, to: to.value });
   try {
-    const response = await fetch("/expenses?" + query, { signal: current.signal });
+    const identity = async () => {
+      const response = await fetch("/store-identity", { signal: current.signal, cache: "no-store" });
+      if (!response.ok) throw new Error("Store unavailable");
+      const id = (await response.json()).binding_id;
+      if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error("Store unavailable");
+      return id;
+    };
+    const before = await identity();
+    const response = await fetch("/expenses?" + query, { signal: current.signal, headers: { "X-POS-Store-ID": before }, cache: "no-store" });
     if (!response.ok) throw new Error("Expense list unavailable");
     const rows = await response.json();
-    if (current.signal.aborted) return;
+    const after = await identity();
+    if (before !== after) throw new Error("Store changed");
+    if (current.signal.aborted || request !== current) return;
+    storeId = before;
     renderHistory(rows);
     state.textContent = rows.length ? "" : "ไม่มีค่าใช้จ่ายในช่วงที่เลือก";
   } catch {
@@ -160,7 +181,7 @@ async function loadHistory() {
 }
 
 async function submitPending() {
-  if (!pending || saving || pendingProblem) return;
+  if (!pending || saving || pendingProblem || !storeId || pending.binding_id !== storeId) return;
   const attempt = pending;
   saving = true;
   renderPending();
@@ -168,12 +189,19 @@ async function submitPending() {
   try {
     const response = await fetch(attempt.path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-POS-Store-ID": attempt.binding_id },
       body: JSON.stringify(attempt.payload),
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
       if ([400, 404, 409, 413, 415, 422].includes(response.status)) {
+        const failure = await response.json().catch(() => ({}));
+        if (failure.code === "store_mismatch" || (response.status === 409 && !failure.code)) {
+          request?.abort();
+          storeId = null;
+          message("ฐานข้อมูลเปลี่ยนหรือยืนยันไม่ได้ คำขอเดิมยังอยู่ กรุณาตรวจสอบประวัติร้านเดิม", true);
+          return;
+        }
         savePending(null);
         if (response.status === 409 || response.status === 404) {
           message("รายการเปลี่ยนแปลงแล้ว กรุณาตรวจสอบประวัติก่อนส่งใหม่", true);
@@ -208,20 +236,25 @@ async function submitPending() {
 
 entry.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (pending || saving || pendingProblem) return;
+  if (pending || saving || pendingProblem || !storeId) return;
   const values = Object.fromEntries(new FormData(entry));
   values.description = values.description.trim();
   if (!values.description) {
     message("กรุณากรอกรายการค่าใช้จ่าย", true);
     return;
   }
-  savePending({ path: "/expenses", payload: { id: crypto.randomUUID(), ...values } });
+  savePending({ path: "/expenses", binding_id: storeId, payload: { id: crypto.randomUUID(), ...values } });
   submitPending();
 });
 
 voidForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (!selected || pending || saving || pendingProblem) return;
+  if (!selected || !selectedBinding || pending || saving || pendingProblem) return;
+  if (!storeId || selectedBinding !== storeId) {
+    message("ข้อมูลร้านเปลี่ยน กรุณาโหลดประวัติและเลือกค่าใช้จ่ายอีกครั้ง", true);
+    dialog.close();
+    return;
+  }
   const reason = voidForm.elements.namedItem("reason").value.trim();
   if (!reason) {
     const input = voidForm.elements.namedItem("reason");
@@ -229,7 +262,7 @@ voidForm.addEventListener("submit", (event) => {
     input.reportValidity();
     return;
   }
-  savePending({ path: "/expenses/" + encodeURIComponent(selected.id) + "/void", payload: { reason } });
+  savePending({ path: "/expenses/" + encodeURIComponent(selected.id) + "/void", binding_id: selectedBinding, payload: { reason } });
   dialog.close();
   submitPending();
 });
@@ -237,18 +270,30 @@ voidForm.addEventListener("submit", (event) => {
 voidForm.elements.namedItem("reason").addEventListener("input", (event) => event.target.setCustomValidity(""));
 byId("expense-void-close").addEventListener("click", () => dialog.close());
 byId("expense-retry").addEventListener("click", submitPending);
+function exportPending(raw) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "pos-expense-raw.txt";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+byId("expense-pending-export").addEventListener("click", () => {
+  if (!pending) return;
+  try {
+    const raw = pendingStored ? sessionStorage.getItem(storageKey) : JSON.stringify(pending);
+    if (raw === null) throw new Error("Request unavailable");
+    exportPending(raw);
+  }
+  catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+});
 byId("expense-restore-export").addEventListener("click", () => {
   try {
     const raw = sessionStorage.getItem(storageKey);
     if (raw === null) throw new Error("Request unavailable");
-    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "pos-expense-raw.txt";
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    exportPending(raw);
   } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
 });
 filter.addEventListener("submit", (event) => {
