@@ -1441,6 +1441,90 @@ test("warns when drawer request cannot be stored and safely retries after a lost
   expect(drawer.expected_cash).toBe("120.00");
 });
 
+for (const [label, raw] of [
+  ["malformed", '{"action":"open",'],
+  ["invalid date", JSON.stringify({ action: "open", payload: { id: randomUUID(), date: "2026-02-30", opening_cash: "100" } })],
+  ["incomplete close", JSON.stringify({ action: "close", payload: { id: randomUUID(), date: "2026-11-13", actual_cash: "10" } })],
+]) {
+  test(`drawer ${label} session data blocks all actions and preserves raw data`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    expect((await request.post(pos + "/cash-drawer/open", { data: { id: randomUUID(), date, opening_cash: "100" } })).status()).toBe(201);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+    await page.goto(pos + "/drawer");
+    await expect(page.locator("#drawer-restore-error")).toBeVisible();
+    await page.locator('#drawer-filter [name="date"]').fill(date);
+    await page.locator("#drawer-filter button").click();
+    await expect(page.locator("#drawer-content")).toBeVisible();
+    for (const fieldset of await page.locator("#drawer-actions fieldset").all()) await expect(fieldset).toHaveJSProperty("disabled", true);
+    for (const control of await page.locator("#drawer-actions :is(input, select, button)").all()) await expect(control).toBeDisabled();
+    await page.evaluate(() => {
+      const form = document.querySelector("#drawer-movement");
+      form.querySelector("fieldset").disabled = false;
+      form.querySelector('[name="amount"]').value = "10";
+      form.querySelector('[name="reason"]').value = "ทดสอบ";
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBe(raw);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#drawer-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    const drawer = await (await request.get(`${pos}/cash-drawer?date=${date}`)).json();
+    expect(drawer.movements).toHaveLength(0);
+    expect(drawer.status).toBe("open");
+  });
+}
+
+test("unreadable drawer session data blocks actions without deleting it", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.drawerRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-drawer") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-drawer") window.drawerRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/drawer");
+  await expect(page.locator("#drawer-restore-error")).toBeVisible();
+  await expect(page.locator("#drawer-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.drawerRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-drawer"))).toBe(raw);
+});
+
+for (const action of ["open", "movements", "close"]) {
+  test(`valid pending drawer ${action} replays its original id after a lost response`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const opening = { id: randomUUID(), date, opening_cash: "100" };
+    expect((await request.post(pos + "/cash-drawer/open", { data: opening })).status()).toBe(201);
+    const payload = action === "open" ? opening : action === "movements"
+      ? { id: randomUUID(), date, direction: "in", amount: "20", reason: "เงินทอน" }
+      : { id: randomUUID(), date, actual_cash: "100", expected_cash: "100.00" };
+    if (action !== "open") expect((await request.post(pos + "/cash-drawer/" + action, { data: payload })).status()).toBe(201);
+    const raw = JSON.stringify({ action, payload }, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+    await page.goto(pos + "/drawer");
+    await expect(page.locator("#drawer-pending")).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBe(raw);
+    await page.locator("#drawer-retry").click();
+    const messages = { open: "เปิดลิ้นชักแล้ว", movements: "บันทึกรายการเงินสดแล้ว", close: "บันทึกยอดและปิดลิ้นชักแล้ว" };
+    await expect(page.locator("#drawer-message")).toContainText(messages[action]);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBeNull();
+    const drawer = await (await request.get(`${pos}/cash-drawer?date=${date}`)).json();
+    expect(drawer.status).toBe(action === "close" ? "closed" : "open");
+    expect(drawer.movements).toHaveLength(action === "movements" ? 1 : 0);
+    if (action === "movements") expect(drawer.movements[0].id).toBe(payload.id);
+    expect(drawer.expected_cash).toBe(action === "movements" ? "120.00" : "100.00");
+  });
+}
+
 test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, pos }) => {
   const id = randomUUID();
   const cases = [

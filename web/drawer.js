@@ -30,6 +30,8 @@ const labels = [
 const unavailable = "—";
 let state;
 let activeRequest;
+let pendingProblem = false;
+let pendingRawAvailable = false;
 let pending = restorePending();
 let pendingStored = true;
 let saving = false;
@@ -57,15 +59,55 @@ function element(tag, text) {
 }
 
 function restorePending() {
+  let raw;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey));
-    return saved && Object.hasOwn(actionForms, saved.action) && saved.payload?.id ? saved : null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    pendingProblem = true;
     return null;
   }
+  if (raw === null) return null;
+  pendingRawAvailable = true;
+  try {
+    const saved = JSON.parse(raw);
+    if (validPending(saved)) return saved;
+  } catch { /* Keep raw data for manual recovery. */ }
+  pendingProblem = true;
+  return null;
+}
+
+function validPending(saved) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved) || !Object.hasOwn(actionForms, saved.action)) return false;
+  const payload = saved.payload;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)
+      || typeof payload.id !== "string" || !uuid.test(payload.id)
+      || typeof payload.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(payload.date)
+      || payload.date.startsWith("0000-")) return false;
+  const day = new Date(payload.date + "T00:00:00Z");
+  if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== payload.date) return false;
+  const amount = (value, { positive = false, signed = false, max = 1000000000n } = {}) => {
+    if (typeof value === "number" && Number.isSafeInteger(value) && !signed) value = String(value);
+    if (typeof value !== "string" || value.length > 60) return false;
+    const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/i.exec(value.trim());
+    if (!match) return false;
+    const fraction = match[3] ?? match[4] ?? "";
+    const exponent = Number(match[5] || 0) - fraction.length;
+    if (!Number.isSafeInteger(exponent) || exponent < -2) return false;
+    const digits = BigInt((match[2] || "0") + fraction);
+    if (digits === 0n) return !positive;
+    if ((match[1] === "-" && !signed) || exponent > 30) return false;
+    const scaled = digits * 10n ** BigInt(exponent + 2);
+    return (!positive || scaled > 0n) && scaled <= max * 100n;
+  };
+  if (saved.action === "open") return amount(payload.opening_cash);
+  if (saved.action === "movements") return ["in", "out"].includes(payload.direction) && amount(payload.amount, { positive: true })
+    && typeof payload.reason === "string" && payload.reason.trim().length > 0 && Array.from(payload.reason.trim()).length <= 300;
+  return amount(payload.actual_cash) && amount(payload.expected_cash, { signed: true, max: 10n ** 25n });
 }
 
 function setPending(value) {
+  if (pendingProblem) return;
   pending = value;
   pendingStored = true;
   try {
@@ -78,10 +120,12 @@ function setPending(value) {
 }
 
 function updateControls() {
-  const blocked = saving || Boolean(pending);
+  const blocked = saving || Boolean(pending) || pendingProblem;
   byId("drawer-pending").hidden = !pending;
   byId("drawer-storage-warning").hidden = !pending || pendingStored;
   byId("drawer-retry").disabled = saving;
+  byId("drawer-restore-error").hidden = !pendingProblem;
+  byId("drawer-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
   byId("drawer-pending-date").textContent = pending ? businessDate(pending.payload.date) : "";
   for (const form of Object.values(actionForms)) form.querySelector("fieldset").disabled = blocked;
 }
@@ -175,7 +219,7 @@ async function loadDrawer() {
 }
 
 async function submitPending() {
-  if (!pending || saving) return;
+  if (!pending || saving || pendingProblem) return;
   const attempt = pending;
   saving = true;
   updateControls();
@@ -227,7 +271,7 @@ async function submitPending() {
 for (const [action, form] of Object.entries(actionForms)) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!state || state.date !== dateInput.value || saving || pending) return;
+    if (!state || state.date !== dateInput.value || saving || pending || pendingProblem) return;
     const fields = Object.fromEntries(new FormData(form));
     if (action === "movements") {
       fields.reason = fields.reason.trim();
@@ -252,12 +296,26 @@ dateInput.addEventListener("change", () => {
   loadDrawer();
 });
 byId("drawer-retry").addEventListener("click", submitPending);
+byId("drawer-restore-export").addEventListener("click", () => {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pos-drawer-raw.txt";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+});
 dateInput.value = pending?.payload.date || bangkokToday();
 updateControls();
 loadDrawer();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending) {
+  if (pending || pendingProblem) {
     event.preventDefault();
     event.returnValue = "";
   }

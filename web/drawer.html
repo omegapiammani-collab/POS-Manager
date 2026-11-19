@@ -31,6 +31,11 @@
       <p id="drawer-load-status" class="muted" role="status"></p>
     </section>
     <p id="drawer-message" role="status" hidden></p>
+    <div id="drawer-restore-error" class="panel" role="alert" hidden>
+      <p>อ่านคำขอลิ้นชักเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดเปิด เติม ถอน และปิดลิ้นชักในแท็บนี้ กรุณาเก็บข้อมูลเดิมและติดต่อผู้ดูแลก่อนปิดแท็บ</p>
+      <p>ไฟล์ที่ดาวน์โหลดเก็บข้อความเดิมเป็น JSON string สำหรับตรวจสอบ ไม่ใช่ไฟล์ส่งรายการอัตโนมัติ</p>
+      <button id="drawer-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลลิ้นชักเดิม</button>
+    </div>
     <div id="drawer-pending" class="panel" hidden>
       <p>ยังไม่ทราบผลการบันทึก ส่งคำขอเดิมเพื่อตรวจสอบผล</p>
       <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>

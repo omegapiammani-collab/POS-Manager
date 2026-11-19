@@ -45,5 +45,6 @@ jobs:
       - run: npm ci
       - run: node --test experiments/service-worker-cache-check.cjs
       - run: node --test experiments/expense-pending-check.cjs
+      - run: node --test experiments/drawer-pending-check.cjs
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
