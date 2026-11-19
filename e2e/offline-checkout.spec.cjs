@@ -1942,11 +1942,44 @@ test("unreadable inventory request storage never triggers deletion", async ({ pa
   expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-stock-count"))).toBe(countRaw);
 });
 
+test("legacy unbound inventory requests are preserved and cannot be retried", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const receiptRaw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", payload: {
+    id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10",
+  } }, null, 2);
+  const countRaw = JSON.stringify({ product: { id: product.id, name: "น้ำดื่ม", quantity: "1", base_unit: "ขวด" }, payload: {
+    id: randomUUID(), expected_quantity: "1", counted_quantity: "2", reason: "ตรวจนับ",
+  } }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await expect(page.locator("#receipt-pending")).toBeHidden();
+  await expect(page.locator("#stock-count-pending")).toBeHidden();
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await expect(page.getByRole("button", { name: "รับสินค้า", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "ปรับยอดจากการตรวจนับ" })).toBeDisabled();
+  for (const [button, expected] of [["#receipt-restore-export", receiptRaw], ["#count-restore-export", countRaw]]) {
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator(button).click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(expected);
+  }
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-stock-count"))).toBe(countRaw);
+  expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe("1");
+  expect(await (await request.get(pos + `/products/${product.id}/receipts`)).json()).toHaveLength(1);
+  expect(await (await request.get(pos + `/products/${product.id}/stock-counts`)).json()).toHaveLength(0);
+});
+
 test("valid pending receipt is not rewritten on load and retries its original id", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   const initialQuantity = Number((await (await request.get(pos + "/products")).json())[0].quantity);
   const payload = { id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10" };
-  const raw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", payload }, null, 2);
+  const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  const raw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", binding_id, payload }, null, 2);
   await page.goto(pos + "/");
   await page.evaluate((value) => sessionStorage.setItem("pos-pending-receipt", value), raw);
   await page.reload();
