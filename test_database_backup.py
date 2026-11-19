@@ -8,12 +8,14 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 from test_store_headers import store_headers
 from uuid import uuid4
 
 from inventory_api import make_server
+import database_backup
 
 
 DAY = "2026-11-12"
@@ -207,3 +209,100 @@ class DatabaseBackupTests(unittest.TestCase):
                 result = self.restore(backup, target)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(target.exists())
+
+    def test_incomplete_sales_are_rejected_without_touching_source_or_targets(self):
+        self.seed()
+        snapshot = self.download().read_bytes()
+        cases = {
+            "missing_items_table": "DROP TABLE sale_items",
+            "missing_customers_table": "DROP TABLE customers",
+            "missing_payment_column": "ALTER TABLE sales DROP COLUMN cash",
+            "missing_debt_allocations": "DROP TABLE debt_allocations",
+            "missing_shortage_fills": "DROP TABLE stock_shortage_fills",
+            "missing_offline_time_column": "ALTER TABLE offline_sale_times DROP COLUMN sold_at",
+            "missing_items": "DELETE FROM sale_items",
+            "incorrect_payment": "UPDATE sales SET cash = '19.00'",
+            "incorrect_item_amount": "UPDATE sale_items SET total = '19.00'",
+            "incorrect_quantity": "UPDATE sale_items SET quantity = '3'",
+            "invalid_multiplier": "UPDATE sale_items SET multiplier = '0'",
+            "invalid_cost": "UPDATE sale_items SET base_unit_cost = '-1'",
+            "unknown_unit": "UPDATE sale_items SET unit_id = 'missing'",
+            "unknown_customer": "UPDATE sales SET customer_id = 'missing'",
+            "negative_payment": "UPDATE sales SET cash = '-1.00'",
+        }
+        for name, statement in cases.items():
+            with self.subTest(name=name):
+                source = self.directory / (name + ".sqlite3")
+                source.write_bytes(snapshot)
+                with closing(sqlite3.connect(source)) as db:
+                    db.execute(statement)
+                    db.commit()
+                original = source.read_bytes()
+                target = self.directory / (name + "-restored.sqlite3")
+                result = self.restore(source, target)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse(target.exists())
+                self.assertEqual(source.read_bytes(), original)
+                server = subprocess.run([sys.executable, str(Path(__file__).with_name("inventory_api.py")),
+                                         "--port", "0", "--database", str(source)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(server.returncode, 0, server.stdout)
+                self.assertEqual(source.read_bytes(), original)
+                target.write_bytes(b"existing target")
+                self.assertNotEqual(self.restore(source, target).returncode, 0)
+                self.assertEqual(target.read_bytes(), b"existing target")
+                self.assertEqual(source.read_bytes(), original)
+
+    def test_early_sales_schema_without_later_tables_still_restores(self):
+        sale, _, _ = self.seed()
+        source = self.download()
+        with closing(sqlite3.connect(source)) as db:
+            for table in ("stock_shortage_count_fills", "stock_shortage_fills", "stock_shortages",
+                          "sale_corrections", "debt_allocations", "debt_repayments", "offline_sale_times", "abandoned_sales"):
+                db.execute(f"DROP TABLE IF EXISTS {table}")
+            db.commit()
+        original = source.read_bytes()
+        target = self.directory / "early-sales-restored.sqlite3"
+        self.assertEqual(self.restore(source, target).returncode, 0)
+        self.assertEqual(source.read_bytes(), original)
+        origin = self.start_server(target)
+        self.assertEqual(self.request(f"/sales/{sale['id']}", origin=origin), sale)
+
+    def test_corrections_and_offline_rounding_survive_restore(self):
+        sale, _, _ = self.seed()
+        product = self.request("/products")[0]
+        replacement = {"id": str(uuid4()), "items": [{"product_id": product["id"], "unit_id": product["units"][0]["id"],
+                       "quantity": "1.5", "expected_unit_price": "10"}],
+                       "payments": {"cash": "15", "qr": "0", "credit": "0"}, "customer_id": None, "qr_confirmed": False}
+        self.request(f"/sales/{sale['id']}/corrections", {"id": str(uuid4()), "reason": "แก้ไข", "replacement": replacement})
+        offline = {"id": str(uuid4()), "items": [{"product_id": product["id"], "unit_id": product["units"][0]["id"],
+                   "quantity": "1", "expected_unit_price": "10.005"}],
+                   "payments": {"cash": "10.01", "qr": "0", "credit": "0"}, "customer_id": None, "qr_confirmed": False,
+                   "offline": True, "sold_at": "2026-11-12T17:00:00.000Z"}
+        offline_saved = self.request("/offline-sales", offline)
+        source = self.download()
+        original = source.read_bytes()
+        target = self.directory / "offline-correction-restored.sqlite3"
+        self.assertEqual(self.restore(source, target).returncode, 0)
+        self.assertEqual(source.read_bytes(), original)
+        origin = self.start_server(target)
+        self.assertEqual(self.request(f"/sales/{offline['id']}", origin=origin), offline_saved)
+        self.assertEqual(self.request(f"/sales/{replacement['id']}", origin=origin)["total"], "15.00")
+
+    def test_restore_validates_and_copies_the_same_wal_snapshot(self):
+        sale, _, _ = self.seed()
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone(), ("wal",))
+        original_validator = database_backup.validate_sales
+        def concurrent_change(reader):
+            with closing(sqlite3.connect(self.database)) as writer:
+                writer.execute("UPDATE sales SET cash = '19.00' WHERE id = ?", (sale["id"],))
+                writer.commit()
+            original_validator(reader)
+        target = self.directory / "snapshot-during-write.sqlite3"
+        with patch.object(database_backup, "validate_sales", side_effect=concurrent_change):
+            database_backup.restore_database(self.database, target)
+        with closing(sqlite3.connect(target)) as restored:
+            self.assertEqual(restored.execute("SELECT cash FROM sales WHERE id = ?", (sale["id"],)).fetchone(), ("20.00",))
+        with closing(sqlite3.connect(self.database)) as changed:
+            self.assertEqual(changed.execute("SELECT cash FROM sales WHERE id = ?", (sale["id"],)).fetchone(), ("19.00",))

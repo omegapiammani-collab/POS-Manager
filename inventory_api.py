@@ -474,6 +474,7 @@ def main():
             # Validate before connect() can create tables or modify a non-POS file.
             with closing(read_only_database(database)) as db:
                 db.execute("PRAGMA trusted_schema = OFF")
+                db.execute("BEGIN")
                 validate_backup(db)
     except RuntimeError as exc:
         parser.exit(1, f"Cannot start server: {exc}\n")
