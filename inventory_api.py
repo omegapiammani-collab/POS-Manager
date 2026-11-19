@@ -360,11 +360,12 @@ class InventoryHandler(BaseHTTPRequestHandler):
         if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts"}:
             raise RequestError(404, "Route not found")
         _, product_id, resource = parts
-        check_product(db, product_id)
+        if self.command == "GET" or resource == "units":
+            check_product(db, product_id)
         if resource == "stock-counts":
             if self.command == "GET":
                 return 200, list_counts(db, product_id)
-            created, count = record_count(db, product_id, self.read_json())
+            created, count = record_count(db, product_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), count
         if self.command == "GET":
             if resource != "receipts":
@@ -387,6 +388,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
             db, product_id, required_text(data, "unit_id"),
             decimal_field(data, "quantity", positive=True), decimal_field(data, "unit_cost"),
             uuid_field(data["id"], "id") if "id" in data else None,
+            expected_store=self.headers.get("X-POS-Store-ID", ""),
         )
         return 201, {"id": receipt_id}
 

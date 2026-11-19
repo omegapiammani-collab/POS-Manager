@@ -2688,3 +2688,32 @@ test("filters bill history by payment method and exports matching bills", async 
   await expectBills(cashBill, qrBill, creditBill, splitBill, voidedBill);
   await expect(exportButton).toBeEnabled();
 });
+
+test("inventory receipt retains original binding after a store mismatch", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const identity = await (await request.get(pos + "/store-identity")).json();
+  await page.goto(pos + "/");
+  await page.getByRole("button", { name: /น้ำดื่ม/ }).first().click();
+  await page.locator('[data-open="receipt"]').click();
+  await page.locator('#receipt [name="quantity"]').fill("2");
+  await page.locator('#receipt [name="unit_cost"]').fill("5");
+  let sentBinding;
+  await page.route("**/receipts", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    sentBinding = route.request().headers()["x-pos-store-id"];
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "store_mismatch" }) });
+  });
+  await page.locator('#receipt button:not([data-close])').click();
+  await expect(page.locator('#receipt .error')).toContainText("ฐานข้อมูลเปลี่ยน");
+  expect(sentBinding).toBe(identity.binding_id);
+  const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt")));
+  expect(saved.binding_id).toBe(identity.binding_id);
+  await page.locator('#receipt [data-close]').click();
+  await page.reload();
+  await page.locator('#retry-receipt').click();
+  await expect(page.locator('#receipt')).toBeVisible();
+  await page.unroute("**/receipts");
+  await page.locator('#receipt button:not([data-close])').click();
+  await expect(page.locator('#receipt')).not.toBeVisible();
+  expect((await (await request.get(pos + "/products")).json()).find(p => p.id === product.id).quantity).toBe("3");
+});
