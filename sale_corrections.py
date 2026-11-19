@@ -6,6 +6,7 @@ import json
 
 from debts import baht, bill_balances, satang
 from sales import (
+    require_store,
     SaleConflict, checkout_hash, checkout_in_transaction, checkout_number, read_sale, uuid_field, validate_checkout,
 )
 
@@ -37,9 +38,11 @@ class CorrectionConflict(SaleConflict):
         self.excess = baht(excess)
 
 
-def sale_history(db):
+def sale_history(db, *, expected_store=None):
     with db:
         db.execute("BEGIN")
+        if expected_store is not None:
+            require_store(db, expected_store)
         return [
             {
                 **read_sale(db, sale_id, include_item_ids=True),
@@ -211,10 +214,12 @@ def move_allocations(db, sale_id, previous, destinations):
     return changes
 
 
-def correct_sale(db, sale_id, data):
+def correct_sale(db, sale_id, data, *, expected_store=None):
     correction_id, reason, action, replacement_input, signature, expected_excess = correction_input(data, sale_id)
     with db:
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         existing = db.execute(
             "SELECT request_hash, sale_id, replacement_id, excess, excess_action "
             "FROM sale_corrections WHERE id = ?", (correction_id,),

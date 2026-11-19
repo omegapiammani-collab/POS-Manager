@@ -292,11 +292,11 @@ class InventoryHandler(BaseHTTPRequestHandler):
             return 200, sales_report(db, dates.get("from", [""])[0], dates.get("to", [""])[0])
 
         if parts == ["sale-history"] and self.command == "GET":
-            return 200, sale_history(db)
+            return 200, sale_history(db, expected_store=self.headers.get("X-POS-Store-ID"))
 
         if len(parts) == 3 and parts[0] == "sales" and parts[2] == "corrections" and self.command == "POST":
             sale_id = uuid_field(parts[1], "id")
-            created, correction = correct_sale(db, sale_id, self.read_json())
+            created, correction = correct_sale(db, sale_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), correction
 
         if len(parts) == 3 and parts[0] == "sales" and parts[2] == "abandon" and self.command == "POST":

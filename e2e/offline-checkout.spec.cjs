@@ -1344,7 +1344,8 @@ for (const mode of ["void", "edit"]) {
     const payload = { id: randomUUID(), reason: "ตรวจสอบรายการ", replacement, excess_action: null, expected_excess: null };
     expect((await request.post(`${pos}/sales/${saleId}/corrections`, { data: payload })).status()).toBe(201);
     const before = (await (await request.get(pos + "/products")).json())[0].quantity;
-    const raw = JSON.stringify({ saleId, payload }, null, 2);
+    const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const raw = JSON.stringify({ binding_id, saleId, payload }, null, 2);
     await page.goto(pos + "/");
     await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
     await page.goto(pos + "/bills");

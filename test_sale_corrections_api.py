@@ -271,3 +271,22 @@ class SaleCorrectionsApiTests(unittest.TestCase):
         self.created(self.correction_path(original), self.correction(action="apply"))
         paid = {bill["id"]: Decimal(bill["paid"]) for bill in self.debt()["bills"]}
         self.assertEqual(paid, {offline["id"]: Decimal(40), online["id"]: Decimal(15)})
+
+class CorrectionBindingTests(SaleCorrectionsApiTests):
+    def test_binding_precedes_history_and_replay(self):
+        sale = self.sell()
+        path = self.correction_path(sale)
+        payload = self.correction()
+        self.created(path, payload)
+        for route, data in [(path, payload), ('/sale-history', None), ('/products', None), ('/customers', None)]:
+            req = Request(self.origin + route, data=None if data is None else json.dumps(data).encode(),
+                          headers={'Content-Type': 'application/json', 'X-POS-Store-ID': str(uuid4())})
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(req, timeout=3)
+            self.assertEqual(caught.exception.code, 409)
+            self.assertEqual(json.load(caught.exception)['code'], 'store_mismatch')
+        req = Request(self.origin + path, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(req, timeout=3)
+        self.assertEqual(json.load(caught.exception)['code'], 'store_mismatch')
+        self.assertEqual(self.expect(200, path, payload)['id'], payload['id'])
