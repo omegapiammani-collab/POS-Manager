@@ -154,6 +154,19 @@ class SalesApiTests(unittest.TestCase):
         with sqlite3.connect(self.database) as db:
             self.assertEqual(db.execute("SELECT id, name FROM customers").fetchall(), [(original["id"], original["name"])])
 
+    def test_customer_request_lookup_requires_store_and_distinguishes_absence(self):
+        request_id = str(uuid4())
+        customer = self.post_created("/customers", {"name": "ตรวจสอบ", "request_id": request_id})
+        self.assertEqual(self.request("/customer-requests/" + request_id), (200, {"request_id": request_id, "customer": customer}))
+        missing = str(uuid4())
+        self.assertEqual(self.request("/customer-requests/" + missing), (200, {"request_id": missing, "customer": None}))
+        wrong = Request(self.origin + "/customer-requests/" + request_id, headers={"X-POS-Store-ID": str(uuid4())})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(wrong, timeout=3)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        self.assertEqual(self.request("/customer-requests/not-a-uuid")[0], 400)
+
     def test_customer_request_id_is_idempotent_and_name_is_not_unique(self):
         request_id = str(uuid4())
         payload = {"name": "ชื่อซ้ำ", "request_id": request_id}

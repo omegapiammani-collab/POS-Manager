@@ -3075,3 +3075,128 @@ test("customer creation recovers after starting checkout offline", async ({ page
   const customers = await (await request.get(pos + "/customers")).json();
   expect(customers.filter(customer => customer.name === "กลับมาออนไลน์")).toHaveLength(1);
 });
+
+for (const found of [true, false]) {
+  test(`restored customer request is reviewed and archived (${found ? "found" : "absent"})`, async ({ page, pos }) => {
+    await page.goto(pos + "/checkout");
+    await expect(page.locator("#sale-new-customer")).toBeEnabled();
+    const old = await page.evaluate(() => window.PosOffline.getBinding());
+    const restored = randomUUID(), id = randomUUID(), customerId = randomUUID();
+    const raw = JSON.stringify({ name: "ลูกค้าค้าง", request_id: id, binding_id: old });
+    await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+    let postCount = 0;
+    await page.route("**/store-identity", route => route.fulfill({ json: { id: randomUUID(), binding_id: restored, restore_ancestors: [old], customer_request_id: true } }));
+    await page.route("**/customer-requests/*", route => route.fulfill({ json: { request_id: id, customer: found ? { id: customerId, name: "ลูกค้าค้าง" } : null } }));
+    await page.route("**/customers", route => {
+      if (route.request().method() === "POST") { postCount++; return route.abort(); }
+      return route.fulfill({ json: [{ id: customerId, name: "ลูกค้าค้าง" }] });
+    });
+    await page.reload();
+    await expect(page.locator("#customer-restore-review")).toBeVisible();
+    await page.locator("#customer-restore-review").click();
+    await expect(page.locator("#customer-restore-details")).toContainText(id);
+    await expect(page.locator("#customer-restore-matches")).toContainText(customerId);
+    await expect(page.locator("#customer-restore-result")).toContainText(found ? "พบรหัสคำขอนี้" : "ไม่ได้ยืนยันว่าไม่มีรายการ");
+    await expect(page.locator("#customer-restore-finish")).toBeDisabled();
+    expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+    await page.locator("#customer-restore-confirmed").check();
+    await Promise.all([page.waitForEvent("load"), page.locator("#customer-restore-finish").click()]);
+    await expect.poll(() => page.evaluate(() => window.PosOffline.getBinding())).toBe(restored);
+    await expect.poll(() => page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+    const history = await page.evaluate(() => window.PosOffline.getCustomerReviewHistory());
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ raw, from: old, to: restored, lookup: { request_id: id } });
+    expect(postCount).toBe(0);
+    await expect(page.locator("#customer-history-export")).toBeVisible();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-history-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))[0].raw).toBe(raw);
+  });
+}
+
+test("customer restore review rejects stale evidence without deleting pending", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const old = await page.evaluate(() => window.PosOffline.getBinding());
+  const restored = randomUUID(), id = randomUUID();
+  const raw = JSON.stringify({ name: "ลูกค้าค้าง", request_id: id, binding_id: old });
+  await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+  let list = [];
+  await page.route("**/store-identity", route => route.fulfill({ json: { id: randomUUID(), binding_id: restored, restore_ancestors: [old] } }));
+  await page.route("**/customer-requests/*", route => route.fulfill({ json: { request_id: id, customer: null } }));
+  await page.route("**/customers", route => route.fulfill({ json: list }));
+  await page.reload();
+  await page.locator("#customer-restore-review").click();
+  list = [{ id: randomUUID(), name: "ลูกค้าค้าง" }];
+  await page.locator("#customer-restore-confirmed").check();
+  await page.locator("#customer-restore-finish").click();
+  await expect(page.locator("#customer-restore-error")).toContainText("ข้อมูลลูกค้าเปลี่ยน");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(old);
+  expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toEqual([]);
+});
+
+for (const kind of ["malformed", "unrelated", "legacy-conflict", "no-locks"]) {
+  test(`customer restore remains safe with ${kind}`, async ({ page, pos }) => {
+    if (kind === "no-locks") await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+    await page.goto(pos + "/checkout");
+    await expect(page.locator("#sale-new-customer")).toBeEnabled();
+    const old = await page.evaluate(() => window.PosOffline.getBinding());
+    const restored = randomUUID();
+    const raw = kind === "malformed" ? "{broken" : JSON.stringify({ name: "ค้าง", request_id: randomUUID(), binding_id: old });
+    await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+    if (kind === "legacy-conflict") await page.evaluate(() => localStorage.setItem("pos-pending-customer", "legacy-conflicting"));
+    await page.route("**/store-identity", route => route.fulfill({ json: { binding_id: restored, restore_ancestors: kind === "unrelated" ? [] : [old] } }));
+    await page.reload();
+    await expect(page.locator("#sale-store-blocked")).toBeVisible();
+    await expect(page.locator("#customer-pending-export")).toBeVisible();
+    if (kind === "no-locks") {
+      await expect(page.locator("#customer-restore-review")).toBeVisible();
+      await page.locator("#customer-restore-review").click();
+      await expect(page.locator("#customer-restore-dialog")).not.toBeVisible();
+    } else await expect(page.locator("#customer-restore-review")).toBeHidden();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-pending-export").click()]);
+    const exported = (await readFile(await download.path())).toString();
+    if (kind === "legacy-conflict") expect(JSON.parse(exported)).toEqual({ legacy: "legacy-conflicting", saved: raw });
+    else expect(exported).toBe(raw);
+    expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(old);
+    expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  });
+}
+
+test("concurrent customer restore reviews commit at most once", async ({ page, context, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  const old = await page.evaluate(() => window.PosOffline.getBinding());
+  const restored = randomUUID(), raw = JSON.stringify({name: "ค้าง", request_id: randomUUID(), binding_id: old});
+  await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+  const review = { raw, from: old, to: restored, reviewed_at: new Date().toISOString() };
+  const results = await Promise.all([page, other].map(tab => tab.evaluate(({ restored, old, review }) => window.PosOffline.bindStore(restored, { expectedCurrent: old, acceptRestore: true, ancestors: [old], customerReview: review }), { restored, old, review })));
+  expect(results.filter(result => result.bound)).toHaveLength(1);
+  expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toEqual([review]);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+});
+
+test("restore review aborts on unreadable history without losing pending", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const old = await page.evaluate(() => window.PosOffline.getBinding());
+  const restored = randomUUID(), raw = JSON.stringify({name: "ค้าง", request_id: randomUUID(), binding_id: old});
+  await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open("pos-checkout-offline", 2);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result, tx = db.transaction("snapshots", "readwrite");
+      tx.objectStore("snapshots").put("corrupt", "customerReviewHistory");
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => reject(tx.error);
+    };
+  }));
+  const review = {raw, from: old, to: restored};
+  await expect(page.evaluate(({ restored, old, review }) => window.PosOffline.bindStore(restored, { expectedCurrent: old, acceptRestore: true, ancestors: [old], customerReview: review }), { restored, old, review })).rejects.toThrow("Customer review history is invalid");
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(old);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toBe("corrupt");
+});

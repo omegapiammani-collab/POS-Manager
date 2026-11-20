@@ -125,6 +125,18 @@ class DatabaseBackupTests(unittest.TestCase):
         self.assertEqual(self.request(f"/expenses?from={DAY}&to={DAY}", origin=origin), [expense])
         self.assertEqual(self.request(f"/cash-drawer?date={DAY}", origin=origin), drawer)
 
+    def test_restored_customer_request_lookup_distinguishes_backup_boundary(self):
+        existing_id, later_id = str(uuid4()), str(uuid4())
+        existing = self.request("/customers", {"name": "ก่อนสำรอง", "request_id": existing_id})
+        backup = self.download()
+        self.request("/customers", {"name": "หลังสำรอง", "request_id": later_id})
+        restored = self.directory / "customer-review.sqlite3"
+        self.assertEqual(self.restore(backup, restored).returncode, 0)
+        origin = self.start_server(restored)
+        self.assertEqual(self.request("/customer-requests/" + existing_id, origin=origin), {"request_id": existing_id, "customer": existing})
+        self.assertEqual(self.request("/customer-requests/" + later_id, origin=origin), {"request_id": later_id, "customer": None})
+        self.assertEqual(self.request("/customer-requests/" + later_id)["customer"]["name"], "หลังสำรอง")
+
     def test_restore_does_not_overwrite_existing_target(self):
         backup = self.download()
         target = self.directory / "existing.sqlite3"

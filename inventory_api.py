@@ -256,6 +256,13 @@ class InventoryHandler(BaseHTTPRequestHandler):
                 require_store(db, self.headers.get("X-POS-Store-ID", ""))
                 return 201, add_customer(db, name, request_id)
 
+        if len(parts) == 2 and parts[0] == "customer-requests" and self.command == "GET":
+            request_id = uuid_field(parts[1], "request_id")
+            db.execute("BEGIN")
+            require_store(db, self.headers.get("X-POS-Store-ID", ""))
+            row = db.execute("SELECT customer_id, name FROM customer_requests WHERE request_id = ?", (request_id,)).fetchone()
+            return 200, {"request_id": request_id, "customer": {"id": row[0], "name": row[1]} if row else None}
+
         if parts == ["customer-debts"] and self.command == "GET":
             return 200, customer_debt_list(db, expected_store=self.headers.get("X-POS-Store-ID"))
 

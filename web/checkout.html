@@ -27,11 +27,13 @@
       <h2>ตรวจสอบฐานข้อมูลร้าน</h2>
       <p id="sale-store-message" role="alert"></p>
       <button id="customer-pending-export" type="button" hidden>ส่งออกคำขอลูกค้าที่ยังค้าง</button>
+      <button id="customer-restore-review" type="button" hidden>ตรวจสอบคำขอลูกค้าหลังคืนฐาน</button>
       <button id="sale-store-bind" type="button" hidden>ตรวจสอบและยืนยันฐานข้อมูล</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
     </section>
     <section class="panel sale-pending" aria-labelledby="sale-storage-title">
       <h2 id="sale-storage-title">พื้นที่เก็บบิลออฟไลน์</h2>
+      <button id="customer-history-export" type="button" hidden>ส่งออกประวัติคำขอลูกค้าที่ตรวจแล้ว</button>
       <p id="sale-storage-status" class="muted" role="status">กำลังตรวจสอบ…</p>
       <button id="sale-storage-persist" class="secondary" type="button" hidden>ขอเก็บข้อมูลถาวร</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
@@ -95,6 +97,16 @@
       </section>
     </div>
   </main>
+  <dialog id="customer-restore-dialog" aria-labelledby="customer-restore-title">
+    <h2 id="customer-restore-title">ตรวจสอบคำขอลูกค้าหลังคืนฐาน</h2>
+    <p id="customer-restore-details"></p>
+    <p>ฐานสำรองอาจไม่มีรายการที่เกิดหลังเวลาสำรอง ตรวจประวัติจากฐานเดิมและแหล่งอื่นก่อนตัดสินใจ ชื่อซ้ำอาจเป็นคนละคน</p>
+    <p id="customer-restore-result" role="status"></p>
+    <ul id="customer-restore-matches"></ul>
+    <label><input type="checkbox" id="customer-restore-confirmed">ตรวจสอบแล้วและต้องการเก็บคำขอเดิมเป็นประวัติ โดยไม่ส่งคำขอนี้ซ้ำ</label>
+    <p id="customer-restore-error" class="error" role="alert" hidden></p>
+    <div class="actions"><button id="customer-restore-cancel" type="button" class="secondary">กลับ</button><button id="customer-restore-finish" type="button" disabled>เก็บเป็นประวัติและยืนยันฐาน</button></div>
+  </dialog>
   <dialog id="sale-store-confirm" aria-labelledby="sale-store-confirm-title">
     <h2 id="sale-store-confirm-title">ยืนยันฐานข้อมูลร้าน</h2>
     <p id="sale-store-confirm-message"></p>

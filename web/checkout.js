@@ -156,7 +156,10 @@ async function initializeStoreLocked() {
     const queued = await store.list();
     await migratePendingCustomer(storeId);
     const pendingRaw = await pendingCustomerRaw();
+    const reviewHistory = await store.getCustomerReviewHistory();
+    byId("customer-history-export").hidden = Array.isArray(reviewHistory) && !reviewHistory.length;
     byId("customer-pending-export").hidden = pendingRaw === null;
+    byId("customer-restore-review").hidden = true;
     if (navigator.onLine !== false) {
       try {
         const identity = await api("/store-identity");
@@ -181,6 +184,8 @@ async function initializeStoreLocked() {
         storeId = observedStoreId;
       }
       if (pendingRaw !== null && (!pendingCustomer(pendingRaw) || pendingCustomer(pendingRaw).binding_id !== observedStoreId || storeId !== observedStoreId)) {
+        const pending = pendingCustomer(pendingRaw);
+        byId("customer-restore-review").hidden = !(pending && storeId && pending.binding_id === storeId && observedStoreId !== storeId && observedAncestors.includes(storeId));
         blockStore("มีคำขอลูกค้าที่ยังไม่ยืนยันหรือข้อมูลอ่านไม่ได้ กรุณาส่งออกและตรวจสอบฐานข้อมูลเดิมก่อนดำเนินการ");
         return;
       }
@@ -214,6 +219,70 @@ async function initializeStoreLocked() {
     initializingStore = false;
   }
 }
+
+let restoreCustomerReview = null;
+async function customerRestoreEvidence(raw, expected, target) {
+  const pending = pendingCustomer(raw);
+  if (!pending || pending.binding_id !== expected) throw new Error("คำขอไม่ตรงกับร้านเดิม");
+  const identity = await api("/store-identity");
+  if (identity.binding_id !== target || !Array.isArray(identity.restore_ancestors) || !identity.restore_ancestors.includes(expected)) throw new Error("ฐานข้อมูลเปลี่ยนหรือไม่ใช่ฐานที่กู้คืน กรุณาโหลดหน้าใหม่");
+  const lookup = await api("/customer-requests/" + encodeURIComponent(pending.request_id), undefined, target);
+  if (lookup.request_id !== pending.request_id || !(lookup.customer === null || (typeof lookup.customer?.id === "string" && typeof lookup.customer.name === "string"))) throw new Error("ตรวจสอบคำขอจากฐานข้อมูลไม่ได้");
+  const list = await api("/customers", undefined, target);
+  if (!Array.isArray(list)) throw new Error("ตรวจสอบรายชื่อลูกค้าไม่ได้");
+  return { pending, lookup, matches: list.filter(customer => customer.name === pending.name) };
+}
+byId("customer-history-export").addEventListener("click", async () => {
+  try {
+    const history = await store.getCustomerReviewHistory();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(history, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = "customer-review-history.json"; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { status("ส่งออกประวัติคำขอลูกค้าไม่สำเร็จ", true); }
+});
+byId("customer-restore-review").addEventListener("click", () => customerLock(async () => {
+  const dialog = byId("customer-restore-dialog");
+  const button = byId("customer-restore-review");
+  button.disabled = true;
+  try {
+    const raw = await pendingCustomerRaw();
+    const evidence = await customerRestoreEvidence(raw, storeId, observedStoreId);
+    restoreCustomerReview = { raw, from: storeId, to: observedStoreId, evidence };
+    byId("customer-restore-details").textContent = "ชื่อ " + evidence.pending.name + " · รหัสคำขอ " + evidence.pending.request_id + " · ฐานเดิม " + storeId + " · ฐานกู้คืน " + observedStoreId;
+    byId("customer-restore-result").textContent = evidence.lookup.customer
+      ? "พบรหัสคำขอนี้ในฐานกู้คืน: " + evidence.lookup.customer.name + " · รหัสลูกค้า " + evidence.lookup.customer.id
+      : "ไม่พบรหัสคำขอนี้ในฐานกู้คืน การไม่พบไม่ได้ยืนยันว่าไม่มีรายการในฐานเดิมหรือแหล่งอื่น";
+    byId("customer-restore-matches").replaceChildren(...evidence.matches.map(customer => element("li", customer.name + " · รหัสลูกค้า " + customer.id)));
+    byId("customer-restore-confirmed").checked = false;
+    byId("customer-restore-finish").disabled = true;
+    byId("customer-restore-error").hidden = true;
+    dialog.showModal();
+  } catch (error) {
+    byId("sale-store-message").textContent = error.message || "ตรวจสอบคำขอไม่สำเร็จ กรุณาลองใหม่";
+  } finally { button.disabled = false; }
+}));
+byId("customer-restore-confirmed").addEventListener("change", event => { byId("customer-restore-finish").disabled = !event.target.checked; });
+byId("customer-restore-cancel").addEventListener("click", () => byId("customer-restore-dialog").close());
+byId("customer-restore-finish").addEventListener("click", () => customerLock(async () => {
+  const button = byId("customer-restore-finish");
+  button.disabled = true;
+  try {
+    const review = restoreCustomerReview;
+    if (!review || !byId("customer-restore-confirmed").checked || await pendingCustomerRaw() !== review.raw || await store.getBinding() !== review.from) throw new Error("ข้อมูลคำขอเปลี่ยน กรุณาตรวจสอบใหม่");
+    const evidence = await customerRestoreEvidence(review.raw, review.from, review.to);
+    if (JSON.stringify(evidence) !== JSON.stringify(review.evidence)) throw new Error("ข้อมูลลูกค้าเปลี่ยน กรุณากลับไปตรวจสอบใหม่");
+    const identity = await api("/store-identity");
+    if (identity.binding_id !== review.to || !identity.restore_ancestors?.includes(review.from)) throw new Error("ฐานข้อมูลเปลี่ยน กรุณาตรวจสอบใหม่");
+    const customerReview = { raw: review.raw, from: review.from, to: review.to, lookup: evidence.lookup, matches: evidence.matches, reviewed_at: new Date().toISOString() };
+    const result = await store.bindStore(review.to, { expectedCurrent: review.from, acceptRestore: true, ancestors: identity.restore_ancestors, customerReview });
+    if (!result.bound) throw new Error("คำขอหรือฐานข้อมูลเปลี่ยน กรุณาตรวจสอบใหม่");
+    location.reload();
+  } catch (error) {
+    byId("customer-restore-error").textContent = error.message || "ตรวจสอบไม่สำเร็จ";
+    byId("customer-restore-error").hidden = false;
+    button.disabled = false;
+  }
+}));
 
 byId("sale-store-bind")?.addEventListener("click", () => {
   if (!observedStoreId) return;
