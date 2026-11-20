@@ -249,13 +249,10 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if self.command == "GET":
                 return 200, customer_list(db)
             name = required_text(self.read_json(), "name")
-            expected_store = self.headers.get("X-POS-Store-ID")
-            if expected_store:
-                with db:
-                    db.execute("BEGIN IMMEDIATE")
-                    require_store(db, expected_store)
-                    return 201, add_customer(db, name)
-            return 201, add_customer(db, name)
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                require_store(db, self.headers.get("X-POS-Store-ID", ""))
+                return 201, add_customer(db, name)
 
         if parts == ["customer-debts"] and self.command == "GET":
             return 200, customer_debt_list(db, expected_store=self.headers.get("X-POS-Store-ID"))

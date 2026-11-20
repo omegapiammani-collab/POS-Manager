@@ -31,7 +31,7 @@ async function setup(request, pos) {
   const headers = { 'X-POS-Store-ID': binding };
   const product = await (await request.post(pos + '/products', { data: { code: 'A', name: 'น้ำ', base_unit: 'ขวด', price: '25' } })).json();
   expect((await request.post(pos + `/products/${product.id}/receipts`, { headers, data: { id: randomUUID(), unit_id: product.base_unit_id, quantity: '1', unit_cost: '10' } })).status()).toBe(201);
-  const customer = await (await request.post(pos + '/customers', { data: { name: 'ลูกค้า ก' } })).json();
+  const customer = await (await request.post(pos + '/customers', { headers, data: { name: 'ลูกค้า ก' } })).json();
   expect((await request.post(pos + '/sales', { headers, data: { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: '1', expected_unit_price: '25' }], payments: { cash: '0', qr: '0', credit: '25' }, customer_id: customer.id, qr_confirmed: false } })).status()).toBe(201);
   return { binding, customer };
 }
@@ -133,3 +133,19 @@ for (const resource of ['list', 'detail']) {
     await expect(page.locator('#debt-detail')).toBeHidden();
   });
 }
+
+test('checkout creates a customer with the current store binding', async ({ page, request, pos }) => {
+  const binding = (await (await request.get(pos + '/store-identity')).json()).binding_id;
+  await page.goto(pos + '/checkout');
+  await page.getByLabel('เงินเชื่อ (บาท)').fill('1');
+  await page.locator('#sale-new-customer').click();
+  await page.getByLabel('ชื่อลูกค้า').fill('ลูกค้าใหม่');
+  const [response] = await Promise.all([
+    page.waitForResponse(result => result.url() === pos + '/customers' && result.request().method() === 'POST'),
+    page.getByRole('button', { name: 'บันทึกลูกค้า' }).click(),
+  ]);
+  expect(response.status()).toBe(201);
+  expect(response.request().headers()['x-pos-store-id']).toBe(binding);
+  await expect(page.locator('#sale-customer')).not.toBeVisible();
+  await expect(page.locator('select[name=customer_id]')).toHaveValue((await response.json()).id);
+});
