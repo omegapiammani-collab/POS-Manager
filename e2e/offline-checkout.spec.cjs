@@ -3040,8 +3040,16 @@ test("customer creation recovers after starting checkout offline", async ({ page
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
   await context.setOffline(true);
   await page.reload();
-  await expect(page.locator("#sale-connection")).toContainText("ออฟไลน์");
+  // Wait for initialization itself, not just the word "offline": the
+  // connected status also mentions offline capability, and initialization
+  // continues asynchronously after the status text is first rendered.
+  await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
+  await expect(page.locator("#sale-connection")).toHaveClass(/sale-offline/);
+  await expect.poll(() => page.evaluate(() => storeReady)).toBe(true);
+  let identityChecks = 0;
+  await page.route("**/store-identity", async route => { identityChecks++; await route.continue(); });
   await context.setOffline(false);
+  await expect.poll(() => identityChecks).toBeGreaterThan(0);
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
   await page.locator('#sale-payment input[name="credit"]').fill("1");
   await page.locator("#sale-new-customer").click();
