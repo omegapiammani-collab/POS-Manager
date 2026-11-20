@@ -2873,3 +2873,131 @@ for (const mode of ["create", "void"]) {
     expect(rows[0].status).toBe("active");
   });
 }
+
+test("customer retry survives a lost response and reload", async ({ page, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  let lost = false;
+  await page.route("**/customers", async (route) => {
+    if (!lost && route.request().method() === "POST") {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+    } else await route.continue();
+  });
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบซ้ำ");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect.poll(() => page.evaluate(() => window.PosOffline.getPendingCustomer())).not.toBeNull();
+  await expect(page.locator("#sale-customer .error")).toBeVisible();
+  const original = await page.evaluate(() => window.PosOffline.getPendingCustomer());
+  await page.reload();
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator("#sale-new-customer").click();
+  await expect(page.locator('#sale-customer input[name="name"]')).toHaveValue("ลูกค้าทดสอบซ้ำ");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(original);
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer")).not.toBeVisible();
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.filter((c) => c.name === "ลูกค้าทดสอบซ้ำ")).toHaveLength(1);
+});
+
+test("two tabs retain one pending customer request", async ({ page, context, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-new-customer")).toBeEnabled();
+  for (const tab of [page, other]) {
+    await tab.locator("#sale-new-customer").click();
+    await tab.locator('#sale-customer input[name="name"]').fill("ลูกค้าสองแท็บ");
+    await tab.route("**/customers", async (route) => {
+      if (route.request().method() === "POST") { await route.fetch(); await route.abort(); }
+      else await route.continue();
+    });
+  }
+  await Promise.all([page, other].map((tab) => tab.locator("#sale-customer button:not([type])").click()));
+  await expect(page.locator("#sale-customer .error")).toBeVisible();
+  await expect(other.locator("#sale-customer .error")).toBeVisible();
+  const pending = JSON.parse(await page.evaluate(() => window.PosOffline.getPendingCustomer()));
+  expect(pending.name).toBe("ลูกค้าสองแท็บ");
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.filter((c) => c.name === pending.name)).toHaveLength(1);
+});
+
+test("malformed customer pending survives and is exportable", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.evaluate(() => localStorage.setItem("pos-pending-customer", "legacy {not json"));
+  await page.reload();
+  await expect(page.locator("#customer-pending-export")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator("#customer-pending-export").click();
+  const download = await downloadPromise;
+  expect((await readFile(await download.path())).toString()).toBe("legacy {not json");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe("legacy {not json");
+});
+
+test("old server capability and storage failure never send customer request", async ({ page, pos }) => {
+  let posts = 0;
+  await page.route("**/customers", async (route) => { if (route.request().method() === "POST") posts++; await route.continue(); });
+  await page.route("**/store-identity", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.customer_request_id;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบ");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer .error")).toContainText("เซิร์ฟเวอร์ไม่รองรับ");
+  expect(posts).toBe(0);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  await page.unroute("**/store-identity");
+  await page.reload();
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.evaluate(() => { window.PosOffline.stageCustomer = async () => { throw new Error("quota"); }; });
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบ");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer .error")).toBeVisible();
+  expect(posts).toBe(0);
+});
+
+test("customer staging and binding changes are atomic across tabs", async ({ page, context, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-new-customer")).toBeEnabled();
+  const binding = await page.evaluate(() => window.PosOffline.getBinding());
+  const next = randomUUID();
+  const raws = [randomUUID(), randomUUID()].map((request_id, index) => JSON.stringify({ request_id, binding_id: binding, name: `ลูกค้า ${index}` }));
+  const staged = await Promise.all([page, other].map((tab, index) => tab.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw: raws[index], binding })));
+  expect(staged[0]).toBe(staged[1]);
+  expect(raws).toContain(staged[0]);
+  const switchResult = await other.evaluate(({ next, binding }) => window.PosOffline.bindStore(next, { expectedCurrent: binding, allowSwitch: true, acceptRestore: true, ancestors: [binding] }), { next, binding });
+  expect(switchResult.bound).toBe(false);
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(binding);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(staged[0]);
+  expect(await page.evaluate(({ raw, binding }) => window.PosOffline.clearCustomer(raw, binding), { raw: raws.find((raw) => raw !== staged[0]), binding })).toBe(false);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(staged[0]);
+  expect(await page.evaluate(({ raw, binding }) => window.PosOffline.clearCustomer(raw, binding), { raw: staged[0], binding })).toBe(true);
+  const switched = await other.evaluate(({ next, binding }) => window.PosOffline.bindStore(next, { expectedCurrent: binding, allowSwitch: true, acceptRestore: true, ancestors: [binding] }), { next, binding });
+  expect(switched.bound).toBe(true);
+  await expect(page.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw: raws[0], binding })).rejects.toThrow("Store binding changed");
+});
+
+test("checkout initialization remains available without Web Locks", async ({ page, pos }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้า");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-message")).toContainText("เบราว์เซอร์ไม่รองรับ");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+});

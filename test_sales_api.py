@@ -139,6 +139,35 @@ class SalesApiTests(unittest.TestCase):
         self.assertEqual(result["code"], "store_mismatch")
         self.assertEqual(self.request("/customers")[1], [])
 
+    def test_replay_checks_binding_before_reading_existing_request(self):
+        old = store_headers(self.origin)["X-POS-Store-ID"]
+        payload = {"name": "คำขอเดิม", "request_id": str(uuid4())}
+        original = self.post_created("/customers", payload)
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE store_binding SET id = ? WHERE singleton = 1", (str(uuid4()),))
+        request = Request(self.origin + "/customers", data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json", "X-POS-Store-ID": old})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=3)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        with sqlite3.connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT id, name FROM customers").fetchall(), [(original["id"], original["name"])])
+
+    def test_customer_request_id_is_idempotent_and_name_is_not_unique(self):
+        request_id = str(uuid4())
+        payload = {"name": "ชื่อซ้ำ", "request_id": request_id}
+        first = self.post_created("/customers", payload)
+        self.assertEqual(self.post_created("/customers", payload), first)
+        status, conflict = self.request("/customers", {"name": "ชื่ออื่น", "request_id": request_id})
+        self.assertEqual(status, 409)
+        self.assertEqual(conflict["code"], "idempotency_conflict")
+        second = self.post_created("/customers", {"name": "ชื่อซ้ำ", "request_id": str(uuid4())})
+        legacy = self.post_created("/customers", {"name": "ชื่อซ้ำ"})
+        self.assertEqual(len({first["id"], second["id"], legacy["id"]}), 3)
+        self.assertEqual(len(self.request("/customers")[1]), 3)
+        self.assertEqual(self.request("/customers", {"name": "x", "request_id": "bad"})[0], 400)
+
     def test_mixed_payment_persists_receipt_and_converts_units(self):
         customer = self.post_created("/customers", {"name": "ลูกค้าทดสอบ"})
         self.assertEqual(customer["name"], "ลูกค้าทดสอบ")

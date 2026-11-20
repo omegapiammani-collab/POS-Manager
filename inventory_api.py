@@ -248,11 +248,13 @@ class InventoryHandler(BaseHTTPRequestHandler):
         if parts == ["customers"]:
             if self.command == "GET":
                 return 200, customer_list(db)
-            name = required_text(self.read_json(), "name")
+            data = self.read_json()
+            name = required_text(data, "name")
+            request_id = uuid_field(data["request_id"], "request_id") if "request_id" in data else None
             with db:
                 db.execute("BEGIN IMMEDIATE")
                 require_store(db, self.headers.get("X-POS-Store-ID", ""))
-                return 201, add_customer(db, name)
+                return 201, add_customer(db, name, request_id)
 
         if parts == ["customer-debts"] and self.command == "GET":
             return 200, customer_debt_list(db, expected_store=self.headers.get("X-POS-Store-ID"))
@@ -301,7 +303,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
             return 200, abandon_sale(db, parts[1], expected_store=self.headers.get("X-POS-Store-ID", ""))
 
         if parts == ["store-identity"] and self.command == "GET":
-            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0],
+            return 200, {"customer_request_id": True, "id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0],
                          "binding_id": db.execute("SELECT id FROM store_binding WHERE singleton = 1").fetchone()[0],
                          "restore_ancestors": [row[0] for row in db.execute("SELECT id FROM store_binding_ancestors ORDER BY id")]}
 

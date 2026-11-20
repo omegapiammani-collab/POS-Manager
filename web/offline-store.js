@@ -87,6 +87,9 @@
         const countRequest = queue.count();
         countRequest.onsuccess = () => {
           const count = countRequest.result;
+          const pendingRequest = snapshots.get("pendingCustomer");
+          pendingRequest.onsuccess = () => {
+          if (current !== id && pendingRequest.result !== undefined) { result = { bound: false, current, count }; return; }
           if (current === id) { if (ancestors !== null) snapshots.put(ancestors, "restoreAncestors"); result = { bound: true }; return; }
           if (current !== expectedCurrent) { result = { bound: false, current, count }; return; }
           if ((!current && count && !acceptLegacy) || (current && current !== id && ((count && !acceptRestore) || (!allowSwitch && !acceptRestore)))) {
@@ -110,6 +113,7 @@
               item.continue();
             };
           } else result = { bound: true };
+          };
         };
       };
     });
@@ -375,5 +379,32 @@
     });
   }
 
-  window.PosOffline = { getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
+
+  async function getPendingCustomer() {
+    return transaction(SNAPSHOTS, "readonly", (snapshots, setResult) => {
+      const request = snapshots.get("pendingCustomer");
+      request.onsuccess = () => setResult(request.result ?? null);
+    });
+  }
+  async function stageCustomer(raw, expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get("pendingCustomer");
+      request.onsuccess = () => {
+        if (request.result !== undefined) { setResult(request.result); return; }
+        snapshots.put(raw, "pendingCustomer");
+        setResult(raw);
+      };
+    });
+  }
+  async function clearCustomer(raw, expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get("pendingCustomer");
+      request.onsuccess = () => {
+        if (request.result === raw) { snapshots.delete("pendingCustomer"); setResult(true); }
+        else setResult(false);
+      };
+    });
+  }
+
+  window.PosOffline = { getPendingCustomer, stageCustomer, clearCustomer, getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
 })();

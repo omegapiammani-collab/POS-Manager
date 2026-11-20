@@ -26,6 +26,7 @@
     <section id="sale-store-blocked" class="panel sale-pending" hidden>
       <h2>ตรวจสอบฐานข้อมูลร้าน</h2>
       <p id="sale-store-message" role="alert"></p>
+      <button id="customer-pending-export" type="button" hidden>ส่งออกคำขอลูกค้าที่ยังค้าง</button>
       <button id="sale-store-bind" type="button" hidden>ตรวจสอบและยืนยันฐานข้อมูล</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
     </section>
@@ -132,6 +133,7 @@
       <h2 id="sale-customer-title">เพิ่มลูกค้า</h2>
       <label>ชื่อลูกค้า<input name="name" required maxlength="120"></label>
       <p class="error" role="alert" hidden></p>
+      <button type="button" id="customer-export" hidden>ส่งออกคำขอลูกค้าที่ยังค้าง</button>
       <div class="actions"><button class="secondary" type="button" data-customer-close>ยกเลิก</button><button>บันทึกลูกค้า</button></div>
     </form>
   </dialog>
