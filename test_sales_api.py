@@ -1,12 +1,14 @@
 """Exercise sale validation and stock changes over HTTP."""
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from contextlib import closing
 from copy import deepcopy
 from decimal import Decimal
 import json
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -92,6 +94,92 @@ class SalesApiTests(unittest.TestCase):
         self.assertIn(status, statuses, result)
         self.assertEqual(self.stock(), stock_before)
         self.assertEqual(self.request(f"/sales/{sale['id']}")[0], 404)
+
+    def test_customer_creation_requires_current_store_binding(self):
+        current = store_headers(self.origin)["X-POS-Store-ID"]
+        for binding in (None, str(uuid4())):
+            headers = {"Content-Type": "application/json"}
+            if binding is not None:
+                headers["X-POS-Store-ID"] = binding
+            request = Request(self.origin + "/customers", data=b'{"name":"Wrong store"}', headers=headers)
+            with self.assertRaises(HTTPError) as error:
+                urlopen(request, timeout=3)
+            self.assertEqual(error.exception.code, 409)
+            self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        self.assertEqual(self.request("/customers")[1], [])
+        self.assertEqual(self.post_created("/customers", {"name": "Correct store"})["name"], "Correct store")
+        self.assertTrue(current)
+
+    def test_customer_binding_checked_after_write_lock(self):
+        old = store_headers(self.origin)["X-POS-Store-ID"]
+        started = Event()
+
+        def submit():
+            started.set()
+            request = Request(self.origin + "/customers", data=b'{"name":"Stale"}',
+                              headers={"Content-Type": "application/json", "X-POS-Store-ID": old})
+            try:
+                response = urlopen(request, timeout=5)
+            except HTTPError as error:
+                response = error
+            with response:
+                return response.status, json.load(response)
+
+        with closing(sqlite3.connect(self.database, timeout=3)) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE store_binding SET id = ? WHERE singleton = 1", (str(uuid4()),))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(submit)
+                self.assertTrue(started.wait(2))
+                with self.assertRaises(TimeoutError):
+                    future.result(timeout=0.2)
+                writer.commit()
+                status, result = future.result(timeout=5)
+        self.assertEqual(status, 409)
+        self.assertEqual(result["code"], "store_mismatch")
+        self.assertEqual(self.request("/customers")[1], [])
+
+    def test_replay_checks_binding_before_reading_existing_request(self):
+        old = store_headers(self.origin)["X-POS-Store-ID"]
+        payload = {"name": "คำขอเดิม", "request_id": str(uuid4())}
+        original = self.post_created("/customers", payload)
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE store_binding SET id = ? WHERE singleton = 1", (str(uuid4()),))
+        request = Request(self.origin + "/customers", data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json", "X-POS-Store-ID": old})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=3)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        with sqlite3.connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT id, name FROM customers").fetchall(), [(original["id"], original["name"])])
+
+    def test_customer_request_lookup_requires_store_and_distinguishes_absence(self):
+        request_id = str(uuid4())
+        customer = self.post_created("/customers", {"name": "ตรวจสอบ", "request_id": request_id})
+        self.assertEqual(self.request("/customer-requests/" + request_id), (200, {"request_id": request_id, "customer": customer}))
+        missing = str(uuid4())
+        self.assertEqual(self.request("/customer-requests/" + missing), (200, {"request_id": missing, "customer": None}))
+        wrong = Request(self.origin + "/customer-requests/" + request_id, headers={"X-POS-Store-ID": str(uuid4())})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(wrong, timeout=3)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(json.load(error.exception)["code"], "store_mismatch")
+        self.assertEqual(self.request("/customer-requests/not-a-uuid")[0], 400)
+
+    def test_customer_request_id_is_idempotent_and_name_is_not_unique(self):
+        request_id = str(uuid4())
+        payload = {"name": "ชื่อซ้ำ", "request_id": request_id}
+        first = self.post_created("/customers", payload)
+        self.assertEqual(self.post_created("/customers", payload), first)
+        status, conflict = self.request("/customers", {"name": "ชื่ออื่น", "request_id": request_id})
+        self.assertEqual(status, 409)
+        self.assertEqual(conflict["code"], "idempotency_conflict")
+        second = self.post_created("/customers", {"name": "ชื่อซ้ำ", "request_id": str(uuid4())})
+        legacy = self.post_created("/customers", {"name": "ชื่อซ้ำ"})
+        self.assertEqual(len({first["id"], second["id"], legacy["id"]}), 3)
+        self.assertEqual(len(self.request("/customers")[1]), 3)
+        self.assertEqual(self.request("/customers", {"name": "x", "request_id": "bad"})[0], 400)
 
     def test_mixed_payment_persists_receipt_and_converts_units(self):
         customer = self.post_created("/customers", {"name": "ลูกค้าทดสอบ"})

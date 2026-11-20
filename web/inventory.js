@@ -4,6 +4,9 @@ const historyDateFormat = new Intl.DateTimeFormat("sv-SE", {
   year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Bangkok",
 });
 let products = [];
+let productBinding = null;
+let receiptBinding = null;
+let countBinding = null;
 let displayedProducts = [];
 let selectedId = null;
 let historyRequest = 0;
@@ -19,12 +22,13 @@ function historyDate(value) {
 }
 const productPath = (id) => "/products/" + encodeURIComponent(id);
 
-async function api(path, data) {
+async function api(path, data, binding = null) {
   const options = data ? {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   } : undefined;
+  if (options && binding) options.headers["X-POS-Store-ID"] = binding;
   if (options) options.signal = AbortSignal.timeout(15000);
   const response = await fetch(path, options);
   if (response.ok) return response.json();
@@ -173,7 +177,22 @@ function stockCountRow(row, unit) {
 }
 
 async function refresh() {
-  products = await api("/products");
+  const identity = async () => {
+    const response = await fetch("/store-identity", { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error("Store unavailable");
+    const binding = (await response.json()).binding_id;
+    if (typeof binding !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(binding)) throw new Error("Store unavailable");
+    return binding;
+  };
+  productBinding = null;
+  const before = await identity();
+  const response = await fetch("/products", { headers: { "X-POS-Store-ID": before }, signal: AbortSignal.timeout(15000), cache: "no-store" });
+  if (!response.ok) throw new Error("Store unavailable");
+  const loaded = await response.json();
+  const after = await identity();
+  if (before !== after) throw new Error("Store changed");
+  products = loaded;
+  productBinding = before;
   renderList();
   await renderDetail();
 }
@@ -223,6 +242,7 @@ byId("toggle-availability").addEventListener("click", async () => {
 document.querySelectorAll("[data-open]").forEach((button) => {
   button.addEventListener("click", () => {
     const dialog = byId(button.dataset.open);
+    if (dialog.id === "receipt" && receiptProblem) return;
     if (dialog.id === "receipt" && pendingReceipt) {
       openPendingReceipt();
       return;
@@ -233,7 +253,9 @@ document.querySelectorAll("[data-open]").forEach((button) => {
     if (dialog.id === "receipt") {
       form.querySelectorAll("input, select").forEach((field) => { field.disabled = false; });
       const product = products.find((entry) => entry.id === selectedId);
+      if (!product || !productBinding) return;
       receiptProduct = product;
+      receiptBinding = productBinding;
       byId("receipt-product").textContent = product.name + " · " + product.code;
       const options = product.units.map((unit) => {
         const option = element("option", unit.name);
@@ -335,22 +357,46 @@ document.querySelectorAll("dialog:not(#stock-count):not(#receipt)").forEach((dia
 const receiptDialog = byId("receipt");
 const receiptForm = receiptDialog.querySelector("form");
 const receiptError = receiptForm.querySelector(".error");
-let pendingReceipt = null;
+function readStoredRequest(key, valid) {
+  let raw;
+  try { raw = sessionStorage.getItem(key); } catch { return { problem: true, available: false, value: null }; }
+  if (raw === null) return { problem: false, available: false, value: null };
+  try {
+    const value = JSON.parse(raw);
+    if (valid(value)) return { problem: false, available: true, value };
+  } catch { /* Preserve raw data for export. */ }
+  return { problem: true, available: true, value: null };
+}
+function exportStoredRequest(key, filename) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { notice("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+}
+const receiptStorageKey = "pos-pending-receipt";
+const receiptRestore = readStoredRequest(receiptStorageKey, (value) =>
+  typeof value?.productId === "string" && typeof value.unitName === "string" && typeof value.binding_id === "string" && value.binding_id.length > 0
+  && ["id", "unit_id", "quantity", "unit_cost"].every((key) => typeof value.payload?.[key] === "string"));
+let pendingReceipt = receiptRestore.value;
+const receiptProblem = receiptRestore.problem;
 let receiptStored = true;
 let savingReceipt = false;
 let receiptProduct = null;
-try {
-  const saved = JSON.parse(sessionStorage.getItem("pos-pending-receipt"));
-  if (typeof saved?.productId === "string" && typeof saved.payload?.id === "string") pendingReceipt = saved;
-} catch {
-  // Retain requests in memory when session storage is unavailable.
-}
 function setPendingReceipt(value) {
+  if (receiptProblem) return;
   pendingReceipt = value;
   receiptStored = true;
   try {
-    if (value) sessionStorage.setItem("pos-pending-receipt", JSON.stringify(value));
-    else sessionStorage.removeItem("pos-pending-receipt");
+    if (value) sessionStorage.setItem(receiptStorageKey, JSON.stringify(value));
+    else sessionStorage.removeItem(receiptStorageKey);
   } catch {
     receiptStored = !value;
   }
@@ -368,7 +414,11 @@ function openPendingReceipt() {
   receiptError.hidden = false;
   receiptDialog.showModal();
 }
-setPendingReceipt(pendingReceipt);
+byId("receipt-pending").hidden = !pendingReceipt;
+byId("receipt-restore-error").hidden = !receiptProblem;
+byId("receipt-restore-export").hidden = !receiptProblem || !receiptRestore.available;
+byId("receipt-restore-export").addEventListener("click", () => exportStoredRequest(receiptStorageKey, "pos-receipt-raw.txt"));
+if (receiptProblem) document.querySelector('[data-open="receipt"]').disabled = true;
 byId("retry-receipt").addEventListener("click", () => {
   if (pendingReceipt && !receiptDialog.open) openPendingReceipt();
 });
@@ -376,33 +426,34 @@ receiptForm.querySelector("[data-close]").addEventListener("click", () => receip
 receiptDialog.addEventListener("cancel", (event) => { if (savingReceipt) event.preventDefault(); });
 receiptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (savingReceipt) return;
+  if (savingReceipt || receiptProblem) return;
   if (!pendingReceipt) {
     const product = receiptProduct;
     if (!product) return;
     const payload = Object.fromEntries(new FormData(receiptForm));
     payload.id = crypto.randomUUID();
     const unitName = receiptForm.elements.unit_id.selectedOptions[0].textContent;
-    setPendingReceipt({ productId: product.id, productName: product.name + " · " + product.code, unitName, payload });
+    if (!receiptBinding) return;
+    setPendingReceipt({ productId: product.id, productName: product.name + " · " + product.code, unitName, payload, binding_id: receiptBinding });
   }
   savingReceipt = true;
   const buttons = receiptForm.querySelectorAll("button");
   buttons.forEach((button) => { button.disabled = true; });
   receiptForm.querySelectorAll("input, select").forEach((field) => { field.disabled = true; });
   try {
-    await api(productPath(pendingReceipt.productId) + "/receipts", pendingReceipt.payload);
+    await api(productPath(pendingReceipt.productId) + "/receipts", pendingReceipt.payload, pendingReceipt.binding_id);
     setPendingReceipt(null);
     receiptDialog.close();
     notice("บันทึกรับสินค้าแล้ว");
     try { await refresh(); } catch { notice("บันทึกแล้ว แต่โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้า", true); }
   } catch (failure) {
-    if (failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429) {
+    if (failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429 && failure.code !== "store_mismatch") {
       setPendingReceipt(null);
       receiptDialog.close();
       notice("บันทึกรับสินค้าไม่สำเร็จ กรุณาเลือกสินค้าและตรวจสอบข้อมูลก่อนบันทึกอีกครั้ง", true);
       return;
     } else {
-      receiptError.textContent = "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล"
+      receiptError.textContent = (failure.code === "store_mismatch" ? "ร้านหรือฐานข้อมูลเปลี่ยนแล้ว ห้ามส่งรายการนี้จนกว่าจะตรวจสอบประวัติร้านเดิม" : "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมเพื่อตรวจสอบผล")
     + (receiptStored ? "" : " · เก็บรายการค้างไม่ได้ ห้ามรีโหลดหรือปิดแท็บก่อนส่งรายการเดิม");
     }
     receiptError.hidden = false;
@@ -419,22 +470,18 @@ const countSubmit = byId("submit-stock-count");
 const countClose = countForm.querySelector("[data-close]");
 const countFields = [...countForm.querySelectorAll("input")];
 const countStorageKey = "pos-pending-stock-count";
-let pendingCount = restorePendingCount();
+const countRestore = readStoredRequest(countStorageKey, (value) =>
+  typeof value?.binding_id === "string" && value.binding_id.length > 0
+  && ["id", "name", "quantity", "base_unit"].every((key) => typeof value?.product?.[key] === "string")
+  && ["id", "expected_quantity", "counted_quantity", "reason"].every((key) => typeof value?.payload?.[key] === "string"));
+let pendingCount = countRestore.value;
+const countProblem = countRestore.problem;
 let countStored = true;
 let countProduct = null;
 let savingCount = false;
 
-function restorePendingCount() {
-  try {
-    const pending = JSON.parse(sessionStorage.getItem(countStorageKey));
-    if (typeof pending?.product?.id === "string" && typeof pending.payload?.id === "string") return pending;
-  } catch {
-    // This session may not have storage access.
-  }
-  return null;
-}
-
 function setPendingCount(pending) {
+  if (countProblem) return;
   pendingCount = pending;
   countStored = true;
   try {
@@ -473,6 +520,7 @@ function updateCountControls() {
 
 function openCount(product, pending = null) {
   countProduct = product;
+  countBinding = pending ? pending.binding_id : productBinding;
   byId("count-pending-close-warning").hidden = !pending;
   countForm.reset();
   byId("stock-count-product").textContent = product.name;
@@ -487,6 +535,7 @@ function openCount(product, pending = null) {
 }
 
 byId("open-stock-count").addEventListener("click", () => {
+  if (countProblem) return;
   if (pendingCount) {
     openCount(pendingCount.product, pendingCount);
     return;
@@ -505,7 +554,7 @@ countDialog.addEventListener("cancel", (event) => {
 
 countForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (savingCount || !countProduct) return;
+  if (savingCount || countProblem || !countProduct) return;
   if (!pendingCount) {
     const fields = Object.fromEntries(new FormData(countForm));
     const reason = fields.reason.trim();
@@ -520,7 +569,8 @@ countForm.addEventListener("submit", async (event) => {
       reason,
     };
     if (fields.unit_cost) payload.unit_cost = fields.unit_cost;
-    setPendingCount({ product: countProduct, payload });
+    if (!countBinding) return;
+    setPendingCount({ product: countProduct, payload, binding_id: countBinding });
   }
 
   const { product, payload } = pendingCount;
@@ -528,7 +578,7 @@ countForm.addEventListener("submit", async (event) => {
   updateCountControls();
   countMessage("");
   try {
-    await api(productPath(product.id) + "/stock-counts", payload);
+    await api(productPath(product.id) + "/stock-counts", payload, pendingCount.binding_id);
     setPendingCount(null);
     selectedId = product.id;
     countDialog.close();
@@ -539,7 +589,7 @@ countForm.addEventListener("submit", async (event) => {
       notice("บันทึกยอดตรวจนับแล้ว แต่โหลดข้อมูลล่าสุดไม่สำเร็จ กรุณารีเฟรชหน้า", true);
     }
   } catch (failure) {
-    if ([400, 404, 409, 422].includes(failure.status)) {
+    if ([400, 404, 409, 422].includes(failure.status) && failure.code !== "store_mismatch") {
       setPendingCount(null);
       if (failure.code === "stock_changed" || failure.status === 404) {
         countDialog.close();
@@ -561,7 +611,7 @@ countForm.addEventListener("submit", async (event) => {
           : "ตรวจสอบจำนวนที่นับได้และต้นทุนต่อหน่วย");
       }
     } else {
-      countMessage("ยังไม่ทราบผลการบันทึก ส่งรายการเดิมอีกครั้งเพื่อดูผล");
+      countMessage(failure.code === "store_mismatch" ? "ร้านหรือฐานข้อมูลเปลี่ยนแล้ว ห้ามส่งรายการนี้จนกว่าจะตรวจสอบประวัติร้านเดิม" : "ยังไม่ทราบผลการบันทึก ส่งรายการเดิมอีกครั้งเพื่อดูผล");
     }
   } finally {
     savingCount = false;
@@ -570,12 +620,16 @@ countForm.addEventListener("submit", async (event) => {
 });
 
 byId("stock-count-pending").hidden = !pendingCount;
+byId("count-restore-error").hidden = !countProblem;
+byId("count-restore-export").hidden = !countProblem || !countRestore.available;
+byId("count-restore-export").addEventListener("click", () => exportStoredRequest(countStorageKey, "pos-stock-count-raw.txt"));
+if (countProblem) byId("open-stock-count").disabled = true;
 refresh().catch(() => {
   byId("list-state").textContent = "โหลดสินค้าไม่สำเร็จ กรุณารีเฟรชหน้า";
 });
 
 window.addEventListener("beforeunload", (event) => {
-  if (pendingReceipt || pendingCount) {
+  if (pendingReceipt || pendingCount || receiptProblem || countProblem) {
     event.preventDefault();
     event.returnValue = "";
   }

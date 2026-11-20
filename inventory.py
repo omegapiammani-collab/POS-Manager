@@ -71,10 +71,13 @@ class ReceiptConflict(Exception):
     pass
 
 
-def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None):
+def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None, *, expected_store=None):
     quantity, unit_cost = number(quantity, positive=True), number(unit_cost)
     db.execute('BEGIN IMMEDIATE')
     try:
+        if expected_store is not None:
+            from sales import require_store
+            require_store(db, expected_store)
         if receipt_id is not None:
             previous = db.execute(
                 'SELECT product_id, unit_id, quantity, unit_cost FROM receipts WHERE id = ?', (receipt_id,),

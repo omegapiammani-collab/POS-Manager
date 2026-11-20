@@ -1,7 +1,7 @@
 """Audited, absolute inventory adjustments from physical counts."""
 from decimal import Decimal, InvalidOperation, localcontext
 
-from sales import SaleConflict, checkout_number, uuid_field
+from sales import SaleConflict, checkout_number, uuid_field, require_store
 from stock_shortages import cover_shortages
 
 
@@ -56,7 +56,7 @@ def expected_quantity(value):
     return expected
 
 
-def record_count(db, product_id, data):
+def record_count(db, product_id, data, *, expected_store=None):
     count_id = uuid_field(data.get("id"), "id")
     expected = expected_quantity(data.get("expected_quantity"))
     counted = checkout_number(data.get("counted_quantity"), "counted_quantity")
@@ -71,6 +71,8 @@ def record_count(db, product_id, data):
     with db, localcontext() as context:
         context.prec = 50
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         existing = db.execute(
             f"SELECT {COUNT_FIELDS}, product_id, requested_unit_cost FROM stock_counts WHERE id = ?",
             (count_id,),
@@ -84,9 +86,12 @@ def record_count(db, product_id, data):
                 raise SaleConflict("idempotency_conflict", "This stock count ID was already used")
             return False, count_result(db, count_id)
 
-        current, previous_average = db.execute(
+        product = db.execute(
             "SELECT quantity, average_cost FROM products WHERE id = ?", (product_id,),
         ).fetchone()
+        if product is None:
+            raise ValueError("Product not found")
+        current, previous_average = product
         current = Decimal(current)
         if current != expected:
             raise SaleConflict("stock_changed", "Stock changed after the count form was opened")

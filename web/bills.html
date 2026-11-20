@@ -24,6 +24,12 @@
         <a class="pos-link" href="/backup">สำรองข้อมูล</a>
       </nav>
     </div>
+    <div id="bill-restore-error" class="panel bill-pending" role="alert" hidden>
+      <p>อ่านคำขอแก้ไขหรือยกเลิกบิลเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดแก้ไขและยกเลิกบิลในแท็บนี้ กรุณาเก็บข้อมูลเดิมและติดต่อผู้ดูแลก่อนปิดแท็บ</p>
+      <p>ไฟล์ที่ดาวน์โหลดเก็บข้อความเดิมเป็น JSON string สำหรับตรวจสอบ ไม่ใช่ไฟล์ส่งรายการอัตโนมัติ</p>
+      <button id="bill-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลแก้ไขบิลเดิม</button>
+    </div>
+    <div id="bill-mismatch" class="panel bill-pending" role="alert" hidden>ร้านเปลี่ยนหรือยืนยันร้านไม่ได้ กรุณาตรวจสอบร้านเดิมก่อนดำเนินการ <button id="bill-pending-export" type="button" hidden>ดาวน์โหลดคำขอค้าง</button></div>
     <div id="bill-pending" class="panel bill-pending" hidden>
       <p>ยังไม่ได้รับผลยืนยัน กดส่งคำขอเดิมอีกครั้งเพื่อดูผล</p>
       <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>

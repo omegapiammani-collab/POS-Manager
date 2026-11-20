@@ -71,7 +71,7 @@
     });
   }
 
-  async function bindStore(id, { acceptLegacy = false, allowSwitch = false, acceptRestore = false, ancestors = null, expectedCurrent = null } = {}) {
+  async function bindStore(id, { acceptLegacy = false, allowSwitch = false, acceptRestore = false, ancestors = null, expectedCurrent = null, customerReview = null } = {}) {
     id = saleId(id);
     if (ancestors !== null) ancestors = ancestors.map(saleId);
     const db = await openDatabase();
@@ -87,6 +87,20 @@
         const countRequest = queue.count();
         countRequest.onsuccess = () => {
           const count = countRequest.result;
+          const pendingRequest = snapshots.get("pendingCustomer");
+          pendingRequest.onsuccess = () => {
+          const historyRequest = snapshots.get("customerReviewHistory");
+          historyRequest.onsuccess = () => {
+          const history = historyRequest.result;
+          if (history !== undefined && !Array.isArray(history)) { failure = new Error("Customer review history is invalid"); tx.abort(); return; }
+          const pending = pendingRequest.result;
+          if (current !== id && pending !== undefined) {
+            if (!customerReview || customerReview.raw !== pending || !current || !acceptRestore || !ancestors?.includes(current) || current !== expectedCurrent || customerReview.from !== current || customerReview.to !== id) {
+              result = { bound: false, current, count }; return;
+            }
+            snapshots.put([...(history ?? []), customerReview], "customerReviewHistory");
+            snapshots.delete("pendingCustomer");
+          } else if (customerReview) { result = { bound: false, current, count }; return; }
           if (current === id) { if (ancestors !== null) snapshots.put(ancestors, "restoreAncestors"); result = { bound: true }; return; }
           if (current !== expectedCurrent) { result = { bound: false, current, count }; return; }
           if ((!current && count && !acceptLegacy) || (current && current !== id && ((count && !acceptRestore) || (!allowSwitch && !acceptRestore)))) {
@@ -110,6 +124,8 @@
               item.continue();
             };
           } else result = { bound: true };
+          };
+          };
         };
       };
     });
@@ -375,5 +391,39 @@
     });
   }
 
-  window.PosOffline = { getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
+
+  async function getPendingCustomer() {
+    return transaction(SNAPSHOTS, "readonly", (snapshots, setResult) => {
+      const request = snapshots.get("pendingCustomer");
+      request.onsuccess = () => setResult(request.result ?? null);
+    });
+  }
+  async function stageCustomer(raw, expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get("pendingCustomer");
+      request.onsuccess = () => {
+        if (request.result !== undefined) { setResult(request.result); return; }
+        snapshots.put(raw, "pendingCustomer");
+        setResult(raw);
+      };
+    });
+  }
+  async function clearCustomer(raw, expected) {
+    return guarded(expected, (queue, snapshots, setResult) => {
+      const request = snapshots.get("pendingCustomer");
+      request.onsuccess = () => {
+        if (request.result === raw) { snapshots.delete("pendingCustomer"); setResult(true); }
+        else setResult(false);
+      };
+    });
+  }
+
+  async function getCustomerReviewHistory() {
+    return transaction(SNAPSHOTS, "readonly", (snapshots, setResult) => {
+      const request = snapshots.get("customerReviewHistory");
+      request.onsuccess = () => setResult(request.result ?? []);
+    });
+  }
+
+  window.PosOffline = { getCustomerReviewHistory, getPendingCustomer, stageCustomer, clearCustomer, getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
 })();

@@ -98,6 +98,55 @@ class ExpensesApiTests(unittest.TestCase):
         self.assertEqual(self.list_expenses("2026-11-10", "2026-11-10"), [saved])
         self.assertEqual({row["id"] for row in self.list_expenses()}, {saved["id"], next_day["id"]})
 
+    def test_binding_is_required_for_create_and_void_and_rejected_before_lookup(self):
+        payload = self.expense()
+        binding = store_headers(self.origin)["X-POS-Store-ID"]
+
+        def post(path, data, identity):
+            headers = {"Content-Type": "application/json"}
+            if identity is not None:
+                headers["X-POS-Store-ID"] = identity
+            request = Request(self.origin + path, data=json.dumps(data).encode(), headers=headers)
+            try:
+                response = urlopen(request, timeout=3)
+            except HTTPError as error:
+                response = error
+            with response:
+                return response.status, json.load(response)
+
+        path = f"/expenses/{payload['id']}/void"
+        for identity in [None, str(uuid4())]:
+            for target, body in [("/expenses", payload), (path, {"reason": "ผิด"})]:
+                status, result = post(target, body, identity)
+                self.assertEqual((status, result["code"]), (409, "store_mismatch"))
+        self.assertEqual(self.list_expenses(), [])
+        self.assertEqual(post("/expenses", payload, binding)[0], 201)
+        self.assertEqual(post("/expenses", payload, binding)[0], 200)
+        for identity in [None, str(uuid4())]:
+            status, result = post(path, {"reason": "ผิด"}, identity)
+            self.assertEqual((status, result["code"]), (409, "store_mismatch"))
+        self.assertEqual(self.list_expenses()[0]["status"], "active")
+        self.assertEqual(post(path, {"reason": "ผิด"}, binding)[0], 200)
+        self.assertEqual(post(path, {"reason": "ผิด"}, binding)[0], 200)
+        self.assertEqual(self.list_expenses()[0]["status"], "voided")
+
+    def test_rotated_binding_rejects_prior_create_and_void(self):
+        payload = self.expense()
+        saved = self.expect(201, "/expenses", payload)
+        stale = store_headers(self.origin)
+        with closing(connect(self.database)) as db, db:
+            db.execute("UPDATE store_binding SET id = ? WHERE singleton = 1", (str(uuid4()),))
+        for path, body in [("/expenses", self.expense()),
+                           (f"/expenses/{saved['id']}/void", {"reason": "ผิด"})]:
+            request = Request(self.origin + path, data=json.dumps(body).encode(), headers=stale)
+            with self.assertRaises(HTTPError) as failed:
+                urlopen(request, timeout=3)
+            self.assertEqual(failed.exception.code, 409)
+            self.assertEqual(json.load(failed.exception)["code"], "store_mismatch")
+        rows = self.list_expenses()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "active")
+
     def test_concurrent_replay_creates_one_expense(self):
         payload = self.expense()
         with ThreadPoolExecutor(max_workers=2) as executor:

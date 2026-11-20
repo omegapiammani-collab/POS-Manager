@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS customer_requests (
+    request_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    customer_id TEXT NOT NULL REFERENCES customers(id)
+);
 CREATE TABLE IF NOT EXISTS sales (
     id TEXT PRIMARY KEY,
     request_hash TEXT NOT NULL,
@@ -69,9 +74,17 @@ def customer_list(db):
     ]
 
 
-def add_customer(db, name):
+def add_customer(db, name, request_id=None):
+    if request_id is not None:
+        row = db.execute("SELECT name, customer_id FROM customer_requests WHERE request_id = ?", (request_id,)).fetchone()
+        if row:
+            if row[0] != name:
+                raise SaleConflict("idempotency_conflict", "This customer request ID was already used")
+            return {"id": row[1], "name": row[0]}
     customer_id = str(uuid4())
     db.execute("INSERT INTO customers (id, name) VALUES (?, ?)", (customer_id, name))
+    if request_id is not None:
+        db.execute("INSERT INTO customer_requests (request_id, name, customer_id) VALUES (?, ?, ?)", (request_id, name, customer_id))
     return {"id": customer_id, "name": name}
 
 

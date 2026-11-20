@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const http = require("node:http");
+const { randomUUID, createHash } = require("node:crypto");
 const { once } = require("node:events");
 const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises");
 const { tmpdir } = require("node:os");
@@ -68,6 +69,189 @@ async function sellOne(page) {
   await page.getByRole("button", { name: "เงินสดเต็มจำนวน", exact: true }).click();
   await page.getByRole("button", { name: "ปิดบิล", exact: true }).click();
 }
+
+test("checkout snapshot handles 503 without mixing assets and leaves 404 intact", async ({ page, pos }) => {
+  let status = 200;
+  const proxy = http.createServer((request, response) => {
+    if (request.url === "/checkout" && status !== 200) {
+      response.writeHead(status, { "Content-Type": "text/plain" });
+      response.end("shell error " + status);
+      return;
+    }
+    const upstream = http.request(new URL(request.url, pos), {
+      method: request.method, headers: { ...request.headers, host: new URL(pos).host },
+    }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
+    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+    request.pipe(upstream);
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const version = new URL(await page.locator('script[src*="checkout.js"]').getAttribute("src"), origin).searchParams.get("shell");
+    expect(version).toMatch(/^[0-9a-f]{64}$/);
+    status = 503;
+    await page.reload();
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    const cachedVersion = new URL(await page.locator('script[src*="checkout.js"]').getAttribute("src"), origin).searchParams.get("shell");
+    expect(cachedVersion).toBe(version);
+    status = 404;
+    expect((await page.reload()).status()).toBe(404);
+    await expect(page.locator("body")).toContainText("shell error 404");
+  } finally {
+    await new Promise((resolve) => { proxy.close(resolve); proxy.closeAllConnections(); });
+  }
+});
+
+test("missing cached backup script warns offline and preserves the queued bill", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const queued = await page.evaluate(() => window.PosOffline.list());
+  expect(queued).toHaveLength(1);
+  const removed = await page.evaluate(async () => {
+    const names = await caches.keys();
+    const name = names.find((item) => item.startsWith("pos-checkout-snapshot-"));
+    const cache = await caches.open(name);
+    const request = (await cache.keys()).find((item) => new URL(item.url).pathname === "/backup.js");
+    return cache.delete(request);
+  });
+  expect(removed).toBe(true);
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#shell-load-error")).toContainText("อย่าลบข้อมูลเว็บไซต์");
+  await expect(page.locator("#shell-load-error")).toBeVisible();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  await context.setOffline(false);
+  await page.reload();
+  await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+  await expect(page.locator("#shell-load-error")).toBeHidden();
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+});
+
+test("backup recovery rejects wrong MIME even for identical bytes and preserves the queue", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  const backupScript = await readFile(join(__dirname, "..", "web", "backup.js"));
+  let wrongMime = false;
+  const proxy = http.createServer((incoming, response) => {
+    if (wrongMime && incoming.url.startsWith("/backup.js?")) {
+      response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end(backupScript); return;
+    }
+    const upstream = http.request(new URL(incoming.url, pos), {
+      method: incoming.method, headers: { ...incoming.headers, host: new URL(pos).host },
+    }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
+    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+    incoming.pipe(upstream);
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    await context.setOffline(true);
+    await sellOne(page);
+    await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+    const queued = await page.evaluate(() => window.PosOffline.list());
+    expect(queued).toHaveLength(1);
+    await page.evaluate(async () => {
+      const name = (await caches.keys()).find((item) => item.startsWith("pos-checkout-snapshot-"));
+      const cache = await caches.open(name);
+      const entry = (await cache.keys()).find((item) => new URL(item.url).pathname === "/backup.js");
+      await cache.delete(entry);
+    });
+    await page.goto(origin + "/checkout/backup");
+    await expect(page.locator("#shell-load-error")).toBeVisible();
+    wrongMime = true;
+    await context.setOffline(false);
+    await page.reload();
+    await expect(page.locator("#shell-load-error")).toBeVisible();
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+    wrongMime = false;
+    await page.reload();
+    await expect(page.locator("#backup-queue-count")).toContainText("1 บิล");
+    expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  } finally {
+    await new Promise((resolve) => { proxy.close(resolve); proxy.closeAllConnections(); });
+  }
+});
+
+test("a new shell waits for both old tabs and then serves its own offline snapshot", async ({ page, context }) => {
+  const worker = await readFile(join(__dirname, "..", "web", "sw.js"), "utf8");
+  let revision = "revision-a", failNavigation = false;
+  const shellPaths = ["/checkout", "/checkout/backup", "/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js"];
+  const shellBody = (path, version) => path === "/checkout" || path === "/checkout/backup"
+    ? `<body><script>navigator.serviceWorker.register('/sw.js', {scope:'/checkout'})</script><script src="/checkout.js?shell=${version}"></script></body>`
+    : path === "/checkout.js" ? `document.body.dataset.version = '${version}';` : "";
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, "http://localhost");
+    const requested = url.searchParams.get("shell");
+    if (url.pathname === "/observer") {
+      response.writeHead(200, { "Content-Type": "text/html" }); response.end("observer"); return;
+    }
+    if (requested && requested !== revision) {
+      response.writeHead(409); response.end("old revision"); return;
+    }
+    if ((url.pathname === "/checkout" || url.pathname === "/checkout/backup") && !requested && failNavigation) {
+      response.writeHead(503); response.end("unavailable"); return;
+    }
+    if (url.pathname === "/sw.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
+      const hashes = Object.fromEntries(shellPaths.map((path) => [path, createHash("sha256").update(shellBody(path, revision)).digest("hex")]));
+      response.end(worker.replaceAll("__SHELL_REVISION__", revision).replace("__SHELL_HASHES__", JSON.stringify(hashes))); return;
+    }
+    if (url.pathname === "/checkout" || url.pathname === "/checkout/backup") {
+      response.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+      response.end(shellBody(url.pathname, revision)); return;
+    }
+    response.writeHead(200, { "Content-Type": url.pathname.endsWith(".css") ? "text/css" : "text/javascript", "Cache-Control": "no-store" });
+    response.end(shellBody(url.pathname, revision));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await page.goto(origin + "/checkout");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const second = await context.newPage();
+    await second.goto(origin + "/checkout");
+    await expect.poll(() => second.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    revision = "revision-b";
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+    await expect.poll(() => page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration()).waiting))).toBe(true);
+    failNavigation = true;
+    for (const tab of [page, second]) {
+      await tab.reload();
+      await expect(tab.locator("body")).toHaveAttribute("data-version", "revision-a");
+    }
+    failNavigation = false;
+    const observer = await context.newPage();
+    await observer.goto(origin + "/observer");
+    await page.close();
+    await second.close();
+    await expect.poll(() => observer.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/checkout");
+      return Boolean(registration && !registration.waiting && registration.active);
+    })).toBe(true);
+    const upgraded = await context.newPage();
+    await upgraded.goto(origin + "/checkout");
+    await expect.poll(() => upgraded.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return Boolean(registration && !registration.waiting && registration.active);
+    })).toBe(true);
+    await expect(upgraded.locator("body")).toHaveAttribute("data-version", "revision-b");
+    failNavigation = true;
+    await upgraded.reload();
+    await expect(upgraded.locator("body")).toHaveAttribute("data-version", "revision-b");
+  } finally {
+    await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
+  }
+});
 
 async function downloadCsv(page, label, filename, { touch = false } = {}) {
   const button = page.getByRole("button", { name: label, exact: true });
@@ -723,6 +907,138 @@ test("legacy session-only sale is placed directly into review after store confir
   await expect.poll(async () => (await request.get(pos + "/sales/" + payload.id)).status()).toBe(200);
 });
 
+test("legacy session sale can be backed up offline in the same tab before binding", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  const raw = JSON.stringify(payload);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("บิลเดิมยังไม่ระบุร้าน");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await page.locator("#sale-store-blocked").getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  await expect(page.locator("#backup-queue-count")).toContainText("0 บิล");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  const file = await readFile(await download.path());
+  const backup = JSON.parse(file);
+  expect(backup.version).toBe(1);
+  expect(backup.legacy_raw).toBe(raw);
+  expect(backup.entries).toEqual([{ payload, state: "conflict", error: "บิลรุ่นเดิมไม่ระบุร้าน กรุณาตรวจสอบก่อนส่ง" }]);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  await context.setOffline(false);
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await other.goto(pos + "/checkout/backup");
+  await other.locator("#backup-queue-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: file });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้า 1 บิล");
+  const entries = await other.evaluate(() => window.PosOffline.list());
+  expect(entries).toHaveLength(1);
+  expect(entries[0].payload).toEqual(payload);
+  expect(entries[0].state).toBe("conflict");
+  expect((await request.get(pos + "/sales/" + payload.id)).status()).toBe(404);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  await other.locator("#backup-queue-file").setInputFiles({ name: "legacy.json", mimeType: "application/json", buffer: file });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("มีอยู่แล้ว 1 บิล");
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(entries);
+  const conflicting = structuredClone(backup);
+  conflicting.entries[0].payload.items[0].quantity = "2";
+  await other.locator("#backup-queue-file").setInputFiles({ name: "conflict.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(conflicting)) });
+  await other.locator("#backup-queue-confirm").check();
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้าไม่สำเร็จ");
+  expect(await other.evaluate(() => window.PosOffline.list())).toEqual(entries);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+});
+
+test("malformed legacy session data is exported unchanged and cannot be imported", async ({ page, pos }) => {
+  const raw = '{"id":"unfinished",';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  expect(download.suggestedFilename()).toMatch(/^pos-legacy-sale-raw-.*\.txt$/);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+  await expect(page.locator("#backup-queue-message")).toContainText("นำเข้าอัตโนมัติไม่ได้");
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+  await page.locator("#backup-queue-file").setInputFiles({ name: "raw.json", mimeType: "application/json", buffer: await readFile(await download.path()) });
+  await page.locator("#backup-queue-confirm").check();
+  await page.locator("#backup-queue-submit").click();
+  await expect(page.locator("#backup-queue-message")).toContainText("รูปแบบหรือรุ่นไฟล์นี้ไม่รองรับ");
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+});
+
+test("malformed session sale blocks sales and queue sync without changing data", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await sellOne(page);
+  await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+  const queued = await page.evaluate(() => window.PosOffline.list());
+  const raw = '{"id":"unfinished",';
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.reload();
+  await expect(page.locator("#sale-store-message")).toContainText("ข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่สมบูรณ์");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  await expect(page.locator("#sale-retry")).toBeDisabled();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+  await context.setOffline(false);
+  await expect(page.locator("#sale-store-message")).toContainText("สำรองบิลจากแท็บนี้");
+  expect((await request.get(pos + "/sales/" + queued[0].payload.id)).status()).toBe(404);
+  await page.locator("#sale-store-blocked").getByRole("link", { name: "สำรองบิลในเครื่อง" }).click();
+  await expect(page.locator("#backup-legacy-count")).toContainText("พบข้อมูลบิลรุ่นเดิม");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#backup-legacy-export").click()]);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual(queued);
+});
+
+test("unreadable legacy session storage blocks checkout and keeps existing bytes", async ({ page, pos }) => {
+  await page.goto(pos + "/");
+  const raw = '{"id":"unfinished",';
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-sale", value), raw);
+  await page.addInitScript(() => {
+    const original = Storage.prototype.getItem;
+    window.originalStorageGetItem = original;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-sale") throw new Error("storage unavailable");
+      return original.call(this, key);
+    };
+  });
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-message")).toContainText("อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้");
+  await expect(page.locator("#sale-submit")).toBeDisabled();
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-sale"))).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.list())).toEqual([]);
+});
+
+test("legacy session storage errors do not hide the normal queue backup", async ({ page, pos }) => {
+  await page.addInitScript(() => {
+    const original = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-sale") throw new Error("storage unavailable");
+      return original.call(this, key);
+    };
+  });
+  await page.goto(pos + "/checkout/backup");
+  await expect(page.locator("#backup-legacy-count")).toContainText("อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้");
+  await expect(page.locator("#backup-legacy-export")).toBeDisabled();
+  await expect(page.locator("#backup-queue-count")).toContainText("0 บิล");
+});
+
 test("checkout without any known store identity is blocked while offline", async ({ page, context, pos }) => {
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
@@ -964,6 +1280,89 @@ for (const mode of ["edit", "void"]) {
   });
 }
 
+for (const [label, makeRaw] of [
+  ["malformed", () => '{"saleId":"unfinished",'],
+  ["incomplete void", () => JSON.stringify({ saleId: randomUUID(), payload: { id: randomUUID() } })],
+  ["incomplete replacement", () => JSON.stringify({ saleId: randomUUID(), payload: { id: randomUUID(), reason: "แก้ไข", replacement: { id: randomUUID(), items: [] } } })],
+]) {
+  test(`correction ${label} session data is retained and new corrections are blocked`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos), saleId = randomUUID();
+    expect((await request.post(pos + "/sales", { data: {
+      id: saleId, items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false,
+    } })).status()).toBe(201);
+    const raw = makeRaw();
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
+    await page.goto(pos + "/bills");
+    await expect(page.locator("#bill-restore-error")).toBeVisible();
+    await page.locator("#bill-list").getByRole("button", { name: new RegExp(saleId) }).click();
+    await expect(page.locator("#bill-edit")).toBeDisabled();
+    await expect(page.locator("#bill-void")).toBeDisabled();
+    await page.evaluate(() => openCorrection(false));
+    await expect(page.locator("#bill-correction")).not.toHaveAttribute("open", "");
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#bill-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-correction"))).toBe(raw);
+    const history = await (await request.get(pos + "/sale-history")).json();
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe("active");
+  });
+}
+
+test("unreadable correction session storage blocks edits without deleting it", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.correctionRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-correction") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-correction") window.correctionRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/bills");
+  await expect(page.locator("#bill-restore-error")).toBeVisible();
+  await expect(page.locator("#bill-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.correctionRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-correction"))).toBe(raw);
+});
+
+for (const mode of ["void", "edit"]) {
+  test(`valid stored ${mode} correction replays without changing stock twice`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos), saleId = randomUUID();
+    const original = { id: saleId, items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+    expect((await request.post(pos + "/sales", { data: original })).status()).toBe(201);
+    const replacement = mode === "edit" ? { ...original, id: randomUUID() } : null;
+    const payload = { id: randomUUID(), reason: "ตรวจสอบรายการ", replacement, excess_action: null, expected_excess: null };
+    expect((await request.post(`${pos}/sales/${saleId}/corrections`, { data: payload })).status()).toBe(201);
+    const before = (await (await request.get(pos + "/products")).json())[0].quantity;
+    const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const raw = JSON.stringify({ binding_id, saleId, payload }, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-correction", value), raw);
+    await page.goto(pos + "/bills");
+    await expect(page.locator("#bill-pending")).toBeVisible();
+    await expect(page.locator("#bill-restore-error")).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-correction"))).toBe(raw);
+    await page.locator("#bill-retry").click();
+    await expect(page.locator("#bill-message")).toContainText(mode === "edit" ? "แก้ไขบิลแล้ว" : "ยกเลิกบิลแล้ว");
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-correction"))).toBeNull();
+    const history = await (await request.get(pos + "/sale-history")).json();
+    expect(history).toHaveLength(mode === "edit" ? 2 : 1);
+    expect(history.find((bill) => bill.id === saleId).status).toBe("voided");
+    if (replacement) expect(history.filter((bill) => bill.id === replacement.id)).toHaveLength(1);
+    expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe(before);
+  });
+}
+
 test("warns when expense request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
   await page.addInitScript(() => {
     const original = Storage.prototype.setItem;
@@ -1000,6 +1399,92 @@ test("warns when expense request cannot be stored and safely retries after a los
   expect(expenses).toHaveLength(1);
   expect(expenses[0]).toMatchObject({ id: ids[0], amount: "25.00", description: "ค่าไฟ" });
 });
+
+for (const [label, raw] of [
+  ["malformed", '{"path":"/expenses",'],
+  ["incomplete", JSON.stringify({ path: "/expenses", payload: { id: randomUUID() } })],
+  ["incomplete void", JSON.stringify({ path: `/expenses/${randomUUID()}/void`, payload: {} })],
+  ["unapproved path", JSON.stringify({ path: "https://example.invalid/expenses", payload: { id: randomUUID(), reason: "test" } })],
+]) {
+  test(`expense ${label} session data remains intact and cannot create or void`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const existing = { id: randomUUID(), date, description: "ค่าเช่า", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: existing })).status()).toBe(201);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-restore-error")).toBeVisible();
+    await expect(page.locator("#expense-create fieldset")).toHaveJSProperty("disabled", true);
+    for (const control of await page.locator("#expense-create :is(input, select, button)").all()) await expect(control).toBeDisabled();
+    await page.locator('#expense-filter [name="from"]').fill(date);
+    await page.locator('#expense-filter [name="to"]').fill(date);
+    await page.locator("#expense-filter button").click();
+    await expect(page.getByRole("button", { name: "ยกเลิกค่าใช้จ่าย ค่าเช่า" })).toBeDisabled();
+    await page.evaluate(() => {
+      document.querySelector("#expense-create fieldset").disabled = false;
+      document.querySelector('#expense-create [name="description"]').value = "ค่าใหม่";
+      document.querySelector('#expense-create [name="amount"]').value = "5";
+      document.querySelector("#expense-create").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+}
+
+test("unreadable expense session data blocks writes without deletion", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-expense", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.expenseRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-expense") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-expense") window.expenseRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/expense-entry");
+  await expect(page.locator("#expense-restore-error")).toBeVisible();
+  await expect(page.locator("#expense-restore-export")).toBeHidden();
+  await expect(page.locator("#expense-create fieldset")).toHaveJSProperty("disabled", true);
+  expect(await page.evaluate(() => window.expenseRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-expense"))).toBe(raw);
+});
+
+for (const mode of ["create", "void"]) {
+  test(`restored valid expense ${mode} retries after a lost response without duplication`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const payload = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: payload })).status()).toBe(201);
+    const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const pending = mode === "create" ? { path: "/expenses", binding_id, payload }
+      : { path: `/expenses/${payload.id}/void`, binding_id, payload: { reason: "ลงรายการผิด" } };
+    if (mode === "void") expect((await request.post(pos + pending.path, { data: pending.payload })).status()).toBe(200);
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-pending")).toBeVisible();
+    await expect(page.locator("#expense-restore-error")).toBeHidden();
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    await page.locator("#expense-retry").click();
+    await expect(page.locator("#expense-message")).toContainText(mode === "create" ? "บันทึกค่าใช้จ่ายแล้ว" : "ยกเลิกค่าใช้จ่ายแล้ว");
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBeNull();
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(payload.id);
+    expect(rows[0].status).toBe(mode === "create" ? "active" : "voided");
+  });
+}
 
 test("warns when drawer request cannot be stored and safely retries after a lost response", async ({ page, request, pos }) => {
   await page.addInitScript(() => {
@@ -1040,12 +1525,165 @@ test("warns when drawer request cannot be stored and safely retries after a lost
   expect(drawer.expected_cash).toBe("120.00");
 });
 
-test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, pos }) => {
+for (const [label, raw] of [
+  ["malformed", '{"action":"open",'],
+  ["invalid date", JSON.stringify({ action: "open", binding_id: randomUUID(), payload: { id: randomUUID(), date: "2026-02-30", opening_cash: "100" } })],
+  ["incomplete close", JSON.stringify({ action: "close", binding_id: randomUUID(), payload: { id: randomUUID(), date: "2026-11-13", actual_cash: "10" } })],
+  ["legacy unbound", JSON.stringify({ action: "open", payload: { id: randomUUID(), date: "2026-11-13", opening_cash: "100" } })],
+]) {
+  test(`drawer ${label} session data blocks all actions and preserves raw data`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    expect((await request.post(pos + "/cash-drawer/open", { data: { id: randomUUID(), date, opening_cash: "100" } })).status()).toBe(201);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+    await page.goto(pos + "/drawer");
+    await expect(page.locator("#drawer-restore-error")).toBeVisible();
+    await page.locator('#drawer-filter [name="date"]').fill(date);
+    await page.locator("#drawer-filter button").click();
+    await expect(page.locator("#drawer-content")).toBeVisible();
+    for (const fieldset of await page.locator("#drawer-actions fieldset").all()) await expect(fieldset).toHaveJSProperty("disabled", true);
+    for (const control of await page.locator("#drawer-actions :is(input, select, button)").all()) await expect(control).toBeDisabled();
+    await page.evaluate(() => {
+      const form = document.querySelector("#drawer-movement");
+      form.querySelector("fieldset").disabled = false;
+      form.querySelector('[name="amount"]').value = "10";
+      form.querySelector('[name="reason"]').value = "ทดสอบ";
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBe(raw);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#drawer-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    const drawer = await (await request.get(`${pos}/cash-drawer?date=${date}`)).json();
+    expect(drawer.movements).toHaveLength(0);
+    expect(drawer.status).toBe("open");
+  });
+}
+
+test("unreadable drawer session data blocks actions without deleting it", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.drawerRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-drawer") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-drawer") window.drawerRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/drawer");
+  await expect(page.locator("#drawer-restore-error")).toBeVisible();
+  await expect(page.locator("#drawer-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.drawerRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-drawer"))).toBe(raw);
+});
+
+for (const action of ["open", "movements", "close"]) {
+  test(`valid pending drawer ${action} replays its original id after a lost response`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const opening = { id: randomUUID(), date, opening_cash: "100" };
+    expect((await request.post(pos + "/cash-drawer/open", { data: opening })).status()).toBe(201);
+    const payload = action === "open" ? opening : action === "movements"
+      ? { id: randomUUID(), date, direction: "in", amount: "20", reason: "เงินทอน" }
+      : { id: randomUUID(), date, actual_cash: "100", expected_cash: "100.00" };
+    if (action !== "open") expect((await request.post(pos + "/cash-drawer/" + action, { data: payload })).status()).toBe(201);
+    const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const raw = JSON.stringify({ action, binding_id, payload }, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+    await page.goto(pos + "/drawer");
+    await expect(page.locator("#drawer-pending")).toBeVisible();
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBe(raw);
+    await page.locator("#drawer-retry").click();
+    const messages = { open: "เปิดลิ้นชักแล้ว", movements: "บันทึกรายการเงินสดแล้ว", close: "บันทึกยอดและปิดลิ้นชักแล้ว" };
+    await expect(page.locator("#drawer-message")).toContainText(messages[action]);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBeNull();
+    const drawer = await (await request.get(`${pos}/cash-drawer?date=${date}`)).json();
+    expect(drawer.status).toBe(action === "close" ? "closed" : "open");
+    expect(drawer.movements).toHaveLength(action === "movements" ? 1 : 0);
+    if (action === "movements") expect(drawer.movements[0].id).toBe(payload.id);
+    expect(drawer.expected_cash).toBe(action === "movements" ? "120.00" : "100.00");
+  });
+}
+
+test("restoring an older drawer database blocks pending requests in both tabs", async ({ page, context, playwright }) => {
+  const directory = await mkdtemp(join(tmpdir(), "pos-drawer-binding-"));
+  const originalFile = join(directory, "original.sqlite3"), backupFile = join(directory, "backup.sqlite3"), restoredFile = join(directory, "restored.sqlite3");
+  let active, originalAgain, client;
+  async function start(database, port, create) {
+    const args = ["inventory_api.py", "--port", String(port), "--database", database];
+    if (create) args.push("--create-database");
+    const server = spawn(process.env.POS_PYTHON || "python3", args, { cwd: join(__dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+    const closed = once(server, "close");
+    closed.catch(() => {});
+    const lines = createInterface({ input: server.stdout });
+    const [line] = await Promise.race([once(lines, "line"), closed.then(([code]) => { throw Error("server exited " + code); })]);
+    const match = /^Inventory API: (http:\/\/127\.0\.0\.1:\d+)$/.exec(line);
+    expect(match).not.toBeNull();
+    return { server, closed, origin: match[1] };
+  }
+  try {
+    active = await start(originalFile, 0, true);
+    const bootstrap = await playwright.request.newContext();
+    const oldIdentity = await (await bootstrap.get(active.origin + "/store-identity")).json();
+    await bootstrap.dispose();
+    client = await playwright.request.newContext({ extraHTTPHeaders: { "X-POS-Store-ID": oldIdentity.binding_id } });
+    const date = "2026-11-13";
+    expect((await client.post(active.origin + "/cash-drawer/open", { data: { id: randomUUID(), date, opening_cash: "100" } })).status()).toBe(201);
+    await writeFile(backupFile, await (await client.get(active.origin + "/database-backup")).body());
+    const payload = { id: randomUUID(), date, direction: "in", amount: "10", reason: "เงินทอน" };
+    expect((await client.post(active.origin + "/cash-drawer/movements", { data: payload })).status()).toBe(201);
+    const raw = JSON.stringify({ action: "movements", binding_id: oldIdentity.binding_id, payload });
+    const other = await context.newPage();
+    for (const tab of [page, other]) {
+      await tab.goto(active.origin + "/drawer");
+      await tab.evaluate((value) => sessionStorage.setItem("pos-pending-drawer", value), raw);
+      await tab.reload();
+      await expect(tab.locator("#drawer-pending")).toBeVisible();
+      await expect(tab.locator("#drawer-retry")).toBeEnabled();
+    }
+    const port = new URL(active.origin).port;
+    active.server.kill();
+    await active.closed;
+    active = null;
+    const restore = spawn(process.env.POS_PYTHON || "python3", ["database_backup.py", "restore", backupFile, restoredFile],
+      { cwd: join(__dirname, ".."), stdio: "ignore" });
+    expect((await once(restore, "close"))[0]).toBe(0);
+    active = await start(restoredFile, port, false);
+    const current = await (await client.get(active.origin + "/store-identity")).json();
+    expect(current.id).toBe(oldIdentity.id);
+    expect(current.binding_id).not.toBe(oldIdentity.binding_id);
+    for (const tab of [page, other]) {
+      await tab.reload();
+      await expect(tab.locator("#drawer-restore-error")).toBeVisible();
+      await expect(tab.locator("#drawer-retry")).toBeDisabled();
+      expect(await tab.evaluate(() => sessionStorage.getItem("pos-pending-drawer"))).toBe(raw);
+    }
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#drawer-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect((await client.post(active.origin + "/cash-drawer/movements", { data: payload })).status()).toBe(409);
+    expect((await (await client.get(active.origin + "/cash-drawer?date=" + date)).json()).movements).toHaveLength(0);
+    originalAgain = await start(originalFile, 0, false);
+    expect((await (await client.get(originalAgain.origin + "/cash-drawer?date=" + date)).json()).movements).toHaveLength(1);
+  } finally {
+    if (client) await client.dispose();
+    for (const instance of [active, originalAgain]) if (instance) { instance.server.kill(); await instance.closed; }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pending requests stored in a tab also warn before leaving and stop warning when cleared", async ({ page, request, pos }) => {
   const id = randomUUID();
+  const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
   const cases = [
     { path: "/", state: "#receipt-pending", storage: "pos-pending-receipt", setter: "setPendingReceipt", value: { productId: id, payload: { id } } },
     { path: "/", state: "#stock-count-pending", storage: "pos-pending-stock-count", setter: "setPendingCount", value: { product: { id }, payload: { id } } },
-    { path: "/debts", state: "#debt-pending", storage: "pos-pending-repayment", setter: "setPending", value: { customerId: id, payload: { id } } },
+    { path: "/debts", state: "#debt-pending", storage: "pos-pending-repayment", setter: "setPending", value: { binding_id: binding, customerId: id, payload: { id } } },
     { path: "/bills", state: "#bill-pending", storage: "pos-pending-correction", setter: "setPending", value: { saleId: id, payload: { id } } },
     { path: "/expense-entry", state: "#expense-pending", storage: "pos-pending-expense", setter: "savePending", value: { path: "/expenses", payload: { id } } },
     { path: "/drawer", state: "#drawer-pending", storage: "pos-pending-drawer", setter: "setPending", value: { action: "open", payload: { id, date: "2026-11-13" } } },
@@ -1105,6 +1743,103 @@ test("warns when a pending repayment cannot be saved and retries the same reques
   expect(debt.repayments[0].amount).toBe("10.00");
 });
 
+for (const [label, raw] of [
+  ["malformed", '{"customerId":"unfinished",'],
+  ["incomplete", JSON.stringify({ customerId: randomUUID(), payload: { id: randomUUID() } })],
+]) {
+  test(`repayment ${label} session data is preserved and new payments are blocked`, async ({ page, request, pos }) => {
+    const product = await createProduct(request, pos);
+    const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
+    expect((await request.post(pos + "/sales", { data: {
+      id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+      payments: { cash: "0", qr: "0", credit: "25" }, customer_id: customer.id, qr_confirmed: false,
+    } })).status()).toBe(201);
+    await page.goto(pos + "/");
+    await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
+    await page.goto(pos + "/debts");
+    await expect(page.locator("#debt-restore-error")).toBeVisible();
+    await page.getByRole("button", { name: /ลูกค้า ก/ }).click();
+    await expect(page.locator("#debt-repayment")).toBeVisible();
+    await expect(page.locator("#debt-repayment-fields")).toHaveJSProperty("disabled", true);
+    const controls = page.locator("#debt-repayment-fields :is(input, select, textarea, button)");
+    expect(await controls.count()).toBeGreaterThan(0);
+    for (const control of await controls.all()) await expect(control).toBeDisabled();
+    let posts = 0;
+    await page.route(`**/customers/${customer.id}/repayments`, (route) => {
+      if (route.request().method() === "POST") posts++;
+      return route.continue();
+    });
+    await page.evaluate(() => {
+      document.querySelector('#debt-repayment [name="amount"]').value = "10";
+      document.querySelector("#debt-submit").disabled = false;
+      document.querySelector("#debt-repayment").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
+    expect(posts).toBe(0);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#debt-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
+    expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+    const debt = await (await request.get(`${pos}/customers/${customer.id}/debt`)).json();
+    expect(debt.repayments).toHaveLength(0);
+  });
+}
+
+test("unreadable repayment storage blocks payments without deleting the original", async ({ page, pos }) => {
+  const raw = '{"unfinished":';
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.repaymentRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-repayment") throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && key === "pos-pending-repayment") window.repaymentRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.goto(pos + "/debts");
+  await expect(page.locator("#debt-restore-error")).toBeVisible();
+  await expect(page.locator("#debt-restore-export")).toBeHidden();
+  await expect(page.locator("#debt-repayment-fields")).toHaveJSProperty("disabled", true);
+  const controls = page.locator("#debt-repayment-fields :is(input, select, textarea, button)");
+  expect(await controls.count()).toBeGreaterThan(0);
+  for (const control of await controls.all()) await expect(control).toBeDisabled();
+  expect(await page.evaluate(() => window.repaymentRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-repayment"))).toBe(raw);
+});
+
+test("a valid repayment restored after a lost response reuses its id once", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const customer = await (await request.post(pos + "/customers", { data: { name: "ลูกค้า ก" } })).json();
+  expect((await request.post(pos + "/sales", { data: {
+    id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }],
+    payments: { cash: "0", qr: "0", credit: "25" }, customer_id: customer.id, qr_confirmed: false,
+  } })).status()).toBe(201);
+  const payload = { id: randomUUID(), amount: "10.00", method: "cash", note: "" };
+  expect((await request.post(`${pos}/customers/${customer.id}/repayments`, { data: payload })).status()).toBe(201);
+  const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  const raw = JSON.stringify({ binding_id: binding, customerId: customer.id, payload }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-repayment", value), raw);
+  await page.goto(pos + "/debts");
+  await expect(page.locator("#debt-pending")).toBeVisible();
+  await expect(page.locator("#debt-restore-error")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBe(raw);
+  await page.getByRole("button", { name: "ส่งรายการเดิมอีกครั้ง" }).click();
+  await expect(page.locator("#debt-message")).toContainText("บันทึกรับชำระ 10.00 บาท แล้ว");
+  await expect(page.locator("#debt-pending")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-repayment"))).toBeNull();
+  const debt = await (await request.get(`${pos}/customers/${customer.id}/debt`)).json();
+  expect(debt.repayments).toHaveLength(1);
+  expect(debt.repayments[0].id).toBe(payload.id);
+  expect(debt.outstanding).toBe("15.00");
+});
+
 test("warns when pending inventory actions cannot be saved in session storage", async ({ page, request, pos }) => {
   const product = await createProduct(request, pos);
   await page.addInitScript(() => {
@@ -1155,6 +1890,118 @@ test("warns when pending inventory actions cannot be saved in session storage", 
   const products = await (await request.get(pos + "/products")).json();
   expect(products.find(({ id }) => id === product.id).quantity).toBe("2");
   expect(await (await request.get(`${pos}/products/${product.id}/stock-counts`)).json()).toHaveLength(1);
+});
+
+test("invalid inventory requests remain intact and can be exported without starting new operations", async ({ page, request, pos }) => {
+  await createProduct(request, pos);
+  const receiptRaw = '{"productId":"unfinished",';
+  const countRaw = JSON.stringify({ product: { id: randomUUID() }, payload: { id: randomUUID() } });
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await expect(page.getByRole("button", { name: "รับสินค้า", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "ปรับยอดจากการตรวจนับ" })).toBeDisabled();
+  for (const [button, expected] of [["#receipt-restore-export", receiptRaw], ["#count-restore-export", countRaw]]) {
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator(button).click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(expected);
+  }
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-stock-count"))).toBe(countRaw);
+  expect(await page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true);
+});
+
+test("unreadable inventory request storage never triggers deletion", async ({ page, pos }) => {
+  const receiptRaw = '{"unexpected":true}', countRaw = 'not-json';
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, remove = Storage.prototype.removeItem;
+    window.originalStorageGetItem = get;
+    window.inventoryRemovals = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) throw Error("unavailable");
+      return get.call(this, key);
+    };
+    Storage.prototype.removeItem = function (key) {
+      if (this === sessionStorage && ["pos-pending-receipt", "pos-pending-stock-count"].includes(key)) window.inventoryRemovals++;
+      return remove.call(this, key);
+    };
+  });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await expect(page.locator("#receipt-restore-export")).toBeHidden();
+  await expect(page.locator("#count-restore-export")).toBeHidden();
+  expect(await page.evaluate(() => window.inventoryRemovals)).toBe(0);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => window.originalStorageGetItem.call(sessionStorage, "pos-pending-stock-count"))).toBe(countRaw);
+});
+
+test("legacy unbound inventory requests are preserved and cannot be retried", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const receiptRaw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", payload: {
+    id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10",
+  } }, null, 2);
+  const countRaw = JSON.stringify({ product: { id: product.id, name: "น้ำดื่ม", quantity: "1", base_unit: "ขวด" }, payload: {
+    id: randomUUID(), expected_quantity: "1", counted_quantity: "2", reason: "ตรวจนับ",
+  } }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate(({ receiptRaw, countRaw }) => {
+    sessionStorage.setItem("pos-pending-receipt", receiptRaw);
+    sessionStorage.setItem("pos-pending-stock-count", countRaw);
+  }, { receiptRaw, countRaw });
+  await page.reload();
+  await expect(page.locator("#receipt-restore-error")).toBeVisible();
+  await expect(page.locator("#count-restore-error")).toBeVisible();
+  await expect(page.locator("#receipt-pending")).toBeHidden();
+  await expect(page.locator("#stock-count-pending")).toBeHidden();
+  await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+  await expect(page.getByRole("button", { name: "รับสินค้า", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "ปรับยอดจากการตรวจนับ" })).toBeDisabled();
+  for (const [button, expected] of [["#receipt-restore-export", receiptRaw], ["#count-restore-export", countRaw]]) {
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator(button).click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(expected);
+  }
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(receiptRaw);
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-stock-count"))).toBe(countRaw);
+  expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe("1");
+  expect(await (await request.get(pos + `/products/${product.id}/receipts`)).json()).toHaveLength(1);
+  expect(await (await request.get(pos + `/products/${product.id}/stock-counts`)).json()).toHaveLength(0);
+});
+
+test("valid pending receipt is not rewritten on load and retries its original id", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const initialQuantity = Number((await (await request.get(pos + "/products")).json())[0].quantity);
+  const payload = { id: randomUUID(), unit_id: product.base_unit_id, quantity: "2", unit_cost: "10" };
+  const binding_id = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  const raw = JSON.stringify({ productId: product.id, productName: "น้ำดื่ม · W01", unitName: "ขวด", binding_id, payload }, null, 2);
+  await page.goto(pos + "/");
+  await page.evaluate((value) => sessionStorage.setItem("pos-pending-receipt", value), raw);
+  await page.reload();
+  await expect(page.locator("#receipt-pending")).toBeVisible();
+  await expect(page.locator("#receipt-restore-error")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBe(raw);
+  await page.getByRole("button", { name: "ตรวจสอบรายการรับสินค้าที่ค้าง" }).click();
+  await page.locator("#receipt").getByRole("button", { name: "บันทึกรับสินค้า" }).click();
+  await expect(page.locator("#receipt-pending")).toBeHidden();
+  expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt"))).toBeNull();
+  const beforeReplay = (await (await request.get(pos + "/products")).json())[0].quantity;
+  expect(Number(beforeReplay)).toBe(initialQuantity + 2);
+  const replay = await request.post(pos + `/products/${product.id}/receipts`, { data: payload });
+  expect(replay.status()).toBe(201);
+  expect(await replay.json()).toEqual({ id: payload.id });
+  expect((await (await request.get(pos + "/products")).json())[0].quantity).toBe(beforeReplay);
+  const receipts = await (await request.get(pos + `/products/${product.id}/receipts`)).json();
+  expect(receipts.filter((receipt) => receipt.id === payload.id)).toHaveLength(1);
 });
 
 test("retries a received stock request after its response is lost", async ({ page, request, pos }) => {
@@ -1877,4 +2724,479 @@ test("filters bill history by payment method and exports matching bills", async 
   await expect(payment).toHaveValue("");
   await expectBills(cashBill, qrBill, creditBill, splitBill, voidedBill);
   await expect(exportButton).toBeEnabled();
+});
+
+test("inventory receipt retains original binding after a store mismatch", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  const identity = await (await request.get(pos + "/store-identity")).json();
+  await page.goto(pos + "/");
+  await page.getByRole("button", { name: /น้ำดื่ม/ }).first().click();
+  await page.locator('[data-open="receipt"]').click();
+  await page.locator('#receipt [name="quantity"]').fill("2");
+  await page.locator('#receipt [name="unit_cost"]').fill("5");
+  let sentBinding;
+  await page.route("**/receipts", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    sentBinding = route.request().headers()["x-pos-store-id"];
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "store_mismatch" }) });
+  });
+  await page.locator('#receipt button:not([data-close])').click();
+  await expect(page.locator('#receipt .error')).toContainText("ฐานข้อมูลเปลี่ยน");
+  expect(sentBinding).toBe(identity.binding_id);
+  const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem("pos-pending-receipt")));
+  expect(saved.binding_id).toBe(identity.binding_id);
+  await page.locator('#receipt [data-close]').click();
+  await page.reload();
+  await page.locator('#retry-receipt').click();
+  await expect(page.locator('#receipt')).toBeVisible();
+  await page.unroute("**/receipts");
+  await page.locator('#receipt button:not([data-close])').click();
+  await expect(page.locator('#receipt')).not.toBeVisible();
+  expect((await (await request.get(pos + "/products")).json()).find(p => p.id === product.id).quantity).toBe("3");
+});
+
+for (const mode of ["create", "void"]) {
+  test(`legacy expense ${mode} request remains intact and exportable`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const payload = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: payload })).status()).toBe(201);
+    const pending = mode === "create" ? { path: "/expenses", payload }
+      : { path: `/expenses/${payload.id}/void`, payload: { reason: "ลงรายการผิด" } };
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate(value => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-restore-error")).toBeVisible();
+    await expect(page.locator("#expense-pending")).toBeHidden();
+    await expect(page.locator("#expense-create fieldset")).toHaveAttribute("disabled", "");
+    for (const control of await page.locator("#expense-create fieldset :is(input, select, button)").all()) await expect(control).toBeDisabled();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-restore-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+
+  test(`expense ${mode} store mismatch retains and exports the original request`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const expense = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: expense })).status()).toBe(201);
+    const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+    const pending = mode === "create" ? { path: "/expenses", binding_id: binding, payload: { ...expense, id: randomUUID() } }
+      : { path: `/expenses/${expense.id}/void`, binding_id: binding, payload: { reason: "ลงรายการผิด" } };
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate(value => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-retry")).toBeEnabled();
+    let sentBinding;
+    await page.route("**/expenses**", async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      sentBinding = route.request().headers()["x-pos-store-id"];
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "store_mismatch" }) });
+    });
+    await page.locator("#expense-retry").click();
+    await expect(page.locator("#expense-binding-warning")).toBeVisible();
+    await expect(page.locator("#expense-retry")).toBeDisabled();
+    expect(sentBinding).toBe(binding);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-pending-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+}
+
+test("expense list identity change during load blocks actions", async ({ page, request, pos }) => {
+  const current = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  let reads = 0;
+  await page.route("**/store-identity", async route => {
+    reads++;
+    const binding = reads === 1 ? current : randomUUID();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ binding_id: binding }) });
+  });
+  await page.goto(pos + "/expense-entry");
+  await expect(page.locator("#expense-history-status")).toContainText("โหลดค่าใช้จ่ายไม่สำเร็จ");
+  await expect(page.locator("#expense-create fieldset")).toHaveAttribute("disabled", "");
+  for (const control of await page.locator("#expense-create fieldset :is(input, select, button)").all()) await expect(control).toBeDisabled();
+  expect(reads).toBe(2);
+});
+
+test("void uses the binding of the displayed expense even after the store changes", async ({ page, request, pos }) => {
+  const date = "2026-11-13";
+  const expense = { id: randomUUID(), date, description: "ค่าเช่า", amount: "25", source: "external" };
+  expect((await request.post(pos + "/expenses", { data: expense })).status()).toBe(201);
+  const binding = (await (await request.get(pos + "/store-identity")).json()).binding_id;
+  await page.goto(pos + "/expense-entry");
+  await page.locator('#expense-filter [name="from"]').fill(date);
+  await page.locator('#expense-filter [name="to"]').fill(date);
+  await page.locator("#expense-filter button").click();
+  await page.getByRole("button", { name: "ยกเลิกค่าใช้จ่าย ค่าเช่า" }).click();
+  await page.locator('#expense-void [name="reason"]').fill("ลงรายการผิด");
+  let sentBinding;
+  await page.route(`**/expenses/${expense.id}/void`, async route => {
+    sentBinding = route.request().headers()["x-pos-store-id"];
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "store_mismatch" }) });
+  });
+  await page.locator('#expense-void button[type="submit"]').click();
+  await expect(page.locator("#expense-binding-warning")).toBeVisible();
+  expect(sentBinding).toBe(binding);
+  const pending = JSON.parse(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense")));
+  expect(pending).toMatchObject({ path: `/expenses/${expense.id}/void`, binding_id: binding, payload: { reason: "ลงรายการผิด" } });
+  const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+  expect(rows[0].status).toBe("active");
+});
+
+for (const mode of ["create", "void"]) {
+  test(`restored expense ${mode} from another binding is blocked and exportable`, async ({ page, request, pos }) => {
+    const date = "2026-11-13";
+    const expense = { id: randomUUID(), date, description: "ค่าไฟ", amount: "25", source: "external" };
+    expect((await request.post(pos + "/expenses", { data: expense })).status()).toBe(201);
+    const binding_id = randomUUID();
+    const pending = mode === "create" ? { path: "/expenses", binding_id, payload: { ...expense, id: randomUUID() } }
+      : { path: `/expenses/${expense.id}/void`, binding_id, payload: { reason: "ลงรายการผิด" } };
+    const raw = JSON.stringify(pending, null, 2);
+    await page.goto(pos + "/");
+    await page.evaluate(value => sessionStorage.setItem("pos-pending-expense", value), raw);
+    await page.goto(pos + "/expense-entry");
+    await expect(page.locator("#expense-binding-warning")).toBeVisible();
+    await expect(page.locator("#expense-retry")).toBeDisabled();
+    await expect(page.locator("#expense-create fieldset")).toHaveAttribute("disabled", "");
+    for (const control of await page.locator("#expense-create fieldset :is(input, select, button)").all()) await expect(control).toBeDisabled();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#expense-pending-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))).toBe(raw);
+    expect(await page.evaluate(() => sessionStorage.getItem("pos-pending-expense"))).toBe(raw);
+    const rows = await (await request.get(`${pos}/expenses?from=${date}&to=${date}`)).json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+  });
+}
+
+test("customer retry survives a lost response and reload", async ({ page, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  let lost = false;
+  await page.route("**/customers", async (route) => {
+    if (!lost && route.request().method() === "POST") {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+    } else await route.continue();
+  });
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบซ้ำ");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect.poll(() => page.evaluate(() => window.PosOffline.getPendingCustomer())).not.toBeNull();
+  await expect(page.locator("#sale-customer .error")).toBeVisible();
+  const original = await page.evaluate(() => window.PosOffline.getPendingCustomer());
+  await page.reload();
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await expect(page.locator('#sale-customer input[name="name"]')).toHaveValue("ลูกค้าทดสอบซ้ำ");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(original);
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer")).not.toBeVisible();
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.filter((c) => c.name === "ลูกค้าทดสอบซ้ำ")).toHaveLength(1);
+});
+
+test("two tabs retain one pending customer request", async ({ page, context, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-new-customer")).toBeEnabled();
+  for (const tab of [page, other]) {
+    await tab.locator('#sale-payment input[name="credit"]').fill("1");
+    await tab.locator("#sale-new-customer").click();
+    await tab.locator('#sale-customer input[name="name"]').fill("ลูกค้าสองแท็บ");
+    await tab.route("**/customers", async (route) => {
+      if (route.request().method() === "POST") { await route.fetch(); await route.abort(); }
+      else await route.continue();
+    });
+  }
+  await Promise.all([page, other].map((tab) => tab.locator("#sale-customer button:not([type])").click()));
+  await expect(page.locator("#sale-customer .error")).toBeVisible();
+  await expect(other.locator("#sale-customer .error")).toBeVisible();
+  const pending = JSON.parse(await page.evaluate(() => window.PosOffline.getPendingCustomer()));
+  expect(pending.name).toBe("ลูกค้าสองแท็บ");
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.filter((c) => c.name === pending.name)).toHaveLength(1);
+});
+
+test("malformed customer pending survives and is exportable", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.evaluate(() => localStorage.setItem("pos-pending-customer", "legacy {not json"));
+  await page.reload();
+  await expect(page.locator("#customer-pending-export")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator("#customer-pending-export").click();
+  const download = await downloadPromise;
+  expect((await readFile(await download.path())).toString()).toBe("legacy {not json");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe("legacy {not json");
+});
+
+test("old server capability and storage failure never send customer request", async ({ page, pos }) => {
+  let posts = 0;
+  await page.route("**/customers", async (route) => { if (route.request().method() === "POST") posts++; await route.continue(); });
+  await page.route("**/store-identity", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.customer_request_id;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบ");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer .error")).toContainText("เซิร์ฟเวอร์ไม่รองรับ");
+  expect(posts).toBe(0);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  await page.unroute("**/store-identity");
+  await page.reload();
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.evaluate(() => { window.PosOffline.stageCustomer = async () => { throw new Error("quota"); }; });
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบ");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer .error")).toBeVisible();
+  expect(posts).toBe(0);
+});
+
+test("customer staging and binding changes are atomic across tabs", async ({ page, context, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-new-customer")).toBeEnabled();
+  const binding = await page.evaluate(() => window.PosOffline.getBinding());
+  const next = randomUUID();
+  const raws = [randomUUID(), randomUUID()].map((request_id, index) => JSON.stringify({ request_id, binding_id: binding, name: `ลูกค้า ${index}` }));
+  const staged = await Promise.all([page, other].map((tab, index) => tab.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw: raws[index], binding })));
+  expect(staged[0]).toBe(staged[1]);
+  expect(raws).toContain(staged[0]);
+  const switchResult = await other.evaluate(({ next, binding }) => window.PosOffline.bindStore(next, { expectedCurrent: binding, allowSwitch: true, acceptRestore: true, ancestors: [binding] }), { next, binding });
+  expect(switchResult.bound).toBe(false);
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(binding);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(staged[0]);
+  expect(await page.evaluate(({ raw, binding }) => window.PosOffline.clearCustomer(raw, binding), { raw: raws.find((raw) => raw !== staged[0]), binding })).toBe(false);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(staged[0]);
+  expect(await page.evaluate(({ raw, binding }) => window.PosOffline.clearCustomer(raw, binding), { raw: staged[0], binding })).toBe(true);
+  const switched = await other.evaluate(({ next, binding }) => window.PosOffline.bindStore(next, { expectedCurrent: binding, allowSwitch: true, acceptRestore: true, ancestors: [binding] }), { next, binding });
+  expect(switched.bound).toBe(true);
+  await expect(page.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw: raws[0], binding })).rejects.toThrow("Store binding changed");
+});
+
+test("checkout initialization remains available without Web Locks", async ({ page, pos }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้า");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-message")).toContainText("เบราว์เซอร์ไม่รองรับ");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+});
+
+test("changed pending customer requires explicit confirmation", async ({ page, context, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ชื่อที่กำลังพิมพ์");
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  const binding = await other.evaluate(() => window.PosOffline.getBinding());
+  const raw = JSON.stringify({name: "คำขอที่ค้าง", request_id: randomUUID(), binding_id: binding});
+  await other.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw, binding });
+  let posts = 0;
+  await page.route("**/customers", async route => { if (route.request().method() === "POST") posts++; await route.continue(); });
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator('#sale-customer input[name="name"]')).toHaveValue("คำขอที่ค้าง");
+  await expect(page.locator("#sale-customer .error")).toContainText("ตรวจสอบชื่อ");
+  expect(posts).toBe(0);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer")).not.toBeVisible();
+  expect(posts).toBe(1);
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.map(customer => customer.name)).toContain("คำขอที่ค้าง");
+  expect(customers.map(customer => customer.name)).not.toContain("ชื่อที่กำลังพิมพ์");
+});
+
+test("customer creation recovers after starting checkout offline", async ({ page, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  // Chromium network emulation can reject requests while navigator.onLine stays
+  // true. Control both signals so this exercises offline startup deterministically.
+  let reachable = false;
+  let identityChecks = 0;
+  let customerPosts = 0;
+  await page.route("**/{store-identity,products,customers}", async route => {
+    if (!reachable) return route.abort("internetdisconnected");
+    if (new URL(route.request().url()).pathname === "/store-identity") identityChecks++;
+    if (new URL(route.request().url()).pathname === "/customers" && route.request().method() === "POST") customerPosts++;
+    await route.continue();
+  });
+  await page.addInitScript(() => {
+    window.__testOnline = false;
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => window.__testOnline });
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
+  await expect(page.locator("#sale-connection")).toHaveClass(/sale-offline/);
+  await expect.poll(() => page.evaluate(() => storeReady)).toBe(true);
+  await expect(page.locator("#sale-new-customer")).toBeDisabled();
+  expect(identityChecks).toBe(0);
+  expect(customerPosts).toBe(0);
+
+  reachable = true;
+  await page.evaluate(() => { window.__testOnline = true; window.dispatchEvent(new Event("online")); });
+  await expect.poll(() => identityChecks).toBeGreaterThan(0);
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("กลับมาออนไลน์");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer")).not.toBeVisible();
+  expect(customerPosts).toBe(1);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.filter(customer => customer.name === "กลับมาออนไลน์")).toHaveLength(1);
+});
+
+for (const found of [true, false]) {
+  test(`restored customer request is reviewed and archived (${found ? "found" : "absent"})`, async ({ page, pos }) => {
+    await page.goto(pos + "/checkout");
+    await expect(page.locator("#sale-new-customer")).toBeEnabled();
+    const old = await page.evaluate(() => window.PosOffline.getBinding());
+    const restored = randomUUID(), id = randomUUID(), customerId = randomUUID();
+    const raw = JSON.stringify({ name: "ลูกค้าค้าง", request_id: id, binding_id: old });
+    await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+    let postCount = 0;
+    await page.route("**/store-identity", route => route.fulfill({ json: { id: randomUUID(), binding_id: restored, restore_ancestors: [old], customer_request_id: true } }));
+    await page.route("**/customer-requests/*", route => route.fulfill({ json: { request_id: id, customer: found ? { id: customerId, name: "ลูกค้าค้าง" } : null } }));
+    await page.route("**/customers", route => {
+      if (route.request().method() === "POST") { postCount++; return route.abort(); }
+      return route.fulfill({ json: [{ id: customerId, name: "ลูกค้าค้าง" }] });
+    });
+    await page.reload();
+    await expect(page.locator("#customer-restore-review")).toBeVisible();
+    await page.locator("#customer-restore-review").click();
+    await expect(page.locator("#customer-restore-details")).toContainText(id);
+    await expect(page.locator("#customer-restore-matches")).toContainText(customerId);
+    await expect(page.locator("#customer-restore-result")).toContainText(found ? "พบรหัสคำขอนี้" : "ไม่ได้ยืนยันว่าไม่มีรายการ");
+    await expect(page.locator("#customer-restore-finish")).toBeDisabled();
+    expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+    await page.locator("#customer-restore-confirmed").check();
+    await Promise.all([page.waitForEvent("load"), page.locator("#customer-restore-finish").click()]);
+    await expect.poll(() => page.evaluate(() => window.PosOffline.getBinding())).toBe(restored);
+    await expect.poll(() => page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+    const history = await page.evaluate(() => window.PosOffline.getCustomerReviewHistory());
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ raw, from: old, to: restored, lookup: { request_id: id } });
+    expect(postCount).toBe(0);
+    await expect(page.locator("#customer-history-export")).toBeVisible();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-history-export").click()]);
+    expect(JSON.parse(await readFile(await download.path(), "utf8"))[0].raw).toBe(raw);
+  });
+}
+
+test("customer restore review rejects stale evidence without deleting pending", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const old = await page.evaluate(() => window.PosOffline.getBinding());
+  const restored = randomUUID(), id = randomUUID();
+  const raw = JSON.stringify({ name: "ลูกค้าค้าง", request_id: id, binding_id: old });
+  await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+  let list = [];
+  await page.route("**/store-identity", route => route.fulfill({ json: { id: randomUUID(), binding_id: restored, restore_ancestors: [old] } }));
+  await page.route("**/customer-requests/*", route => route.fulfill({ json: { request_id: id, customer: null } }));
+  await page.route("**/customers", route => route.fulfill({ json: list }));
+  await page.reload();
+  await page.locator("#customer-restore-review").click();
+  list = [{ id: randomUUID(), name: "ลูกค้าค้าง" }];
+  await page.locator("#customer-restore-confirmed").check();
+  await page.locator("#customer-restore-finish").click();
+  await expect(page.locator("#customer-restore-error")).toContainText("ข้อมูลลูกค้าเปลี่ยน");
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(old);
+  expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toEqual([]);
+});
+
+for (const kind of ["malformed", "unrelated", "legacy-conflict", "no-locks"]) {
+  test(`customer restore remains safe with ${kind}`, async ({ page, pos }) => {
+    if (kind === "no-locks") await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+    await page.goto(pos + "/checkout");
+    await expect(page.locator("#sale-new-customer")).toBeEnabled();
+    const old = await page.evaluate(() => window.PosOffline.getBinding());
+    const restored = randomUUID();
+    const raw = kind === "malformed" ? "{broken" : JSON.stringify({ name: "ค้าง", request_id: randomUUID(), binding_id: old });
+    await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+    if (kind === "legacy-conflict") await page.evaluate(() => localStorage.setItem("pos-pending-customer", "legacy-conflicting"));
+    await page.route("**/store-identity", route => route.fulfill({ json: { binding_id: restored, restore_ancestors: kind === "unrelated" ? [] : [old] } }));
+    await page.reload();
+    await expect(page.locator("#sale-store-blocked")).toBeVisible();
+    await expect(page.locator("#customer-pending-export")).toBeVisible();
+    if (kind === "no-locks") {
+      await expect(page.locator("#customer-restore-review")).toBeVisible();
+      await page.locator("#customer-restore-review").click();
+      await expect(page.locator("#customer-restore-dialog")).not.toBeVisible();
+    } else await expect(page.locator("#customer-restore-review")).toBeHidden();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-pending-export").click()]);
+    const exported = (await readFile(await download.path())).toString();
+    if (kind === "legacy-conflict") expect(JSON.parse(exported)).toEqual({ legacy: "legacy-conflicting", saved: raw });
+    else expect(exported).toBe(raw);
+    expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(old);
+    expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  });
+}
+
+test("concurrent customer restore reviews commit at most once", async ({ page, context, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  const old = await page.evaluate(() => window.PosOffline.getBinding());
+  const restored = randomUUID(), raw = JSON.stringify({name: "ค้าง", request_id: randomUUID(), binding_id: old});
+  await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+  const review = { raw, from: old, to: restored, reviewed_at: new Date().toISOString() };
+  const results = await Promise.all([page, other].map(tab => tab.evaluate(({ restored, old, review }) => window.PosOffline.bindStore(restored, { expectedCurrent: old, acceptRestore: true, ancestors: [old], customerReview: review }), { restored, old, review })));
+  expect(results.filter(result => result.bound)).toHaveLength(1);
+  expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toEqual([review]);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+});
+
+test("restore review aborts on unreadable history without losing pending", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const old = await page.evaluate(() => window.PosOffline.getBinding());
+  const restored = randomUUID(), raw = JSON.stringify({name: "ค้าง", request_id: randomUUID(), binding_id: old});
+  await page.evaluate(({ raw, old }) => window.PosOffline.stageCustomer(raw, old), { raw, old });
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open("pos-checkout-offline", 2);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result, tx = db.transaction("snapshots", "readwrite");
+      tx.objectStore("snapshots").put("corrupt", "customerReviewHistory");
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => reject(tx.error);
+    };
+  }));
+  const review = {raw, from: old, to: restored};
+  await expect(page.evaluate(({ restored, old, review }) => window.PosOffline.bindStore(restored, { expectedCurrent: old, acceptRestore: true, ancestors: [old], customerReview: review }), { restored, old, review })).rejects.toThrow("Customer review history is invalid");
+  expect(await page.evaluate(() => window.PosOffline.getBinding())).toBe(old);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toBe("corrupt");
 });
