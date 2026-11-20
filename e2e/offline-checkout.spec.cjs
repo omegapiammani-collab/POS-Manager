@@ -3034,21 +3034,35 @@ test("changed pending customer requires explicit confirmation", async ({ page, c
   expect(customers.map(customer => customer.name)).not.toContain("ชื่อที่กำลังพิมพ์");
 });
 
-test("customer creation recovers after starting checkout offline", async ({ page, context, pos }) => {
+test("customer creation recovers after starting checkout offline", async ({ page, pos, request }) => {
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
-  await context.setOffline(true);
+  // Chromium network emulation can reject requests while navigator.onLine stays
+  // true. Control both signals so this exercises offline startup deterministically.
+  let reachable = false;
+  let identityChecks = 0;
+  let customerPosts = 0;
+  await page.route("**/{store-identity,products,customers}", async route => {
+    if (!reachable) return route.abort("internetdisconnected");
+    if (new URL(route.request().url()).pathname === "/store-identity") identityChecks++;
+    if (new URL(route.request().url()).pathname === "/customers" && route.request().method() === "POST") customerPosts++;
+    await route.continue();
+  });
+  await page.addInitScript(() => {
+    window.__testOnline = false;
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => window.__testOnline });
+  });
   await page.reload();
-  // Wait for initialization itself, not just the word "offline": the
-  // connected status also mentions offline capability, and initialization
-  // continues asynchronously after the status text is first rendered.
   await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
   await expect(page.locator("#sale-connection")).toHaveClass(/sale-offline/);
   await expect.poll(() => page.evaluate(() => storeReady)).toBe(true);
-  let identityChecks = 0;
-  await page.route("**/store-identity", async route => { identityChecks++; await route.continue(); });
-  await context.setOffline(false);
+  await expect(page.locator("#sale-new-customer")).toBeDisabled();
+  expect(identityChecks).toBe(0);
+  expect(customerPosts).toBe(0);
+
+  reachable = true;
+  await page.evaluate(() => { window.__testOnline = true; window.dispatchEvent(new Event("online")); });
   await expect.poll(() => identityChecks).toBeGreaterThan(0);
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
   await page.locator('#sale-payment input[name="credit"]').fill("1");
@@ -3056,4 +3070,8 @@ test("customer creation recovers after starting checkout offline", async ({ page
   await page.locator('#sale-customer input[name="name"]').fill("กลับมาออนไลน์");
   await page.locator("#sale-customer button:not([type])").click();
   await expect(page.locator("#sale-customer")).not.toBeVisible();
+  expect(customerPosts).toBe(1);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.filter(customer => customer.name === "กลับมาออนไลน์")).toHaveLength(1);
 });
