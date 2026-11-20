@@ -197,6 +197,38 @@ class DatabaseBackupTests(unittest.TestCase):
         with sqlite3.connect(legacy_restored) as db:
             self.assertIsNotNone(db.execute("SELECT name FROM sqlite_schema WHERE name='abandoned_sales'").fetchone())
 
+    def test_customer_request_backup_validation_and_legacy_migration(self):
+        customer = self.request("/customers", {"name": "คำขอ", "request_id": str(uuid4())})
+        snapshot = self.download().read_bytes()
+        cases = {
+            "missing_fk": ["DROP TABLE customer_requests", "CREATE TABLE customer_requests (request_id TEXT PRIMARY KEY, name TEXT NOT NULL, customer_id TEXT NOT NULL)"],
+            "missing_name": ["ALTER TABLE customer_requests DROP COLUMN name"],
+            "missing_primary_key": ["DROP TABLE customer_requests", "CREATE TABLE customer_requests (request_id TEXT, name TEXT NOT NULL, customer_id TEXT NOT NULL REFERENCES customers(id))"],
+            "bad_request_id": ["UPDATE customer_requests SET request_id = 'bad'"],
+            "bad_name": ["UPDATE customer_requests SET name = 'อื่น'"],
+            "missing_customer": ["UPDATE customer_requests SET customer_id = 'missing'"],
+        }
+        for name, statements in cases.items():
+            with self.subTest(case=name):
+                source = self.directory / (name + ".sqlite3")
+                source.write_bytes(snapshot)
+                with sqlite3.connect(source) as db:
+                    for statement in statements: db.execute(statement)
+                before = source.read_bytes()
+                target = self.directory / (name + "-target.sqlite3")
+                self.assertNotEqual(self.restore(source, target).returncode, 0)
+                self.assertFalse(target.exists())
+                self.assertEqual(source.read_bytes(), before)
+        legacy = self.directory / "customer-legacy.sqlite3"
+        legacy.write_bytes(snapshot)
+        with sqlite3.connect(legacy) as db: db.execute("DROP TABLE customer_requests")
+        target = self.directory / "customer-legacy-restored.sqlite3"
+        self.assertEqual(self.restore(legacy, target).returncode, 0)
+        origin = self.start_server(target)
+        self.assertIn(customer, self.request("/customers", origin=origin))
+        with sqlite3.connect(target) as db:
+            self.assertIsNotNone(db.execute("SELECT name FROM sqlite_schema WHERE name='customer_requests'").fetchone())
+
     def test_restore_rejects_corrupt_and_unrelated_sqlite_without_creating_target(self):
         corrupt = self.directory / "corrupt.sqlite3"
         corrupt.write_bytes(b"this is not a database")

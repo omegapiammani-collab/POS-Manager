@@ -32,7 +32,6 @@ let storeReady = false;
 let observedStoreId = null;
 let observedAncestors = [];
 let initializingStore = false;
-let customerIdempotencySupported = false;
 let negativePayload = null;
 let abandonPayload = null;
 const store = window.PosOffline;
@@ -132,7 +131,8 @@ function blockStore(text, canBind = false, refreshQueue = true) {
 async function verifyServerStore() {
   if (!storeReady || !storeId || navigator.onLine === false) return false;
   try {
-    const observed = (await api("/store-identity")).binding_id;
+    const identity = await api("/store-identity");
+    const observed = identity.binding_id;
     if (observed !== storeId) {
       blockStore("ฐานข้อมูลร้านเปลี่ยนหรือถูกกู้คืน กรุณาโหลดหน้านี้ใหม่เพื่อตรวจสอบบิลค้าง");
       return false;
@@ -160,7 +160,6 @@ async function initializeStoreLocked() {
     if (navigator.onLine !== false) {
       try {
         const identity = await api("/store-identity");
-        customerIdempotencySupported = identity.customer_request_id === true;
         observedStoreId = identity.binding_id;
         observedAncestors = identity.restore_ancestors;
         if (!observedStoreId || !Array.isArray(observedAncestors)) {
@@ -963,6 +962,16 @@ const customerDialog = byId("sale-customer");
 const customerForm = customerDialog.querySelector("form");
 const customerError = customerForm.querySelector(".error");
 const customerSave = customerForm.querySelector("button:not([type])");
+let displayedCustomerRaw = null;
+function displayPendingCustomer(raw) {
+  const pending = raw === null ? null : pendingCustomer(raw);
+  displayedCustomerRaw = raw;
+  byId("customer-export").hidden = raw === null;
+  customerForm.elements.name.readOnly = raw !== null;
+  if (pending) customerForm.elements.name.value = pending.name;
+  customerError.textContent = pending ? "มีคำขอเดิมที่ยังไม่ยืนยัน ตรวจสอบชื่อแล้วกดบันทึกอีกครั้ง" : raw === null ? "คำขอเดิมเปลี่ยนแล้ว กรุณาตรวจสอบก่อนบันทึก" : "คำขอเดิมอ่านไม่ได้ กรุณาส่งออกและตรวจสอบ";
+  customerError.hidden = false;
+}
 byId("customer-export").addEventListener("click", exportCustomerPending);
 byId("sale-new-customer").addEventListener("click", async () => {
   if (!connected || !storeReady) return;
@@ -970,14 +979,10 @@ byId("sale-new-customer").addEventListener("click", async () => {
   customerError.hidden = true;
   try {
     const raw = await pendingCustomerRaw();
-    const pending = raw === null ? null : pendingCustomer(raw);
+    displayedCustomerRaw = raw;
     byId("customer-export").hidden = raw === null;
     customerForm.elements.name.readOnly = raw !== null;
-    if (pending) customerForm.elements.name.value = pending.name;
-    if (raw !== null) {
-      customerError.textContent = pending ? "มีคำขอเดิมที่ยังไม่ยืนยัน กดบันทึกเพื่อลองอีกครั้ง" : "คำขอเดิมอ่านไม่ได้ กรุณาส่งออกและตรวจสอบ";
-      customerError.hidden = false;
-    }
+    if (raw !== null) displayPendingCustomer(raw);
   } catch { customerError.textContent = "อ่านพื้นที่จัดเก็บไม่ได้"; customerError.hidden = false; }
   customerDialog.showModal();
 });
@@ -991,9 +996,12 @@ customerForm.addEventListener("submit", (event) => {
   customerSave.disabled = customerClose.disabled = true;
   try {
     if (!connected || !storeReady) throw new Error("เพิ่มลูกค้าได้เมื่อเชื่อมต่อกับระบบ");
-    if (!customerIdempotencySupported) throw new Error("เซิร์ฟเวอร์ไม่รองรับการป้องกันคำขอซ้ำ กรุณาอัปเดตระบบ");
+    const currentIdentity = await api("/store-identity");
+    if (currentIdentity.binding_id !== storeId) throw new Error("ฐานข้อมูลเปลี่ยน กรุณาโหลดหน้าใหม่");
+    if (currentIdentity.customer_request_id !== true) throw new Error("เซิร์ฟเวอร์ไม่รองรับการป้องกันคำขอซ้ำ กรุณาอัปเดตระบบ");
     if (await store.getBinding() !== storeId) throw new Error("ฐานข้อมูลเปลี่ยน กรุณาโหลดหน้าใหม่");
     let raw = await pendingCustomerRaw();
+    if (raw !== displayedCustomerRaw) { displayPendingCustomer(raw); return; }
     let pending = raw === null ? null : pendingCustomer(raw);
     if (raw !== null && !pending) throw new Error("คำขอเดิมอ่านไม่ได้ กรุณาส่งออกและตรวจสอบ");
     if (!pending) {
@@ -1002,7 +1010,8 @@ customerForm.addEventListener("submit", (event) => {
       pending = {name, request_id: crypto.randomUUID(), binding_id: storeId};
       raw = JSON.stringify(pending);
       const staged = await store.stageCustomer(raw, storeId);
-      if (staged !== raw) { raw = staged; pending = pendingCustomer(raw); if (!pending) throw new Error("คำขอเดิมอ่านไม่ได้ กรุณาส่งออกและตรวจสอบ"); }
+      if (staged !== raw) { displayPendingCustomer(staged); return; }
+      displayedCustomerRaw = raw;
     }
     byId("customer-export").hidden = false;
     const identity = await api("/store-identity");

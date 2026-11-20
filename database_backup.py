@@ -4,6 +4,7 @@ from contextlib import closing
 from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
 from pathlib import Path
 import sqlite3
+from uuid import UUID
 from store_binding import SCHEMA as BINDING_SCHEMA, rotate_binding
 
 
@@ -20,7 +21,7 @@ SALE_COLUMNS = {
 SALE_MARKERS = set(SALE_COLUMNS) | {
     "abandoned_sales", "offline_sale_times", "sale_corrections", "debt_repayments", "debt_allocations",
     "stock_shortages", "stock_shortage_fills", "stock_shortage_count_fills", "stock_counts",
-    "expenses", "cash_drawers", "drawer_movements",
+    "expenses", "cash_drawers", "drawer_movements", "customer_requests",
 }
 OPTIONAL_SALE_COLUMNS = {
     "abandoned_sales": {"id", "created_at"},
@@ -91,6 +92,33 @@ def read_only_database(path):
     return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
 
 
+def validate_customer_requests(db, objects):
+    if "customer_requests" not in objects:
+        return
+    if objects["customer_requests"] != "table" or objects.get("customers") != "table":
+        raise ValueError("The backup contains an incomplete customer request dependency")
+    columns = {row[1]: row for row in db.execute("PRAGMA table_info(customer_requests)")}
+    required = {"request_id", "name", "customer_id"}
+    if (not required.issubset(columns) or columns["request_id"][5] != 1
+            or any(columns[key][2].upper() != "TEXT" for key in required)
+            or not columns["name"][3] or not columns["customer_id"][3]):
+        raise ValueError("The backup contains an invalid customer request schema")
+    primary = [column for column in columns.values() if column[5]]
+    foreign_keys = list(db.execute("PRAGMA foreign_key_list(customer_requests)"))
+    if len(primary) != 1 or not any(row[2] == "customers" and row[3] == "customer_id" and row[4] == "id" for row in foreign_keys):
+        raise ValueError("The backup contains an invalid customer request dependency")
+    rows = db.execute("SELECT r.request_id, r.name, r.customer_id, c.name FROM customer_requests r LEFT JOIN customers c ON c.id = r.customer_id")
+    for request_id, name, customer_id, customer_name in rows:
+        try:
+            if not isinstance(request_id, str) or str(UUID(request_id)) != request_id:
+                raise ValueError()
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("The backup contains an invalid customer request ID") from None
+        if (not isinstance(name, str) or not name or name != name.strip() or len(name) > 120
+                or not isinstance(customer_id, str) or customer_name != name):
+            raise ValueError("The backup contains an inconsistent customer request")
+
+
 def validate_backup(db):
     objects = dict(db.execute("SELECT name, type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"))
     if any(kind not in ("table", "index") for kind in objects.values()):
@@ -115,6 +143,7 @@ def validate_backup(db):
         if "stock_shortage_count_fills" in objects and ("stock_counts" not in objects or "stock_shortages" not in objects):
             raise ValueError("The backup contains incomplete stock count dependencies")
         validate_sales(db)
+    validate_customer_requests(db, objects)
     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ValueError("SQLite reported a damaged backup")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:

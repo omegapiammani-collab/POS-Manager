@@ -2885,6 +2885,7 @@ test("customer retry survives a lost response and reload", async ({ page, pos, r
       await route.abort("failed");
     } else await route.continue();
   });
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
   await page.locator("#sale-new-customer").click();
   await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบซ้ำ");
   await page.locator("#sale-customer button:not([type])").click();
@@ -2893,6 +2894,7 @@ test("customer retry survives a lost response and reload", async ({ page, pos, r
   const original = await page.evaluate(() => window.PosOffline.getPendingCustomer());
   await page.reload();
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
   await page.locator("#sale-new-customer").click();
   await expect(page.locator('#sale-customer input[name="name"]')).toHaveValue("ลูกค้าทดสอบซ้ำ");
   expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(original);
@@ -2910,6 +2912,7 @@ test("two tabs retain one pending customer request", async ({ page, context, pos
   await other.goto(pos + "/checkout");
   await expect(other.locator("#sale-new-customer")).toBeEnabled();
   for (const tab of [page, other]) {
+    await tab.locator('#sale-payment input[name="credit"]').fill("1");
     await tab.locator("#sale-new-customer").click();
     await tab.locator('#sale-customer input[name="name"]').fill("ลูกค้าสองแท็บ");
     await tab.route("**/customers", async (route) => {
@@ -2950,6 +2953,7 @@ test("old server capability and storage failure never send customer request", as
   });
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
   await page.locator("#sale-new-customer").click();
   await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบ");
   await page.locator("#sale-customer button:not([type])").click();
@@ -2960,6 +2964,7 @@ test("old server capability and storage failure never send customer request", as
   await page.reload();
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
   await page.evaluate(() => { window.PosOffline.stageCustomer = async () => { throw new Error("quota"); }; });
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
   await page.locator("#sale-new-customer").click();
   await page.locator('#sale-customer input[name="name"]').fill("ลูกค้าทดสอบ");
   await page.locator("#sale-customer button:not([type])").click();
@@ -2995,9 +3000,52 @@ test("checkout initialization remains available without Web Locks", async ({ pag
   await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
   await page.locator("#sale-new-customer").click();
   await page.locator('#sale-customer input[name="name"]').fill("ลูกค้า");
   await page.locator("#sale-customer button:not([type])").click();
   await expect(page.locator("#sale-message")).toContainText("เบราว์เซอร์ไม่รองรับ");
   expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+});
+
+test("changed pending customer requires explicit confirmation", async ({ page, context, pos, request }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("ชื่อที่กำลังพิมพ์");
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  const binding = await other.evaluate(() => window.PosOffline.getBinding());
+  const raw = JSON.stringify({name: "คำขอที่ค้าง", request_id: randomUUID(), binding_id: binding});
+  await other.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw, binding });
+  let posts = 0;
+  await page.route("**/customers", async route => { if (route.request().method() === "POST") posts++; await route.continue(); });
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator('#sale-customer input[name="name"]')).toHaveValue("คำขอที่ค้าง");
+  await expect(page.locator("#sale-customer .error")).toContainText("ตรวจสอบชื่อ");
+  expect(posts).toBe(0);
+  expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer")).not.toBeVisible();
+  expect(posts).toBe(1);
+  const customers = await (await request.get(pos + "/customers")).json();
+  expect(customers.map(customer => customer.name)).toContain("คำขอที่ค้าง");
+  expect(customers.map(customer => customer.name)).not.toContain("ชื่อที่กำลังพิมพ์");
+});
+
+test("customer creation recovers after starting checkout offline", async ({ page, context, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.locator("#sale-connection")).toContainText("ออฟไลน์");
+  await context.setOffline(false);
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  await page.locator('#sale-payment input[name="credit"]').fill("1");
+  await page.locator("#sale-new-customer").click();
+  await page.locator('#sale-customer input[name="name"]').fill("กลับมาออนไลน์");
+  await page.locator("#sale-customer button:not([type])").click();
+  await expect(page.locator("#sale-customer")).not.toBeVisible();
 });
