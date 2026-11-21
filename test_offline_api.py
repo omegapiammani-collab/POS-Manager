@@ -1,10 +1,11 @@
 """Exercise the HTTP app shell and the server side of an offline sale retry."""
 
 from decimal import Decimal
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Barrier, Thread
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -163,6 +164,41 @@ class OfflineApiTests(unittest.TestCase):
         self.expect(201, path, correction)
         self.assertEqual(self.stock(), 3)
         self.assertAlmostEqual(Decimal(self.expect(200, "/products")[0]["average_cost"]), Decimal(25) / 3)
+
+    def test_concurrent_offline_sales_and_retries_keep_both_bills_once(self):
+        product = self.expect(201, "/products", {
+            "code": "RACE", "name": "Concurrent item", "base_unit": "piece", "price": "10",
+        })
+        self.replenish(product)
+        first, second = self.sale(product), self.sale(product)
+        first["sold_at"] = "2020-01-01T00:00:00.000Z"
+        second["sold_at"] = "2020-01-01T00:00:01.000Z"
+        barrier = Barrier(4)
+
+        def sync(sale):
+            barrier.wait(timeout=5)
+            return sale["id"], self.request("/offline-sales", sale)
+
+        # Simulate two devices reconnecting and each retrying a lost response.
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            results = list(workers.map(sync, [first, second, first, second]))
+        for sale in (first, second):
+            attempts = [result for sale_id, result in results if sale_id == sale["id"]]
+            self.assertEqual(sorted(status for status, _ in attempts), [200, 201])
+            self.assertEqual(attempts[0][1], attempts[1][1])
+            self.assertEqual(self.expect(200, f"/sales/{sale['id']}")["id"], sale["id"])
+
+        self.assertEqual(self.stock(), -1)
+        history = self.expect(200, "/sale-history")
+        self.assertEqual(len(history), 2)
+        self.assertEqual({receipt["id"] for receipt in history}, {first["id"], second["id"]})
+        shortages = self.expect(200, "/stock-shortages")
+        self.assertEqual(len(shortages), 1)
+        self.assertIn(shortages[0]["sale_id"], {first["id"], second["id"]})
+        self.assertEqual(Decimal(shortages[0]["remaining"]), 1)
+        saved_shortage = self.expect(200, f"/sales/{shortages[0]['sale_id']}")["stock_shortages"]
+        self.assertEqual(len(saved_shortage), 1)
+        self.assertEqual(Decimal(saved_shortage[0]["remaining"]), 1)
 
     def test_offline_sale_with_no_prior_cost_uses_actual_cost_when_received(self):
         product = self.expect(201, "/products", {
