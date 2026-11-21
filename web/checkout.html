@@ -27,7 +27,7 @@
       <h2>ตรวจสอบฐานข้อมูลร้าน</h2>
       <p id="sale-store-message" role="alert"></p>
       <button id="customer-pending-export" type="button" hidden>ส่งออกคำขอลูกค้าที่ยังค้าง</button>
-      <details id="customer-pending-view" hidden><summary>ดูคำขอลูกค้าที่รอตรวจสอบ</summary><p>ข้อมูลนี้อ่านอย่างเดียว ตรวจฐานเดิมและหลักฐานภายนอกก่อนดำเนินการ ฐานสำรองเก่าอาจไม่มีรายการที่เกิดหลังสำรอง</p><pre id="customer-pending-details" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
+      <details id="customer-pending-view" hidden><summary>ดูคำขอลูกค้าที่รอตรวจสอบ</summary><p>ข้อมูลนี้อ่านอย่างเดียว ตรวจฐานเดิมและหลักฐานภายนอกก่อนดำเนินการ ฐานสำรองเก่าอาจไม่มีรายการที่เกิดหลังสำรอง</p><div id="customer-pending-summary"></div><pre id="customer-pending-details" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
       <button id="customer-restore-review" type="button" hidden>ตรวจสอบคำขอลูกค้าหลังคืนฐาน</button>
       <button id="sale-store-bind" type="button" hidden>ตรวจสอบและยืนยันฐานข้อมูล</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
@@ -35,7 +35,7 @@
     <section class="panel sale-pending" aria-labelledby="sale-storage-title">
       <h2 id="sale-storage-title">พื้นที่เก็บบิลออฟไลน์</h2>
       <button id="customer-history-export" type="button" hidden>ส่งออกประวัติคำขอลูกค้าที่ตรวจแล้ว</button>
-      <details id="customer-history-view" hidden><summary>ดูประวัติการตรวจคำขอลูกค้า</summary><p>ประวัตินี้เก็บในเบราว์เซอร์เครื่องนี้ ฐานสำรองเก่าอาจไม่มีรายการที่เกิดหลังสำรอง</p><pre id="customer-history-details" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
+      <details id="customer-history-view" hidden><summary>ดูประวัติการตรวจคำขอลูกค้า</summary><p>ประวัตินี้เก็บในเบราว์เซอร์เครื่องนี้ ฐานสำรองเก่าอาจไม่มีรายการที่เกิดหลังสำรอง</p><div id="customer-history-summary"></div><pre id="customer-history-details" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
       <p id="sale-storage-status" class="muted" role="status">กำลังตรวจสอบ…</p>
       <button id="sale-storage-persist" class="secondary" type="button" hidden>ขอเก็บข้อมูลถาวร</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>

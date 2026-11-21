@@ -3209,3 +3209,32 @@ test("restore review aborts on unreadable history without losing pending", async
   expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBe(raw);
   expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toBe("corrupt");
 });
+
+
+test("customer evidence summaries preserve malformed entries and raw export", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const binding = await page.evaluate(() => window.PosOffline.getBinding());
+  const id = randomUUID();
+  const raw = JSON.stringify({name: "<img src=x onerror=alert(1)>", request_id: id, binding_id: binding});
+  const history = [{raw, from: binding, to: randomUUID(), reviewed_at: "2026-01-01T00:00:00Z", lookup: {request_id: id, customer: null}, matches: []}, null, {raw: "broken"}];
+  await page.evaluate(history => new Promise((resolve, reject) => {
+    const open = indexedDB.open("pos-checkout-offline", 2);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result, tx = db.transaction("snapshots", "readwrite");
+      tx.objectStore("snapshots").put(history, "customerReviewHistory");
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => reject(tx.error);
+    };
+  }), history);
+  await page.reload();
+  await page.locator("#customer-history-view summary").click();
+  await expect(page.locator("#customer-history-summary section")).toHaveCount(3);
+  await expect(page.locator("#customer-history-summary")).toContainText("<img src=x onerror=alert(1)>");
+  await expect(page.locator("#customer-history-summary img")).toHaveCount(0);
+  await expect(page.locator("#customer-history-summary")).toContainText("ข้อมูลนี้ไม่ยืนยันว่าไม่มีรายการในฐานเดิม");
+  await expect(page.locator("#customer-history-summary")).toContainText("ข้อมูลรายการนี้ไม่ครบหรืออ่านไม่ได้");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-history-export").click()]);
+  expect(JSON.parse(await readFile(await download.path(), "utf8"))).toEqual(history);
+});

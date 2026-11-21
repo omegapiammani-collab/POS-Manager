@@ -86,6 +86,52 @@ function element(tag, text, className) {
   return node;
 }
 
+// Summaries are informational only; original evidence remains visible and exportable.
+function renderCustomerEvidence(pendingRaw, history) {
+  const pendingNode = byId("customer-pending-summary");
+  pendingNode.replaceChildren();
+  if (pendingRaw !== null) {
+    const pending = pendingCustomer(pendingRaw);
+    pendingNode.append(element("p", pending
+      ? `ชื่อลูกค้า: ${pending.name} • รหัสคำขอ: ${pending.request_id} • รหัสร้าน: ${pending.binding_id}`
+      : "อ่านรายละเอียดคำขอไม่ได้ กรุณาตรวจข้อมูลดิบและส่งออกเพื่อตรวจสอบ"));
+  }
+  const historyNode = byId("customer-history-summary");
+  historyNode.replaceChildren();
+  if (!Array.isArray(history)) {
+    historyNode.append(element("p", "ประวัติอยู่ในรูปแบบที่อ่านไม่ได้ กรุณาตรวจข้อมูลดิบและส่งออกเพื่อตรวจสอบ"));
+    return;
+  }
+  Array.from(history).forEach((record, index) => {
+    const section = element("section");
+    section.append(element("h3", `รายการที่ ${index + 1}`));
+    const pending = record && typeof record === "object" && typeof record.raw === "string" ? pendingCustomer(record.raw) : null;
+    if (!pending || record.from !== pending.binding_id || typeof record.to !== "string" || typeof record.reviewed_at !== "string") {
+      section.append(element("p", "ข้อมูลรายการนี้ไม่ครบหรืออ่านไม่ได้ กรุณาตรวจข้อมูลดิบ"));
+    } else {
+      section.append(element("p", `ชื่อลูกค้า: ${pending.name} • รหัสคำขอ: ${pending.request_id}`));
+      section.append(element("p", `ร้านเดิม: ${record.from} • ร้านที่คืนข้อมูล: ${record.to} • เวลาตรวจ: ${record.reviewed_at}`));
+      const lookup = record.lookup;
+      if (!lookup || lookup.request_id !== pending.request_id || !(lookup.customer === null || (typeof lookup.customer?.name === "string" && typeof lookup.customer?.id === "string"))) {
+        section.append(element("p", "ผลตรวจคำขออ่านไม่ได้ กรุณาตรวจข้อมูลดิบ"));
+      } else if (lookup.customer === null) {
+        section.append(element("p", "ไม่พบรหัสคำขอในฐานที่คืน ข้อมูลนี้ไม่ยืนยันว่าไม่มีรายการในฐานเดิม"));
+      } else {
+        section.append(element("p", `พบคำขอในฐานที่คืน: ${lookup.customer.name} • รหัสลูกค้า: ${lookup.customer.id}`));
+      }
+      if (!Array.isArray(record.matches) || record.matches.some(item => !item || typeof item.name !== "string" || typeof item.id !== "string")) {
+        section.append(element("p", "รายชื่อที่ตรงกันอ่านไม่ได้ กรุณาตรวจข้อมูลดิบ"));
+      } else {
+        section.append(element("p", `รายชื่อที่ตรงกันในฐานที่คืน: ${record.matches.length} รายการ`));
+        const list = element("ul");
+        record.matches.forEach(item => list.append(element("li", `${item.name} • รหัสลูกค้า: ${item.id}`)));
+        section.append(list);
+      }
+    }
+    historyNode.append(section);
+  });
+}
+
 function status(message, error = false) {
   const node = byId("sale-message");
   node.textContent = message;
@@ -157,6 +203,7 @@ async function initializeStoreLocked() {
     await migratePendingCustomer(storeId);
     const pendingRaw = await pendingCustomerRaw();
     const reviewHistory = await store.getCustomerReviewHistory();
+    renderCustomerEvidence(pendingRaw, reviewHistory);
     byId("customer-pending-view").hidden = pendingRaw === null;
     byId("customer-pending-details").textContent = pendingRaw === null ? "" : String(pendingRaw);
     byId("customer-history-view").hidden = Array.isArray(reviewHistory) && !reviewHistory.length;
