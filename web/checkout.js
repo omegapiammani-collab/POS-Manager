@@ -853,6 +853,8 @@ async function syncSale(payload, allowNegative = false, expectedStore = storeId)
     await store.update(payload.id, "conflict", reason, expectedStore);
     return { state: "conflict", reason };
   }
+  // Keep the queued sale until the server confirms this exact identifier.
+  if (!sale || typeof sale !== "object" || sale.id !== payload.id) return { state: "pending" };
   try {
     await store.remove(payload.id, expectedStore);
   } catch {

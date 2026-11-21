@@ -3238,3 +3238,35 @@ test("customer evidence summaries preserve malformed entries and raw export", as
   const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-history-export").click()]);
   expect(JSON.parse(await readFile(await download.path(), "utf8"))).toEqual(history);
 });
+
+for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
+  test(`unconfirmed sale response preserves queue: ${JSON.stringify(invalidResponse)}`, async ({ page, context, request, pos }) => {
+    await createProduct(request, pos);
+    await page.goto(pos + "/checkout");
+    await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    await context.setOffline(true);
+    await sellOne(page);
+    const [entry] = await page.evaluate(() => window.PosOffline.list());
+    expect(entry.payload.offline).toBe(true);
+    await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
+    let attempts = 0;
+    await page.route("**/offline-sales", route => {
+      attempts++;
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(invalidResponse) });
+    });
+    await context.setOffline(false);
+    await expect.poll(() => attempts).toBeGreaterThanOrEqual(2);
+    await expect(page.locator("#sale-retry")).toBeEnabled();
+    const queued = await page.evaluate(() => window.PosOffline.list());
+    expect(queued).toHaveLength(1);
+    expect(queued[0].payload.id).toBe(entry.payload.id);
+    expect(queued[0].state).toBe("pending");
+    expect((await request.get(pos + "/sales/" + entry.payload.id)).status()).toBe(404);
+    await page.unroute("**/offline-sales");
+    await page.locator("#sale-retry").click();
+    await expect.poll(() => page.evaluate(async () => (await window.PosOffline.list()).length)).toBe(0);
+    expect((await request.get(pos + "/sales/" + entry.payload.id)).status()).toBe(200);
+    expect((await (await request.get(pos + "/sale-history")).json())).toHaveLength(1);
+  });
+}
