@@ -1,14 +1,17 @@
 """Inventory retries must remain bound to the database that created them."""
 import json
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from inventory_api import make_server
+import inventory_api
 
 
 class InventoryBindingTests(unittest.TestCase):
@@ -54,6 +57,32 @@ class InventoryBindingTests(unittest.TestCase):
         self.assertEqual(self.request(f'/products/{product_id}/stock-counts', count, self.binding)[0], 201)
         self.assertEqual(self.request(f'/products/{product_id}/stock-counts', count, self.binding)[0], 200)
         self.assertEqual(self.request('/products')[1][0]['quantity'], '3')
+
+    def test_product_list_uses_one_snapshot_during_concurrent_edit(self):
+        # WAL lets a writer commit while the request holds its read snapshot.
+        with sqlite3.connect(self.server.RequestHandlerClass.keywords['database']) as writer:
+            writer.execute('PRAGMA journal_mode=WAL')
+        original = inventory_api.list_products
+        for binding in (None, self.binding):
+            before = self.request('/products')[1][0]
+            new_name = 'changed-' + str(uuid4())
+            new_price = '2' if before['units'][0]['price'] != '2' else '3'
+
+            def read_while_editing(db, query):
+                # Establish the read snapshot before the concurrent commit.
+                db.execute('SELECT id FROM products').fetchall()
+                with sqlite3.connect(self.server.RequestHandlerClass.keywords['database']) as writer:
+                    writer.execute('UPDATE products SET name = ? WHERE id = ?', (new_name, self.product['id']))
+                    writer.execute('UPDATE units SET price = ? WHERE id = ?', (new_price, self.product['base_unit_id']))
+                return original(db, query)
+
+            with patch.object(inventory_api, 'list_products', side_effect=read_while_editing):
+                status, rows = self.request('/products', binding=binding)
+            self.assertEqual(status, 200)
+            self.assertEqual((rows[0]['name'], rows[0]['units'][0]['price']),
+                             (before['name'], before['units'][0]['price']))
+            after = self.request('/products')[1][0]
+            self.assertEqual((after['name'], after['units'][0]['price']), (new_name, new_price))
 
 
 if __name__ == '__main__':

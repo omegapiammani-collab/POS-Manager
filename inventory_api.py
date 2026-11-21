@@ -242,9 +242,11 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def dispatch(self, db, route):
         parts = route.path.strip("/").split("/")
-        if self.command == "GET" and parts in (["products"], ["customers"], ["expenses"]) and self.headers.get("X-POS-Store-ID"):
+        if self.command == "GET" and (parts == ["products"] or (parts in (["customers"], ["expenses"]) and self.headers.get("X-POS-Store-ID"))):
+            # Product rows, availability and units must share one snapshot.
             db.execute("BEGIN")
-            require_store(db, self.headers["X-POS-Store-ID"])
+            if self.headers.get("X-POS-Store-ID"):
+                require_store(db, self.headers["X-POS-Store-ID"])
         if parts == ["customers"]:
             if self.command == "GET":
                 return 200, customer_list(db)
