@@ -3108,6 +3108,9 @@ for (const found of [true, false]) {
     expect(history[0]).toMatchObject({ raw, from: old, to: restored, lookup: { request_id: id } });
     expect(postCount).toBe(0);
     await expect(page.locator("#customer-history-export")).toBeVisible();
+    await page.locator("#customer-history-view summary").click();
+    await expect(page.locator("#customer-history-details")).toContainText(id);
+    await expect(page.locator("#customer-history-details")).toContainText(raw.replaceAll('"', '\\"'));
     const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-history-export").click()]);
     expect(JSON.parse(await readFile(await download.path(), "utf8"))[0].raw).toBe(raw);
   });
@@ -3149,6 +3152,10 @@ for (const kind of ["malformed", "unrelated", "legacy-conflict", "no-locks"]) {
     await page.reload();
     await expect(page.locator("#sale-store-blocked")).toBeVisible();
     await expect(page.locator("#customer-pending-export")).toBeVisible();
+    if (kind !== "legacy-conflict") {
+      await page.locator("#customer-pending-view summary").click();
+      await expect(page.locator("#customer-pending-details")).toHaveText(raw);
+    }
     if (kind === "no-locks") {
       await expect(page.locator("#customer-restore-review")).toBeVisible();
       await page.locator("#customer-restore-review").click();

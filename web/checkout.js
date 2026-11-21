@@ -157,6 +157,10 @@ async function initializeStoreLocked() {
     await migratePendingCustomer(storeId);
     const pendingRaw = await pendingCustomerRaw();
     const reviewHistory = await store.getCustomerReviewHistory();
+    byId("customer-pending-view").hidden = pendingRaw === null;
+    byId("customer-pending-details").textContent = pendingRaw === null ? "" : String(pendingRaw);
+    byId("customer-history-view").hidden = Array.isArray(reviewHistory) && !reviewHistory.length;
+    byId("customer-history-details").textContent = JSON.stringify(reviewHistory, null, 2);
     byId("customer-history-export").hidden = Array.isArray(reviewHistory) && !reviewHistory.length;
     byId("customer-pending-export").hidden = pendingRaw === null;
     byId("customer-restore-review").hidden = true;
