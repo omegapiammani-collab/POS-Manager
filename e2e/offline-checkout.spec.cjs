@@ -3129,6 +3129,8 @@ test("customer restore review rejects stale evidence without deleting pending", 
   await page.route("**/customers", route => route.fulfill({ json: list }));
   await page.reload();
   await page.locator("#customer-restore-review").click();
+  await expect(page.locator("#customer-restore-dialog")).toBeVisible();
+  await expect(page.locator("#customer-restore-matches li")).toHaveCount(0);
   list = [{ id: randomUUID(), name: "ลูกค้าค้าง" }];
   await page.locator("#customer-restore-confirmed").check();
   await page.locator("#customer-restore-finish").click();
