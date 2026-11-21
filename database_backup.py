@@ -156,6 +156,14 @@ def copy_database(source, target):
             source_db.backup(target_db)
 
 
+def check_backup(source):
+    """Check a snapshot without creating or changing a database file."""
+    with closing(read_only_database(source)) as source_db:
+        source_db.execute("PRAGMA trusted_schema = OFF")
+        source_db.execute("BEGIN")
+        validate_backup(source_db)
+
+
 def restore_database(source, target):
     target = Path(target).absolute()
     with closing(read_only_database(source)) as source_db:
@@ -183,12 +191,20 @@ def main():
     restore = actions.add_parser("restore", help="Restore a backup into a new database")
     restore.add_argument("backup", type=Path)
     restore.add_argument("new_database", type=Path)
+    check = actions.add_parser("check", help="Check a backup without restoring it")
+    check.add_argument("backup", type=Path)
     args = parser.parse_args()
     try:
-        restore_database(args.backup, args.new_database)
+        if args.action == "check":
+            check_backup(args.backup)
+        else:
+            restore_database(args.backup, args.new_database)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        parser.exit(1, f"Restore failed: {exc}\n")
-    print(f"Restored database: {args.new_database}")
+        parser.exit(1, f"{args.action.capitalize()} failed: {exc}\n")
+    if args.action == "check":
+        print(f"Backup check passed: {args.backup}")
+    else:
+        print(f"Restored database: {args.new_database}")
 
 
 if __name__ == "__main__":
