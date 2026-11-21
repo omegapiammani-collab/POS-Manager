@@ -104,16 +104,47 @@ function renderTable(name, rows) {
   byId("report-" + name + "-wrap").hidden = rows.length === 0;
 }
 
+function compareDecimal(a, b) {
+  const parse = (value) => {
+    const [whole, fraction = ""] = value.split(".");
+    return [BigInt(whole), fraction];
+  };
+  const [aw, af] = parse(a);
+  const [bw, bf] = parse(b);
+  if (aw !== bw) return aw > bw ? 1 : -1;
+  const width = Math.max(af.length, bf.length);
+  const left = af.padEnd(width, "0");
+  const right = bf.padEnd(width, "0");
+  return left === right ? 0 : left > right ? 1 : -1;
+}
+
+function sortedProducts(report) {
+  const products = [...report.products];
+  if (byId("report-product-sort").value === "revenue") {
+    products.sort((a, b) => compareDecimal(b.revenue, a.revenue)
+      || a.name.localeCompare(b.name, "th") || a.product_id.localeCompare(b.product_id));
+  }
+  return products;
+}
+
+function renderProducts(report) {
+  renderTable("products", sortedProducts(report).map((product) => tableRow(product.name, [
+    quantities.format(product.quantity) + " " + product.base_unit, money(product.revenue),
+    [money(product.cost), costLabel(product)], money(product.gross_profit),
+  ])));
+}
+
+byId("report-product-sort").addEventListener("change", () => {
+  if (displayedReport) renderProducts(displayedReport);
+});
+
 function renderReport(report) {
   renderSummary(report.summary);
   renderTable("days", report.days.map((day) => tableRow(displayDate(day.date), [
     integers.format(day.bill_count), money(day.revenue), money(day.cash), money(day.qr), money(day.credit),
     [money(day.cost), costLabel(day)], money(day.gross_profit), money(day.expenses), money(day.profit_after_expenses),
   ])));
-  renderTable("products", report.products.map((product) => tableRow(product.name, [
-    quantities.format(product.quantity) + " " + product.base_unit, money(product.revenue),
-    [money(product.cost), costLabel(product)], money(product.gross_profit),
-  ])));
+  renderProducts(report);
 }
 
 const dailyColumns = [
@@ -133,7 +164,8 @@ function downloadReport(group, fileType, columns) {
   const { cell, download } = window.PosCsv;
   const headers = [...columns.map(([title]) => cell(title)),
     "วันเริ่มต้น", "วันสิ้นสุด", "บิลรอปรับต้นทุน", "บิลขาดข้อมูลต้นทุน", "สถานะต้นทุน"];
-  const rows = displayedReport[group].map((row) => [
+  const data = group === "products" ? sortedProducts(displayedReport) : displayedReport[group];
+  const rows = data.map((row) => [
     ...columns.map(([, field, userText]) => cell(row[field], userText)),
     from, to, row.pending_cost_bills, row.unknown_cost_bills, cell(costLabel(row)),
   ]);
