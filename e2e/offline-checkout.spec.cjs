@@ -3251,7 +3251,9 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
     expect(entry.payload.offline).toBe(true);
     await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
     let attempts = 0;
-    await page.route("**/offline-sales", route => {
+    await page.route("**/offline-sales", async route => {
+      const upstream = await route.fetch();
+      expect([200, 201]).toContain(upstream.status());
       attempts++;
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(invalidResponse) });
     });
@@ -3262,7 +3264,7 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
     expect(queued).toHaveLength(1);
     expect(queued[0].payload.id).toBe(entry.payload.id);
     expect(queued[0].state).toBe("pending");
-    expect((await request.get(pos + "/sales/" + entry.payload.id)).status()).toBe(404);
+    expect((await request.get(pos + "/sales/" + entry.payload.id)).status()).toBe(200);
     await page.unroute("**/offline-sales");
     await page.locator("#sale-retry").click();
     await expect.poll(() => page.evaluate(async () => (await window.PosOffline.list()).length)).toBe(0);
