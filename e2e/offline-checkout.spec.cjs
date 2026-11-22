@@ -2996,16 +2996,100 @@ test("customer staging and binding changes are atomic across tabs", async ({ pag
   await expect(page.evaluate(({ raw, binding }) => window.PosOffline.stageCustomer(raw, binding), { raw: raws[0], binding })).rejects.toThrow("Store binding changed");
 });
 
-test("checkout initialization remains available without Web Locks", async ({ page, pos }) => {
-  await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+test("a competing tab leaves the cart intact until a sale can acquire the lock", async ({ page, context, request, pos }) => {
+  await createProduct(request, pos);
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
-  await page.locator('#sale-payment input[name="credit"]').fill("1");
-  await page.locator("#sale-new-customer").click();
-  await page.locator('#sale-customer input[name="name"]').fill("ลูกค้า");
-  await page.locator("#sale-customer button:not([type])").click();
-  await expect(page.locator("#sale-message")).toContainText("เบราว์เซอร์ไม่รองรับ");
+  await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+  await page.locator("#sale-cash-all").click();
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout");
+  await expect(other.locator("#sale-new-customer")).toBeEnabled();
+  await other.evaluate(() => {
+    window.lockReady = false;
+    navigator.locks.request("pos-customer-and-store", async () => {
+      window.lockReady = true;
+      await new Promise(resolve => { window.releaseTestLock = resolve; });
+    });
+  });
+  await other.waitForFunction(() => window.lockReady);
+  try {
+    await page.locator("#sale-submit").click();
+    await expect(page.locator("#sale-message")).toContainText("แท็บอื่นกำลังทำรายการ");
+    await expect(page.locator("#sale-cart")).toContainText("น้ำดื่ม");
+    expect(await page.evaluate(() => PosOffline.list())).toHaveLength(0);
+  } finally {
+    await other.evaluate(() => window.releaseTestLock());
+    await other.close();
+  }
+  await page.locator("#sale-submit").click();
+  await expect(page.locator("#sale-receipt")).toBeVisible();
+});
+
+test("a stalled sale request blocks another tab from importing its backup", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const binding = await page.evaluate(() => PosOffline.getBinding());
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout/backup");
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }], payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  await other.locator("#backup-queue-file").setInputFiles({ name: "queue.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "pos-sale-queue", version: 2, store_id: binding, entries: [{ payload, state: "pending", error: null }] })) });
+  await other.locator("#backup-queue-confirm").check();
+  let release, started;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const requested = new Promise(resolve => { started = resolve; });
+  await page.route("**/sales", async route => { started(); await blocked; await route.continue(); });
+  try {
+    await page.getByRole("button", { name: "เพิ่ม น้ำดื่ม ขวด", exact: true }).click();
+    await page.locator("#sale-cash-all").click();
+    await page.locator("#sale-submit").click();
+    await requested;
+    const before = await other.evaluate(() => PosOffline.list());
+    expect(before).toHaveLength(1);
+    await other.locator("#backup-queue-submit").click();
+    await expect(other.locator("#backup-queue-message")).toContainText("แท็บอื่นกำลังทำรายการ");
+    expect(await other.evaluate(() => PosOffline.list())).toEqual(before);
+  } finally { release(); }
+  await expect(page.locator("#sale-receipt")).toBeVisible();
+});
+
+test("backup import waits for a competing tab without changing the queue", async ({ page, context, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const binding = await page.evaluate(() => PosOffline.getBinding());
+  const other = await context.newPage();
+  await other.goto(pos + "/checkout/backup");
+  const payload = { id: randomUUID(), items: [{ product_id: product.id, unit_id: product.base_unit_id, quantity: "1", expected_unit_price: "25" }], payments: { cash: "25", qr: "0", credit: "0" }, customer_id: null, qr_confirmed: false };
+  const contents = { format: "pos-sale-queue", version: 2, store_id: binding, entries: [{ payload, state: "pending", error: null }] };
+  await other.locator("#backup-queue-file").setInputFiles({ name: "queue.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(contents)) });
+  await other.locator("#backup-queue-confirm").check();
+  await page.evaluate(() => { window.lockReady = false; navigator.locks.request("pos-customer-and-store", async () => { window.lockReady = true; await new Promise(resolve => { window.releaseTestLock = resolve; }); }); });
+  await page.waitForFunction(() => window.lockReady);
+  try {
+    await other.locator("#backup-queue-submit").click();
+    await expect(other.locator("#backup-queue-message")).toContainText("แท็บอื่นกำลังทำรายการ");
+    expect(await other.evaluate(() => PosOffline.list())).toHaveLength(0);
+  } finally { await page.evaluate(() => window.releaseTestLock()); }
+  await expect.poll(() => other.evaluate(async () => (await navigator.locks.query()).held.some(lock => lock.name === "pos-customer-and-store"))).toBe(false);
+  await other.locator("#backup-queue-submit").click();
+  await expect(other.locator("#backup-queue-message")).toContainText("นำเข้า 1");
+  expect((await other.evaluate(() => PosOffline.list()))[0].state).toBe("conflict");
+});
+
+test("checkout fails closed without Web Locks", async ({ page, pos }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-store-blocked")).toBeVisible();
+  await expect(page.locator("#sale-submit")).toBeDisabled();
   expect(await page.evaluate(() => window.PosOffline.getPendingCustomer())).toBeNull();
+  await page.goto(pos + "/checkout/backup");
+  await page.locator("#backup-queue-file").setInputFiles({ name: "queue.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ format: "pos-sale-queue", version: 1, entries: [] })) });
+  await page.locator("#backup-queue-confirm").check();
+  await page.locator("#backup-queue-submit").click();
+  await expect(page.locator("#backup-queue-message")).toContainText("เบราว์เซอร์ไม่รองรับ");
+  expect(await page.evaluate(() => PosOffline.list())).toHaveLength(0);
 });
 
 test("changed pending customer requires explicit confirmation", async ({ page, context, pos, request }) => {
@@ -3140,9 +3224,8 @@ test("customer restore review rejects stale evidence without deleting pending", 
   expect(await page.evaluate(() => window.PosOffline.getCustomerReviewHistory())).toEqual([]);
 });
 
-for (const kind of ["malformed", "unrelated", "legacy-conflict", "no-locks"]) {
+for (const kind of ["malformed", "unrelated", "legacy-conflict"]) {
   test(`customer restore remains safe with ${kind}`, async ({ page, pos }) => {
-    if (kind === "no-locks") await page.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
     await page.goto(pos + "/checkout");
     await expect(page.locator("#sale-new-customer")).toBeEnabled();
     const old = await page.evaluate(() => window.PosOffline.getBinding());
@@ -3158,11 +3241,7 @@ for (const kind of ["malformed", "unrelated", "legacy-conflict", "no-locks"]) {
       await page.locator("#customer-pending-view summary").click();
       await expect(page.locator("#customer-pending-details")).toHaveText(raw);
     }
-    if (kind === "no-locks") {
-      await expect(page.locator("#customer-restore-review")).toBeVisible();
-      await page.locator("#customer-restore-review").click();
-      await expect(page.locator("#customer-restore-dialog")).not.toBeVisible();
-    } else await expect(page.locator("#customer-restore-review")).toBeHidden();
+    await expect(page.locator("#customer-restore-review")).toBeHidden();
     const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#customer-pending-export").click()]);
     const exported = (await readFile(await download.path())).toString();
     if (kind === "legacy-conflict") expect(JSON.parse(exported)).toEqual({ legacy: "legacy-conflicting", saved: raw });

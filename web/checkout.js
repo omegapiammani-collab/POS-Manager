@@ -36,9 +36,17 @@ let negativePayload = null;
 let abandonPayload = null;
 const store = window.PosOffline;
 const customerPendingKey = "pos-pending-customer";
-function customerLock(action) {
-  if (!navigator.locks) { status("เบราว์เซอร์ไม่รองรับการป้องกันคำขอซ้ำ กรุณาใช้เบราว์เซอร์รุ่นใหม่", true); return Promise.resolve(); }
-  return navigator.locks.request("pos-customer-and-store", action);
+function customerLock(action, { immediate = false } = {}) {
+  if (!navigator.locks) { status("เบราว์เซอร์ไม่รองรับการประสานงานระหว่างแท็บ กรุณาใช้เบราว์เซอร์ที่รองรับ", true); return Promise.resolve(); }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const options = immediate ? { ifAvailable: true } : { signal: controller.signal };
+  return navigator.locks.request("pos-customer-and-store", options, async (lock) => {
+    clearTimeout(timer);
+    if (!lock) { status("แท็บอื่นกำลังทำรายการ กรุณาลองอีกครั้ง ตะกร้ายังคงอยู่", true); return; }
+    return action();
+  }).catch(() => { status("ยังไม่สามารถประสานงานกับแท็บอื่น กรุณาตรวจสอบและลองอีกครั้ง", true); })
+    .finally(() => clearTimeout(timer));
 }
 async function pendingCustomerRaw() {
   const legacy = localStorage.getItem(customerPendingKey);
@@ -189,7 +197,13 @@ async function verifyServerStore() {
   }
 }
 
-function initializeStore() { return navigator.locks ? customerLock(initializeStoreLocked) : initializeStoreLocked(); }
+function initializeStore() {
+  if (!navigator.locks) {
+    blockStore("เบราว์เซอร์ไม่รองรับการประสานงานระหว่างแท็บ จึงยังขายหรือส่งคิวไม่ได้");
+    return Promise.resolve();
+  }
+  return customerLock(initializeStoreLocked);
+}
 async function initializeStoreLocked() {
   if (initializingStore) return;
   if (legacyProblem) {
@@ -819,7 +833,7 @@ const saleErrors = {
 };
 
 byId("sale-abandon-cancel")?.addEventListener("click", () => byId("sale-abandon").close());
-byId("sale-abandon-confirm")?.addEventListener("click", async () => {
+byId("sale-abandon-confirm")?.addEventListener("click", () => customerLock(async () => {
   const entry = abandonPayload;
   if (!storeReady || !entry || syncing || staging) return;
   const { payload } = entry;
@@ -844,7 +858,7 @@ byId("sale-abandon-confirm")?.addEventListener("click", async () => {
     await showQueue();
     flushRequestedSync();
   }
-});
+}));
 
 async function syncSale(entry, allowNegative = false, expectedStore = storeId) {
   const { payload } = entry;
@@ -888,7 +902,7 @@ function openNegativeConfirmation(entry) {
 }
 
 byId("sale-negative-cancel")?.addEventListener("click", () => byId("sale-negative").close());
-byId("sale-negative-confirm")?.addEventListener("click", async () => {
+byId("sale-negative-confirm")?.addEventListener("click", () => customerLock(async () => {
   const entry = negativePayload;
   if (!storeReady || !entry || syncing || staging) return;
   const expectedStore = storeId;
@@ -915,9 +929,10 @@ byId("sale-negative-confirm")?.addEventListener("click", async () => {
     await showQueue();
     flushRequestedSync();
   }
-});
+}));
 
-async function syncQueue(onlyEntry) {
+function syncQueue(onlyEntry) { return customerLock(() => syncQueueLocked(onlyEntry)); }
+async function syncQueueLocked(onlyEntry) {
   if (!storeReady || syncing || staging) return;
   const expectedStore = storeId;
   syncing = true;
@@ -975,8 +990,9 @@ function flushRequestedSync() {
   syncQueue();
 }
 
-paymentForm.addEventListener("submit", async (event) => {
+paymentForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  customerLock(async () => {
   if (!storeReady || staging || byId("sale-submit").disabled) return;
   const expectedStore = storeId;
   const paid = amounts();
@@ -1042,6 +1058,7 @@ paymentForm.addEventListener("submit", async (event) => {
     await showQueue();
     flushRequestedSync();
   }
+  }, { immediate: true });
 });
 
 paymentForm.addEventListener("input", (event) => {

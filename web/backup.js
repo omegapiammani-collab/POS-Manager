@@ -2,6 +2,13 @@ const queueFormat = "pos-sale-queue";
 const queueVersion = 2;
 const byId = (id) => document.getElementById(id);
 const queueStore = window.PosOffline;
+function queueLock(action) {
+  if (!navigator.locks) { message("เบราว์เซอร์ไม่รองรับการประสานงานระหว่างแท็บ จึงยังนำเข้าคิวไม่ได้", true); return Promise.resolve(); }
+  return navigator.locks.request("pos-customer-and-store", { ifAvailable: true }, async (lock) => {
+    if (!lock) { message("แท็บอื่นกำลังทำรายการ กรุณาลองนำเข้าอีกครั้ง", true); return; }
+    return action();
+  }).catch(() => { message("ยังไม่สามารถประสานงานกับแท็บอื่น กรุณาลองอีกครั้ง", true); });
+}
 const queueCount = byId("backup-queue-count");
 const exportButton = byId("backup-queue-export");
 const legacyExport = byId("backup-legacy-export");
@@ -131,8 +138,9 @@ function validBackup(value) {
     && (value.version === 1 || value.store_id === null || typeof value.store_id === "string");
 }
 
-form.addEventListener("submit", async (event) => {
+form.addEventListener("submit", (event) => {
   event.preventDefault();
+  queueLock(async () => {
   const file = fileInput.files[0];
   if (working || !file || !confirm.checked) return;
   working = true;
@@ -172,6 +180,7 @@ form.addEventListener("submit", async (event) => {
     working = false;
     await refreshQueue();
   }
+  });
 });
 
 updateControls();
