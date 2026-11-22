@@ -2,10 +2,12 @@
 from email.message import Message
 from io import BytesIO
 from types import SimpleNamespace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock
 
-from inventory_api import InventoryHandler, MAX_BODY, RequestError
+from inventory_api import InventoryHandler, MAX_BODY, RequestError, make_server
 
 
 class MemorySocket:
@@ -83,6 +85,30 @@ class LocalSecurityTests(TestCase):
     def test_forwarded_headers_do_not_override_real_loopback_peer(self):
         handler = self.handler("localhost:8765", extra_headers=(("X-Forwarded-For", "203.0.113.8"),))
         self.assertEqual(InventoryHandler.handle_request(handler), "backup")
+
+    def test_optional_access_policy_fails_closed_before_backup(self):
+        for decision in (False, None, "truthy", RuntimeError("verifier unavailable")):
+            with self.subTest(decision=decision):
+                handler = self.handler("localhost:8765")
+                handler.owner_access = SimpleNamespace(authorize=Mock())
+                if isinstance(decision, Exception):
+                    handler.owner_access.authorize.side_effect = decision
+                else:
+                    handler.owner_access.authorize.return_value = decision
+                InventoryHandler.handle_request(handler)
+                handler.send_database_backup.assert_not_called()
+                self.assertEqual(handler.send_json.call_args[0][0], 403)
+        handler = self.handler("localhost:8765")
+        handler.owner_access = SimpleNamespace(authorize=Mock(return_value=True))
+        self.assertEqual(InventoryHandler.handle_request(handler), "backup")
+        handler.owner_access.authorize.assert_called_once_with("GET", "/database-backup", handler.headers)
+
+    def test_invalid_opt_in_policy_cannot_create_a_database(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "not-created.sqlite3"
+            with self.assertRaises(ValueError):
+                make_server(path, 0, owner_access=object())
+            self.assertFalse(path.exists())
 
     def test_raw_http_parsing_keeps_local_page_and_rejects_ambiguous_host(self):
         for headers, peer, expected in (

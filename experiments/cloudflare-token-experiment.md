@@ -1,6 +1,6 @@
 # การทดลองตรวจลายเซ็น Cloudflare Access แบบออฟไลน์
 
-การทดลองนี้ใช้ PyJWT และ cryptography ตรวจ JWT ที่เซ็นด้วยกุญแจ RSA **จำลอง** และเชื่อมผลเข้ากับ backend **จำลอง** ไม่ import จาก POS server และไม่มีบัญชี การล็อกอิน การรับ header จาก Cloudflare การดึง JWKS จากเครือข่าย หรือการ deploy จึงยังไม่ใช่ remote access ที่ใช้งานจริง
+การทดลองตัวตรวจลายเซ็นส่วนแรกใช้ PyJWT และ cryptography ตรวจ JWT ที่เซ็นด้วยกุญแจ RSA **จำลอง** และทดสอบกับ backend จำลอง ส่วน pipeline ทดสอบด้านล่างเชื่อม adapter กับ POS handler จริงและฐานชั่วคราว โหมดปกติไม่ import adapter และไม่มีบัญชี การล็อกอิน การรับ header จาก Cloudflare จริง หรือการ deploy จึงยังไม่ใช่ remote access ที่ใช้งานจริง
 
 สร้าง `AccessTokenVerifier` ด้วย issuer, audience, subject เจ้าของ และ JWKS snapshot ที่จัดเตรียมภายในเทสต์เท่านั้น verifier จำกัด issuer ให้อยู่ในรูป HTTPS ของ `cloudflareaccess.com`, จำกัด algorithm เป็น RS256, เลือกกุญแจตาม kid, ตรวจลายเซ็น issuer audience subject expiry และ not-before และปฏิเสธกุญแจซ้ำ กุญแจที่ไม่รู้จัก หรือข้อมูลกำหนดค่าที่ไม่ถูกต้อง หากเปลี่ยนกุญแจต้องสร้าง verifier ใหม่จาก snapshot ใหม่ การทดลองไม่ทำ HTTP request และไม่มี URL สำหรับดึงกุญแจ จึงไม่ได้ทดลองการดึง JWKS หรือการป้องกัน SSRF ของตัวดึงข้อมูลจริง
 
@@ -45,3 +45,9 @@ python -m unittest experiments.test_cloudflare_token_experiment -v
 `access-browser.spec.cjs` เริ่ม `access_browser_fixture.py` ด้วยฐานข้อมูลชั่วคราวและกุญแจ RSA สังเคราะห์ แล้วใช้ proxy เฉพาะเทสต์ที่ฟัง `127.0.0.1` เพื่อจำลอง Access แทรก assertion ที่เซ็นจริงไปยัง POS ทดลอง เทสต์เปิด Chromium และ service worker จริง สร้างบิลออฟไลน์ ทดลอง token หมดอายุ คำตอบ 401/403 การ redirect และ HTML แล้วตรวจว่าคิวยังคงอยู่ ก่อนคืนสิทธิ์และตรวจว่า sync ได้เพียงบิลเดียว
 
 proxy และการแปล Origin นี้เป็นเครื่องมือทดสอบเท่านั้น ไม่ใช่ proxy ที่เชื่อถือได้ ห้ามใช้กับฐานร้านจริงหรือเปิดออกอินเทอร์เน็ต การทดสอบนี้ไม่พิสูจน์การล็อกอิน Cloudflare จริง การออก session หรือต่ออายุ session; ยังต้องทดสอบสิ่งเหล่านั้นในสภาพแวดล้อมแยกก่อนตัดสินใจใช้งาน
+
+## Adapter แบบเลือกใช้ในโค้ดทดสอบ
+
+`OwnerAccessAdapter` เชื่อมตัวตรวจ Access ที่ใช้ JWKS กับ `InventoryHandler` ผ่านอาร์กิวเมนต์ `owner_access` ของ `make_server` เมื่อระบุ adapter เซิร์ฟเวอร์ตรวจคำขอก่อน route ทั้ง asset, API และฐานสำรอง และปฏิเสธเมื่อการตรวจล้มเหลว ค่าเริ่มต้นยังไม่เปิด adapter และยังฟังเฉพาะ loopback ไม่มี CLI สำหรับเปิดโหมดนี้ `isolated_access_server` เลือก adapter ให้เฉพาะฐานชั่วคราวและเทสต์เบราว์เซอร์ที่ใช้ข้อมูลสังเคราะห์
+
+การส่งค่าทางโปรแกรมเป็นเพียงช่องต่อเพื่อพัฒนาและทดสอบ ไม่ใช่การตั้งค่า production: ไม่จัดการบัญชี การล็อกอิน การป้องกัน bypass proxy, TLS, การเพิกถอน session หรือการกู้บัญชี และยังไม่มีหลักฐานการเชื่อม provider จริง ห้ามนำเซิร์ฟเวอร์นี้ไปเปิดผ่าน tunnel หรือ proxy การไม่ระบุ adapter ทำให้ระบบใช้พฤติกรรม local-only เดิม ไม่ได้เปิดระบบบัญชี

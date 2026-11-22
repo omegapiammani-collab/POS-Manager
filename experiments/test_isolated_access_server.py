@@ -52,9 +52,11 @@ class IsolatedAccessServerTests(TestCase):
                 database = Path(server.RequestHandlerClass.keywords["database"])
                 old = {"Cf-Access-Jwt-Assertion": self.token(), "Origin": self.origin}
                 new = {"Cf-Access-Jwt-Assertion": self.token(1), "Origin": self.origin}
-                self.assertEqual(self.request(server, "GET", "/products")[0], 403)
+                for path in ("/checkout", "/checkout.js", "/products", "/database-backup"):
+                    self.assertEqual(self.request(server, "GET", path)[0], 403)
                 self.assertEqual(fetch.call_count, 0)
                 self.assertEqual(self.request(server, "GET", "/checkout", old)[0], 200)
+                self.assertEqual(self.request(server, "GET", "/checkout.js", old)[0], 200)
                 self.assertEqual(self.request(server, "GET", "/database-backup", old)[0], 200)
                 body = json.dumps({"code": "T", "name": "Synthetic", "base_unit": "piece", "price": "1"})
                 write = {**old, "Content-Type": "application/json"}
@@ -63,6 +65,8 @@ class IsolatedAccessServerTests(TestCase):
                 self.assertEqual(self.request(server, "GET", "/database-backup", spoof)[0], 403)
                 self.assertEqual(self.request(server, "GET", "/products", {**old, "Cf-Access-Jwt-Assertion": self.token(exp=int(time()) - 1)})[0], 403)
                 self.assertEqual(self.request(server, "GET", "/products", {**old, "Cf-Access-Jwt-Assertion": self.token(sub="other")})[0], 403)
+                self.assertEqual(self.request(server, "GET", "/products", {**old, "Cf-Access-Jwt-Assertion": "invalid"})[0], 403)
+                self.assertEqual(self.request(server, "GET", "/../checkout", old)[0], 403)
                 self.assertEqual(self.request(server, "POST", "/products", {**write, "Origin": "https://evil.example"}, body)[0], 403)
                 self.assertEqual(self.request(server, "GET", "/products", new)[0], 403)
                 self.assertEqual(fetch.call_count, 1)

@@ -182,9 +182,10 @@ def edit_unit_price(db, product_id, unit_id, data):
 
 
 class InventoryHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, database, shell, **kwargs):
+    def __init__(self, *args, database, shell, owner_access=None, **kwargs):
         self.database = database
         self.shell = shell
+        self.owner_access = owner_access
         super().__init__(*args, **kwargs)
 
     def send_json(self, status, data):
@@ -406,6 +407,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
             port = self.server.server_port
             if not allows_local_request(self.headers, self.client_address[0], port):
                 raise RequestError(403, "Use the local server address")
+            owner_access = getattr(self, "owner_access", None)
+            if owner_access is not None:
+                try:
+                    allowed = owner_access.authorize(self.command, self.path, self.headers) is True
+                except Exception:
+                    allowed = False
+                if not allowed:
+                    raise RequestError(403, "Request not authorized")
             route = urlsplit(self.path)
             if self.command == "GET" and route.path == "/database-backup":
                 return self.send_database_backup()
@@ -444,7 +453,9 @@ class InventoryHandler(BaseHTTPRequestHandler):
     do_POST = handle_request
 
 
-def make_server(database, port, *, shell=None):
+def make_server(database, port, *, shell=None, owner_access=None):
+    if owner_access is not None and not callable(getattr(owner_access, "authorize", None)):
+        raise ValueError("Invalid owner access policy")
     if shell is None:
         shell = checkout_shell()
     # Initialize the file before accepting requests.
@@ -458,7 +469,7 @@ def make_server(database, port, *, shell=None):
         db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
         db.executescript(BINDING_SCHEMA)
         ensure_binding(db)
-    handler = partial(InventoryHandler, database=database, shell=shell)
+    handler = partial(InventoryHandler, database=database, shell=shell, owner_access=owner_access)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
 
