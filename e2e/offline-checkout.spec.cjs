@@ -2036,6 +2036,53 @@ test("retries a received stock request after its response is lost", async ({ pag
   expect(receipts).toHaveLength(2);
 });
 
+for (const kind of ["receipts", "stock-counts"]) {
+  for (const bad of [null, {}, { id: "wrong-id" }]) {
+    test(`${kind} preserves an unconfirmed successful response: ${JSON.stringify(bad)}`, async ({ page, request, pos }) => {
+      const product = await createProduct(request, pos);
+      const attempts = [];
+      await page.route(`**/products/${product.id}/${kind}`, async route => {
+        if (route.request().method() !== "POST") return route.continue();
+        attempts.push(route.request().postDataJSON().id);
+        if (attempts.length === 1) {
+          const upstream = await route.fetch();
+          expect(upstream.status()).toBe(201);
+          return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(bad) });
+        }
+        return route.continue();
+      });
+      await page.goto(pos + "/");
+      await page.locator("#products").getByRole("button", { name: /น้ำดื่ม/ }).click();
+      const receipt = kind === "receipts";
+      await page.locator(receipt ? '[data-open="receipt"]' : '#open-stock-count').click();
+      const dialog = page.locator(receipt ? '#receipt' : '#stock-count');
+      if (receipt) {
+        await dialog.locator('[name="quantity"]').fill("2");
+        await dialog.locator('[name="unit_cost"]').fill("10");
+      } else {
+        await dialog.locator('[name="counted_quantity"]').fill("2");
+        await dialog.locator('[name="reason"]').fill("ตรวจนับ");
+      }
+      const submit = dialog.locator(receipt ? 'button:not([type])' : '#submit-stock-count');
+      await submit.click();
+      await expect(dialog.locator('.error')).toBeVisible();
+      const key = receipt ? 'pos-pending-receipt' : 'pos-pending-stock-count';
+      const saved = await page.evaluate(key => sessionStorage.getItem(key), key);
+      expect(JSON.parse(saved).payload.id).toBe(attempts[0]);
+      const before = await (await request.get(pos + '/products')).json();
+      expect(before.find(item => item.id === product.id).quantity).toBe(receipt ? '3' : '2');
+      await submit.click();
+      await expect(dialog).toBeHidden();
+      expect(attempts).toEqual([attempts[0], attempts[0]]);
+      expect(await page.evaluate(key => sessionStorage.getItem(key), key)).toBeNull();
+      const after = await (await request.get(pos + '/products')).json();
+      expect(after.find(item => item.id === product.id).quantity).toBe(receipt ? '3' : '2');
+      const history = await (await request.get(`${pos}/products/${product.id}/${kind}`)).json();
+      expect(history.filter(item => item.id === attempts[0])).toHaveLength(1);
+    });
+  }
+}
+
 test("filters inventory by stock and availability together with search", async ({ page, request, pos }) => {
   const create = async (code, name) => {
     const response = await request.post(pos + "/products", {

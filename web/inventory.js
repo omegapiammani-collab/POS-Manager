@@ -441,7 +441,8 @@ receiptForm.addEventListener("submit", async (event) => {
   buttons.forEach((button) => { button.disabled = true; });
   receiptForm.querySelectorAll("input, select").forEach((field) => { field.disabled = true; });
   try {
-    await api(productPath(pendingReceipt.productId) + "/receipts", pendingReceipt.payload, pendingReceipt.binding_id);
+    const result = await api(productPath(pendingReceipt.productId) + "/receipts", pendingReceipt.payload, pendingReceipt.binding_id);
+    if (!result || typeof result !== "object" || result.id !== pendingReceipt.payload.id) throw new Error("Unconfirmed receipt response");
     setPendingReceipt(null);
     receiptDialog.close();
     notice("บันทึกรับสินค้าแล้ว");
@@ -578,7 +579,8 @@ countForm.addEventListener("submit", async (event) => {
   updateCountControls();
   countMessage("");
   try {
-    await api(productPath(product.id) + "/stock-counts", payload, pendingCount.binding_id);
+    const result = await api(productPath(product.id) + "/stock-counts", payload, pendingCount.binding_id);
+    if (!result || typeof result !== "object" || result.id !== payload.id) throw new Error("Unconfirmed stock count response");
     setPendingCount(null);
     selectedId = product.id;
     countDialog.close();
