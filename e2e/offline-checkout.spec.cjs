@@ -3350,8 +3350,14 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
     await page.goto(pos + "/checkout");
     await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
     await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    await page.evaluate(() => navigator.locks.request("pos-customer-and-store", () => {}));
+    await expect.poll(() => page.evaluate(async () => {
+      const locks = await navigator.locks.query();
+      return [...locks.held, ...locks.pending].some(lock => lock.name === "pos-customer-and-store");
+    })).toBe(false);
     await context.setOffline(true);
     await sellOne(page);
+    await expect(page.locator("#sale-receipt")).toBeVisible();
     const [entry] = await page.evaluate(() => window.PosOffline.list());
     expect(entry.payload.offline).toBe(true);
     await page.getByRole("button", { name: "ข้ามการพิมพ์" }).click();
