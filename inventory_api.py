@@ -18,6 +18,7 @@ from database_backup import copy_database, read_only_database, validate_backup
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
 from inventory import ReceiptConflict, add_product, add_unit, connect, number, receive
+from local_access import allows_local_request
 from payment_qr import PaymentQrUnavailable, payment_qr_svg
 from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
@@ -403,7 +404,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
     def handle_request(self):
         try:
             port = self.server.server_port
-            if self.headers.get("Host") not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+            if not allows_local_request(self.headers, self.client_address[0], port):
                 raise RequestError(403, "Use the local server address")
             route = urlsplit(self.path)
             if self.command == "GET" and route.path == "/database-backup":
