@@ -63,3 +63,5 @@ jobs:
       - run: node --test experiments/correction-pending-check.cjs
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      - run: python3 -m pip install -r experiments/requirements-auth-test.txt
+      - run: npx playwright test --config=experiments/access-browser.config.cjs

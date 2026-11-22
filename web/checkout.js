@@ -16,6 +16,7 @@ let legacyPending = restorePending();
 let staging = false;
 let syncing = false;
 let connected = navigator.onLine !== false;
+let serverAccessUnconfirmed = false;
 const snapshotKeys = new Set();
 const cacheProblems = new Set();
 let shellReady = false;
@@ -36,6 +37,7 @@ let negativePayload = null;
 let abandonPayload = null;
 const store = window.PosOffline;
 const customerPendingKey = "pos-pending-customer";
+const unconfirmedServerMessage = "ยังยืนยันสิทธิ์หรือการเชื่อมต่อเซิร์ฟเวอร์ไม่ได้ บิลที่รอส่งจะยังอยู่ในเครื่อง กรุณาตรวจสอบก่อนลองส่งอีกครั้ง";
 function customerLock(action, { immediate = false } = {}) {
   if (!navigator.locks) { status("เบราว์เซอร์ไม่รองรับการประสานงานระหว่างแท็บ กรุณาใช้เบราว์เซอร์ที่รองรับ", true); return Promise.resolve(); }
   const controller = new AbortController();
@@ -148,7 +150,7 @@ function status(message, error = false) {
 }
 
 async function api(path, data, expectedStore = storeId) {
-  const options = { signal: AbortSignal.timeout(15000) };
+  const options = { signal: AbortSignal.timeout(15000), redirect: "manual" };
   if (expectedStore) options.headers = { "X-POS-Store-ID": expectedStore };
   if (data !== undefined) {
     options.method = "POST";
@@ -162,13 +164,29 @@ async function api(path, data, expectedStore = storeId) {
     setConnected(false);
     throw failure;
   }
-  setConnected(response.status < 500);
-  const result = await response.json();
-  if (response.ok) return result;
+  const unconfirmed = () => {
+    serverAccessUnconfirmed = true;
+    setConnected(false);
+    status(unconfirmedServerMessage, true);
+    return Object.assign(new Error("Server response unconfirmed"), { code: "access_unconfirmed" });
+  };
+  if (response.redirected || response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) throw unconfirmed();
+  const mediaType = (response.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();
+  if (mediaType !== "application/json") throw unconfirmed();
+  let result;
+  try { result = await response.json(); } catch { throw unconfirmed(); }
+  if (response.ok) {
+    if (path === "/store-identity") serverAccessUnconfirmed = false;
+    setConnected(!serverAccessUnconfirmed);
+    return result;
+  }
+  if (!result || typeof result !== "object") throw unconfirmed();
   const error = new Error(result.error || "บันทึกไม่สำเร็จ");
   error.status = response.status;
   error.code = result.code;
   if (error.code === "store_mismatch") blockStore("ฐานข้อมูลร้านเปลี่ยน กรุณาตรวจสอบก่อนขายหรือส่งบิล");
+  if ((response.status === 401 || response.status === 403) && error.code !== "store_mismatch") throw unconfirmed();
+  setConnected(response.status < 500);
   throw error;
 }
 
@@ -867,7 +885,7 @@ async function syncSale(entry, allowNegative = false, expectedStore = storeId) {
   try {
     sale = await api(allowNegative ? "/sales/allow-negative" : payload.offline ? "/offline-sales" : "/sales", payload, expectedStore);
   } catch (failure) {
-    if (failure.code === "store_mismatch" || ![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
+    if (failure.code === "store_mismatch" || ![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending", accessUnconfirmed: failure.code === "access_unconfirmed" };
     const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
     if (!(await store.changeEntry(entry, expectedStore, "conflict", reason))) return { state: "pending" };
     return { state: "conflict", reason };
@@ -919,7 +937,7 @@ byId("sale-negative-confirm")?.addEventListener("click", () => customerLock(asyn
     } else if (result.state === "conflict") {
       status("บิลยังต้องตรวจสอบ · " + result.reason, true);
     } else {
-      status("ยังไม่ทราบผล กรุณาตรวจสอบและยืนยันส่งบิลเดิมอีกครั้ง", true);
+      status(result.accessUnconfirmed ? unconfirmedServerMessage : "ยังไม่ทราบผล กรุณาตรวจสอบและยืนยันส่งบิลเดิมอีกครั้ง", true);
     }
   } catch {
     status("จัดการคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบบิลเดิมก่อนลองอีกครั้ง", true);
@@ -941,6 +959,7 @@ async function syncQueueLocked(onlyEntry) {
   let conflicts = 0;
   let shortages = 0;
   let deferred = false;
+  let accessUnconfirmed = false;
   try {
     await showQueue();
     await migrateLegacy();
@@ -950,7 +969,7 @@ async function syncQueueLocked(onlyEntry) {
       if (onlyEntry ? entry.sequence !== onlyEntry.sequence : entry.state !== "pending") continue;
       const selected = onlyEntry ?? entry;
       let result = await syncSale(selected, false, expectedStore);
-      if (result.state === "pending" && navigator.onLine !== false) {
+      if (result.state === "pending" && !result.accessUnconfirmed && navigator.onLine !== false) {
         // The online event can arrive before the network can carry requests.
         // Reuse the queued identifier if the server accepted the first attempt.
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -962,6 +981,7 @@ async function syncQueueLocked(onlyEntry) {
       }
       if (result.state === "conflict") conflicts++;
       if (result.state === "pending") {
+        accessUnconfirmed = Boolean(result.accessUnconfirmed);
         deferred = true;
         break;
       }
@@ -972,7 +992,7 @@ async function syncQueueLocked(onlyEntry) {
       if (synced) parts.push("ส่งสำเร็จ " + synced + " บิล");
       if (shortages) parts.push("สต๊อกติดลบ " + shortages + " บิล · ตรวจที่หน้าสินค้าและสต๊อก");
       if (conflicts) parts.push("ต้องตรวจสอบ " + conflicts + " บิล");
-      if (deferred) parts.push("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+      if (deferred) parts.push(accessUnconfirmed ? unconfirmedServerMessage : "ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
       status(parts.join(" · "), Boolean(conflicts || deferred || shortages));
     }
   } catch {
@@ -1035,7 +1055,7 @@ paymentForm.addEventListener("submit", (event) => {
       status("บิลอยู่ในคิวตรวจสอบ · " + result.reason, true);
       if (connected) loadProducts();
     } else {
-      status("บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล");
+      status(result.accessUnconfirmed ? unconfirmedServerMessage : "บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล", Boolean(result.accessUnconfirmed));
     }
     showReceipt(result.sale ?? receipt, result.state, change);
   } catch (error) {
@@ -1336,7 +1356,7 @@ window.addEventListener("online", async () => {
       try {
         const entries = await store.listForStore(storeId);
         if (entries.some(({ state }) => state === "pending") || legacyPending) {
-          status("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้", true);
+          status(serverAccessUnconfirmed ? unconfirmedServerMessage : "ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้", true);
         }
       } catch {
         status("อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์", true);
