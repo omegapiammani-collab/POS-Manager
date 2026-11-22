@@ -664,7 +664,8 @@ async function showQueue() {
   summary.textContent = queueProblem
     ? "อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์"
     : "รอส่ง " + (pendingCount + Number(Boolean(legacyPending))) + " บิล · ต้องตรวจสอบ " + conflictCount + " บิล";
-  queue.replaceChildren(...entries.map(({ payload, state, error }) => {
+  queue.replaceChildren(...entries.map((entry) => {
+    const { payload, state, error } = entry;
     const row = element("li");
     const total = paymentMethods.reduce((sum, method) =>
       sum + (scaledDecimal(payload.payments[method], 2, true) ?? 0n), 0n
@@ -685,7 +686,7 @@ async function showQueue() {
       retry.type = "button";
       retry.disabled = !storeReady || syncing || staging;
       retry.setAttribute("aria-label", "ลองส่งบิล " + payload.id + " อีกครั้ง");
-      retry.addEventListener("click", () => retryQueue(payload.id));
+      retry.addEventListener("click", () => retryQueue(entry));
       row.append(retry);
       if (byId("sale-abandon")) {
         const abandon = element("button", "ยกเลิกบิลค้าง", "secondary");
@@ -694,7 +695,7 @@ async function showQueue() {
         abandon.setAttribute("aria-label", "ยกเลิกบิลค้าง " + payload.id);
         abandon.addEventListener("click", () => {
           if (syncing || staging) return;
-          abandonPayload = payload;
+          abandonPayload = entry;
           byId("sale-abandon-reference").textContent = "เลขบิล " + payload.id;
           byId("sale-abandon").showModal();
         });
@@ -705,7 +706,7 @@ async function showQueue() {
         confirm.type = "button";
         confirm.disabled = !storeReady || syncing || staging;
         confirm.setAttribute("aria-label", "ขายบิล " + payload.id + " แม้สต๊อกไม่พอ");
-        confirm.addEventListener("click", () => openNegativeConfirmation(payload));
+        confirm.addEventListener("click", () => openNegativeConfirmation(entry));
         row.append(confirm);
       }
     }
@@ -819,15 +820,17 @@ const saleErrors = {
 
 byId("sale-abandon-cancel")?.addEventListener("click", () => byId("sale-abandon").close());
 byId("sale-abandon-confirm")?.addEventListener("click", async () => {
-  const payload = abandonPayload;
-  if (!storeReady || !payload || syncing || staging) return;
+  const entry = abandonPayload;
+  if (!storeReady || !entry || syncing || staging) return;
+  const { payload } = entry;
   const expectedStore = storeId;
   syncing = true;
   byId("sale-abandon").close();
   try {
     await showQueue();
+    if (!(await store.currentEntry(entry, expectedStore))) throw new Error("Queue changed");
     await api("/sales/" + encodeURIComponent(payload.id) + "/abandon", {}, expectedStore);
-    await store.remove(payload.id, expectedStore);
+    if (!(await store.changeEntry(entry, expectedStore, null))) throw new Error("Queue changed");
     status("ยกเลิกบิลค้างแล้ว สามารถเริ่มบิลใหม่ได้");
   } catch (error) {
     if (error.code === "sale_already_recorded") {
@@ -843,20 +846,22 @@ byId("sale-abandon-confirm")?.addEventListener("click", async () => {
   }
 });
 
-async function syncSale(payload, allowNegative = false, expectedStore = storeId) {
+async function syncSale(entry, allowNegative = false, expectedStore = storeId) {
+  const { payload } = entry;
+  if (!(await store.currentEntry(entry, expectedStore))) return { state: "pending" };
   let sale;
   try {
     sale = await api(allowNegative ? "/sales/allow-negative" : payload.offline ? "/offline-sales" : "/sales", payload, expectedStore);
   } catch (failure) {
     if (failure.code === "store_mismatch" || ![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
     const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
-    await store.update(payload.id, "conflict", reason, expectedStore);
+    if (!(await store.changeEntry(entry, expectedStore, "conflict", reason))) return { state: "pending" };
     return { state: "conflict", reason };
   }
   // Keep the queued sale until the server confirms this exact identifier.
   if (!sale || typeof sale !== "object" || sale.id !== payload.id) return { state: "pending" };
   try {
-    await store.remove(payload.id, expectedStore);
+    if (!(await store.changeEntry(entry, expectedStore, null))) return { state: "pending" };
   } catch {
     // The server has confirmed the sale. Retrying the retained identifier is safe.
     status("บันทึกบิลแล้ว แต่ล้างคิวในเครื่องไม่สำเร็จ", true);
@@ -864,9 +869,10 @@ async function syncSale(payload, allowNegative = false, expectedStore = storeId)
   return { state: "synced", sale };
 }
 
-function openNegativeConfirmation(payload) {
+function openNegativeConfirmation(entry) {
+  const { payload } = entry;
   if (!storeReady || syncing || staging || payload.offline) return;
-  negativePayload = payload;
+  negativePayload = entry;
   byId("sale-negative-reference").textContent = "เลขบิล " + payload.id;
   byId("sale-negative-items").replaceChildren(...payload.items.map((item) => {
     const product = products.find(({ id }) => id === item.product_id);
@@ -883,14 +889,14 @@ function openNegativeConfirmation(payload) {
 
 byId("sale-negative-cancel")?.addEventListener("click", () => byId("sale-negative").close());
 byId("sale-negative-confirm")?.addEventListener("click", async () => {
-  const payload = negativePayload;
-  if (!storeReady || !payload || syncing || staging) return;
+  const entry = negativePayload;
+  if (!storeReady || !entry || syncing || staging) return;
   const expectedStore = storeId;
   syncing = true;
   byId("sale-negative").close();
   try {
     await showQueue();
-    const result = await syncSale(payload, true, expectedStore);
+    const result = await syncSale(entry, true, expectedStore);
     if (result.state === "synced") {
       const shortage = hasStockShortage(result.sale);
       status(shortage ? "บันทึกบิลแล้ว · ตรวจสอบสต๊อกติดลบที่หน้าสินค้าและสต๊อก" : "บันทึกบิลแล้ว", shortage);
@@ -911,7 +917,7 @@ byId("sale-negative-confirm")?.addEventListener("click", async () => {
   }
 });
 
-async function syncQueue(onlyId) {
+async function syncQueue(onlyEntry) {
   if (!storeReady || syncing || staging) return;
   const expectedStore = storeId;
   syncing = true;
@@ -926,13 +932,14 @@ async function syncQueue(onlyId) {
     if (navigator.onLine === false || !(await verifyServerStore()) || storeId !== expectedStore) return;
     for (const entry of await store.listForStore(expectedStore)) {
       if (stagedDuringSync.has(entry.payload.id)) continue;
-      if (onlyId ? entry.payload.id !== onlyId : entry.state !== "pending") continue;
-      let result = await syncSale(entry.payload, false, expectedStore);
+      if (onlyEntry ? entry.sequence !== onlyEntry.sequence : entry.state !== "pending") continue;
+      const selected = onlyEntry ?? entry;
+      let result = await syncSale(selected, false, expectedStore);
       if (result.state === "pending" && navigator.onLine !== false) {
         // The online event can arrive before the network can carry requests.
         // Reuse the queued identifier if the server accepted the first attempt.
         await new Promise((resolve) => setTimeout(resolve, 500));
-        if (navigator.onLine !== false) result = await syncSale(entry.payload, false, expectedStore);
+        if (navigator.onLine !== false) result = await syncSale(selected, false, expectedStore);
       }
       if (result.state === "synced") {
         synced++;
@@ -996,10 +1003,10 @@ paymentForm.addEventListener("submit", async (event) => {
   lockSaleFields();
   let staged = false;
   try {
-    await store.put(payload, expectedStore);
+    const entry = await store.put(payload, expectedStore);
     staged = true;
     let result = { state: "pending" };
-    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(payload, false, expectedStore);
+    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(entry, false, expectedStore);
     if (queuedDuringSync) syncRequested = true;
     cart.clear();
     paymentForm.reset();
@@ -1048,12 +1055,12 @@ byId("sale-cash-all").addEventListener("click", () => {
   clearQr();
   updatePayment();
 });
-function retryQueue(onlyId) {
+function retryQueue(onlyEntry) {
   if (navigator.onLine === false) {
     status("ยังออฟไลน์อยู่ บิลยังเก็บไว้ในเครื่องนี้", true);
     return;
   }
-  syncQueue(onlyId);
+  syncQueue(onlyEntry);
 }
 
 byId("sale-retry").addEventListener("click", () => retryQueue());

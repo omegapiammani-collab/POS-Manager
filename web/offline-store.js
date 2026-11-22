@@ -174,7 +174,9 @@
 
   function queueEntry(row) {
     const { payload, state, error } = row;
-    return { payload, state, error };
+    const entry = { payload, state, error };
+    Object.defineProperty(entry, "sequence", { value: row.sequence });
+    return entry;
   }
 
   async function getSnapshot(key, expected) {
@@ -247,8 +249,8 @@
         }
         const row = { id, signature, payload: submitted, state: reviewRequired ? "conflict" : "pending",
           error: reviewRequired ? "คิวเดิมไม่ระบุรุ่นฐานข้อมูล กรุณาตรวจสอบประวัติบิลและการรับเงินจากแหล่งอื่นก่อนส่ง" : null };
-        store.add(row);
-        setResult(queueEntry(row));
+        const added = store.add(row);
+        added.onsuccess = () => { row.sequence = added.result; setResult(queueEntry(row)); };
       };
     });
   }
@@ -391,6 +393,34 @@
     });
   }
 
+  function matchesEntry(row, entry) {
+    return row && Number.isSafeInteger(entry?.sequence) && row.sequence === entry.sequence
+      && row.signature === canonicalJson(entry.payload) && row.state === entry.state && row.error === entry.error;
+  }
+
+  async function currentEntry(entry, expected) {
+    const id = saleId(entry?.payload?.id);
+    return guarded(expected, (store, snapshots, setResult) => {
+      const request = store.index("saleId").get(id);
+      request.onsuccess = () => setResult(Boolean(matchesEntry(request.result, entry)));
+    });
+  }
+
+  async function changeEntry(entry, expected, state, error = null) {
+    const id = saleId(entry?.payload?.id);
+    if (state !== null && !STATES.has(state)) throw new TypeError("Unknown offline sale state");
+    return guarded(expected, (store, snapshots, setResult) => {
+      const request = store.index("saleId").get(id);
+      request.onsuccess = () => {
+        const row = request.result;
+        if (!matchesEntry(row, entry)) { setResult(false); return; }
+        if (state === null) store.delete(row.sequence);
+        else store.put({ ...row, state, error });
+        setResult(true);
+      };
+    });
+  }
+
 
   async function getPendingCustomer() {
     return transaction(SNAPSHOTS, "readonly", (snapshots, setResult) => {
@@ -425,5 +455,5 @@
     });
   }
 
-  window.PosOffline = { getCustomerReviewHistory, getPendingCustomer, stageCustomer, clearCustomer, getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
+  window.PosOffline = { currentEntry, changeEntry, getCustomerReviewHistory, getPendingCustomer, stageCustomer, clearCustomer, getSnapshot, putSnapshot, list, listForStore, exportQueue, put, update, remove, importQueue, getBinding, bindStore, getRestoreAncestors };
 })();

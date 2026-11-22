@@ -3172,6 +3172,32 @@ for (const kind of ["malformed", "unrelated", "legacy-conflict", "no-locks"]) {
   });
 }
 
+test("delayed queue responses cannot change a replacement with the same sale ID", async ({ page, pos }) => {
+  await page.goto(pos + "/checkout");
+  await expect(page.locator("#sale-new-customer")).toBeEnabled();
+  const result = await page.evaluate(async () => {
+    const binding = await PosOffline.getBinding();
+    const id = crypto.randomUUID();
+    const original = await PosOffline.put({ id, marker: "original" }, binding);
+    await PosOffline.remove(id, binding);
+    const replacement = await PosOffline.put({ id, marker: "replacement" }, binding, { reviewRequired: true });
+    const staleRemove = await PosOffline.changeEntry(original, binding, null);
+    const staleConflict = await PosOffline.changeEntry(original, binding, "conflict", "old response");
+    const after = await PosOffline.listForStore(binding);
+    const backup = JSON.stringify(await PosOffline.exportQueue());
+    const retryCurrent = await PosOffline.currentEntry(replacement, binding);
+    const retryRemoved = await PosOffline.changeEntry(replacement, binding, null);
+    return { staleRemove, staleConflict, after, backup, retryCurrent, retryRemoved };
+  });
+  expect(result.staleRemove).toBe(false);
+  expect(result.staleConflict).toBe(false);
+  expect(result.after).toHaveLength(1);
+  expect(result.after[0]).toMatchObject({ payload: { marker: "replacement" }, state: "conflict" });
+  expect(result.backup).not.toContain('"sequence"');
+  expect(result.retryCurrent).toBe(true);
+  expect(result.retryRemoved).toBe(true);
+});
+
 test("concurrent customer restore reviews commit at most once", async ({ page, context, pos }) => {
   await page.goto(pos + "/checkout");
   await expect(page.locator("#sale-new-customer")).toBeEnabled();
