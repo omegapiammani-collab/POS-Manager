@@ -14,6 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  auth-experiment:
+    name: Isolated Access token experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r experiments/requirements-auth-test.txt
+      - run: python3 -m unittest experiments.test_cloudflare_token_experiment -v
+
   api:
     name: Python API and database
     runs-on: ubuntu-latest
