@@ -17,7 +17,7 @@ class AccessTokenVerifier:
             raise ValueError("An exact Access issuer is required")
         if not all(isinstance(value, str) and value and value.strip() == value for value in (audience, owner_subject)):
             raise ValueError("An audience and owner subject are required")
-        if not isinstance(jwks, dict) or set(jwks) != {"keys"} or not isinstance(jwks["keys"], list) or not 1 <= len(jwks["keys"]) <= 10:
+        if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list) or not 1 <= len(jwks["keys"]) <= 10:
             raise ValueError("A bounded local JWKS snapshot is required")
         keys = {}
         for data in jwks["keys"]:
@@ -36,6 +36,9 @@ class AccessTokenVerifier:
                 raise ValueError("Invalid RSA signing key") from exc
             keys[kid] = key
         self._issuer, self._audience, self._subject, self._keys = issuer, audience, owner_subject, keys
+
+    def knows_key(self, kid):
+        return isinstance(kid, str) and kid in self._keys
 
     def __call__(self, token):
         if not isinstance(token, str) or not 1 <= len(token) <= 8192:

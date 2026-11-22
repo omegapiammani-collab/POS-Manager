@@ -84,6 +84,14 @@ class AccessTokenExperimentTests(TestCase):
         self.assertIsNone(rotated(one))
         self.assertIsNotNone(rotated(two))
 
+    def test_cloudflare_response_extra_cert_fields_are_ignored(self):
+        verifier = AccessTokenVerifier(self.issuer, "test-aud", "owner-123", {
+            "keys": [self.jwk1], "public_cert": {"kid": "unused", "cert": "not-a-key"},
+            "public_certs": [{"kid": "other", "cert": "not-a-key"}],
+        })
+        self.assertIsNotNone(verifier(self.token()))
+        self.assertIsNone(verifier(self.token(key=self.second, kid="other")))
+
     def test_bad_snapshots_and_remote_key_sources_fail_closed(self):
         duplicate = deepcopy(self.jwk1)
         invalids = ([], [self.jwk1, duplicate], [{**self.jwk1, "kty": "oct"}],

@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r experiments/requirements-auth-test.txt
-      - run: python3 -m unittest experiments.test_cloudflare_token_experiment experiments.test_access_handler_experiment -v
+      - run: python3 -m unittest experiments.test_cloudflare_token_experiment experiments.test_access_handler_experiment experiments.test_cloudflare_jwks_experiment experiments.test_loopback_access_experiment -v
 
   api:
     name: Python API and database

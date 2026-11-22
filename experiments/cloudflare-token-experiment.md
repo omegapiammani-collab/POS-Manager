@@ -23,3 +23,11 @@ python -m unittest experiments.test_cloudflare_token_experiment -v
 `test_access_handler_experiment.py` ใช้กุญแจ RSA และฐาน SQLite ชั่วคราว ทดสอบ signed owner ผ่านการอ่าน เขียน asset และสำรอง; คำขอไม่ผ่าน การปลอม identity header, token ไม่ถูกต้อง, key rotation, Host/Origin ซ้ำหรือผิด และ path กำกวมถูกปฏิเสธก่อน dispatch. รันร่วมกับเทสต์ verifier ใน auth-experiment CI job เท่านั้น
 
 ข้อจำกัดยังคงเดิม: ไม่มี TLS, proxy ที่เชื่อถือได้, การป้องกัน bypass ตัวกลาง, โหลด/หมุน JWKS จากเครือข่าย, session revocation หรือขั้นตอน login ทดสอบในหน่วยความจำไม่พิสูจน์การติดตั้งผ่านเบราว์เซอร์หรือเครื่องจริง อีกทั้ง origin และรูปแบบ token ที่ใช้เป็นข้อมูลจำลอง ต้องตรวจและออกแบบ integration จริงก่อนใช้งาน ระหว่างนั้นห้ามนำ handler นี้ไปเปิดผ่านอินเทอร์เน็ต
+
+## การทดลองดึงและหมุนกุญแจ
+
+`cloudflare_jwks_experiment.py` เป็นการทดลองแยกที่มีตัวดึงกุญแจจริง แต่ไม่มี entry point เริ่มบริการ ไม่ถูกเรียกโดย POS และเทสต์ทั้งหมดจำลอง transport โดยไม่ติดต่อ Cloudflare ตัวดึงสร้าง URL จาก issuer แบบ `https://<team>.cloudflareaccess.com` และ path `/cdn-cgi/access/certs` ที่กำหนดตายตัว ไม่รับ URL จาก token หรือผู้เรียก ใช้ TLS ตรวจใบรับรองและ hostname ไม่ใช้ proxy ไม่ตาม redirect ปฏิเสธ DNS ที่ไม่เป็น public จำกัดเวลาและขนาด response และอ่านเฉพาะ `keys` จาก response ที่อาจมี `public_cert` และ `public_certs` เพิ่มเติม
+
+แคชมีอายุไม่เกิน 5 นาทีและจำกัดความถี่การ refresh เมื่อพบ kid ใหม่ หาก refresh ที่จำเป็นล้มเหลวจะปฏิเสธคำขอ ไม่ใช้กุญแจหมดอายุเป็น fallback การจำกัดความถี่อาจทำให้ token ที่ใช้กุญแจใหม่ถูกปฏิเสธชั่วคราว และการถอนกุญแจอาจยังไม่สะท้อนจนกว่า cache จะหมดอายุ DNS ที่ค้างเกินเวลาอาจเหลือ daemon worker ได้สูงสุดหนึ่งตัวต่อตัวดึงและจะไม่เริ่ม worker ใหม่จนกว่าจะเสร็จ การทดสอบยังไม่พิสูจน์การเชื่อม TLS/DNS กับบริการจริงหรือการเพิกถอน session
+
+เทสต์ loopback แยกใช้ HTTP socket ที่ `127.0.0.1` พอร์ตสุ่ม ฐานข้อมูลชั่วคราว และ token ที่เซ็นด้วยกุญแจทดสอบ ไม่เปิดพอร์ตสาธารณะหรือเรียกบริการจริง และไม่เปลี่ยนค่าเริ่มต้นของ POS การใช้งานจริงยังต้องป้องกันการเข้าถึง origin โดยตรงและออกแบบ identity/session/การเพิกถอนก่อนนำไปใช้
