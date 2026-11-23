@@ -41,7 +41,12 @@
     <div class="workspace">
       <section class="panel" aria-labelledby="debt-customers-title">
         <h2 id="debt-customers-title">รายชื่อลูกค้า</h2>
+        <div id="debt-summary" hidden aria-live="polite">
+          <dl class="metrics"><div><dt>ยอดค้างรวมทุกลูกค้า</dt><dd id="debt-total"></dd></div><div><dt>ลูกค้าที่ยังค้าง</dt><dd id="debt-count"></dd></div></dl>
+          <p class="muted">จากข้อมูลที่โหลดล่าสุด ยังไม่รวมบิลออฟไลน์ที่รอซิงก์ และอาจยังไม่สะท้อนรายการชำระที่รอผล</p>
+        </div>
         <label>ค้นหาลูกค้า<input id="debt-search" type="search" placeholder="ค้นด้วยชื่อลูกค้า"></label>
+        <label class="debt-check"><input id="debt-only-outstanding" type="checkbox"> แสดงเฉพาะลูกค้าที่มียอดค้าง</label>
         <ul id="debt-customers" class="products"></ul>
         <p id="debt-customers-state" class="muted" role="status">กำลังโหลดลูกค้า…</p>
       </section>

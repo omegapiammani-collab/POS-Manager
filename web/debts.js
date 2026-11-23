@@ -87,7 +87,9 @@ async function api(path, data, binding = storeId) {
 
 function renderCustomers() {
   const query = byId("debt-search").value.trim().toLowerCase();
-  const matches = customers.filter((customer) => customer.name.toLowerCase().includes(query));
+  const onlyOutstanding = byId("debt-only-outstanding").checked;
+  const matches = customers.filter((customer) => customer.name.toLowerCase().includes(query)
+    && (!onlyOutstanding || satang(customer.outstanding) > 0n));
   byId("debt-customers").replaceChildren(...matches.map((customer) => {
     const row = element("li");
     const button = element("button");
@@ -109,7 +111,7 @@ function renderCustomers() {
     return row;
   }));
   const state = byId("debt-customers-state");
-  if (customersLoaded) state.textContent = query ? "ไม่พบลูกค้าที่ตรงกับคำค้น" : "ยังไม่มีลูกค้า";
+  if (customersLoaded) state.textContent = query || onlyOutstanding ? "ไม่พบลูกค้าที่ตรงกับตัวกรอง" : "ยังไม่มีลูกค้า";
   state.hidden = matches.length > 0;
 }
 
@@ -168,11 +170,20 @@ function updateForm() {
 async function loadCustomers() {
   if (!storeId || storeMismatch) return;
   const request = ++listRequest;
+  byId("debt-summary").hidden = true;
   try {
     const result = await api("/customer-debts");
     if (request !== listRequest || storeMismatch) return;
+    if (!Array.isArray(result) || result.some((customer) => !customer || typeof customer.name !== "string"
+      || typeof customer.id !== "string" || typeof customer.outstanding !== "string" || satang(customer.outstanding) === null)) {
+      throw new Error("Invalid customer balances");
+    }
     customers = result;
     customersLoaded = true;
+    const amounts = customers.map((customer) => satang(customer.outstanding));
+    byId("debt-total").textContent = money(decimalAmount(amounts.reduce((sum, value) => sum + value, 0n)));
+    byId("debt-count").textContent = numberFormat.format(amounts.filter((value) => value > 0n).length) + " คน";
+    byId("debt-summary").hidden = false;
     renderCustomers();
   } catch (error) {
     if (request !== listRequest) return;
@@ -324,6 +335,7 @@ form.addEventListener("submit", (event) => {
   submitPending();
 });
 byId("debt-search").addEventListener("input", renderCustomers);
+byId("debt-only-outstanding").addEventListener("change", renderCustomers);
 byId("debt-retry").addEventListener("click", submitPending);
 byId("debt-restore-export").addEventListener("click", () => {
   try {
@@ -341,6 +353,7 @@ byId("debt-restore-export").addEventListener("click", () => {
 });
 function blockStore() {
   storeMismatch = true;
+  byId("debt-summary").hidden = true;
   ++listRequest;
   ++detailRequest;
   customers = [];
