@@ -1,5 +1,6 @@
 """Local HTTP entry point for the POS inventory foundation."""
 import argparse
+import hashlib
 from contextlib import closing
 from decimal import Decimal
 from functools import partial
@@ -13,16 +14,19 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawer
+from cost_baselines import record_cost_baseline
 from database_backup import copy_database, read_only_database, validate_backup
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
 from inventory import ReceiptConflict, add_product, add_unit, connect, number, receive
+from local_access import allows_local_request
 from payment_qr import PaymentQrUnavailable, payment_qr_svg
 from sale_corrections import (
     CORRECTION_SCHEMA, CorrectionConflict, SaleNotFound, correct_sale, sale_history,
 )
 from sales import SALES_SCHEMA, SaleConflict, abandon_sale, add_customer, checkout, customer_list, read_sale, require_store, uuid_field
 from sales_reports import sales_report
+from shell_manifest import MANIFEST, SHELL_FILES
 from stock_counts import COUNT_SCHEMA, CountCostRequired, list_counts, record_count
 from stock_shortages import list_stock_shortages
 from store_binding import SCHEMA as BINDING_SCHEMA, ensure_binding
@@ -52,6 +56,37 @@ WEB_ASSETS = {
     "/inventory.css": ("inventory.css", "text/css"),
     "/inventory.js": ("inventory.js", "text/javascript"),
 }
+SHELL_PATHS = ("/checkout", "/checkout/backup", "/checkout.js", "/offline-store.js", "/inventory.css", "/backup.js")
+
+
+def checkout_shell():
+    # Validate each byte string against the release manifest and retain those
+    # same bytes. Never reopen a validated file when serving this snapshot.
+    try:
+        manifest = json.loads((WEB_DIR / MANIFEST).read_bytes())
+        hashes = manifest["sha256"]
+        if manifest.get("version") != 1 or set(hashes) != set(SHELL_FILES):
+            raise ValueError("invalid manifest")
+        files = {name: (WEB_DIR / name).read_bytes() for name in SHELL_FILES}
+        if any(hashlib.sha256(files[name]).hexdigest() != hashes[name] for name in SHELL_FILES):
+            raise ValueError("file checksum mismatch")
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise RuntimeError("Checkout shell manifest invalid or stale; install one complete release or run python3 shell_manifest.py after development changes") from error
+    paths = {path: files[WEB_ASSETS[path][0]] for path in SHELL_PATHS}
+    worker = files["sw.js"]
+    digest = hashlib.sha256()
+    for path, body in sorted(paths.items()):
+        digest.update(path.encode() + b"\0" + body + b"\0")
+    digest.update(worker)
+    revision = digest.hexdigest()
+    for path in ("/checkout", "/checkout/backup"):
+        for asset in SHELL_PATHS[2:]:
+            paths[path] = paths[path].replace(('"' + asset + '"').encode(),
+                                               ('"' + asset + '?shell=' + revision + '"').encode())
+    shell_hashes = {path: hashlib.sha256(body).hexdigest() for path, body in paths.items()}
+    paths["/sw.js"] = (worker.replace(b"__SHELL_REVISION__", revision.encode())
+                       .replace(b"__SHELL_HASHES__", json.dumps(shell_hashes, sort_keys=True).encode()))
+    return revision, paths
 
 
 class RequestError(Exception):
@@ -75,7 +110,8 @@ def decimal_field(data, field, *, positive=False, default=None):
 
 
 def list_products(db, query):
-    products = db.execute("SELECT * FROM products ORDER BY name, code").fetchall()
+    products = db.execute("SELECT p.*, CAST(COALESCE(r.version, 0) AS TEXT) AS stock_version "
+                          "FROM products p LEFT JOIN stock_revisions r ON r.product_id = p.id ORDER BY p.name, p.code").fetchall()
     discontinued = {row[0] for row in db.execute("SELECT product_id FROM discontinued_products")}
     units = {}
     for row in db.execute("SELECT * FROM units ORDER BY name"):
@@ -148,8 +184,10 @@ def edit_unit_price(db, product_id, unit_id, data):
 
 
 class InventoryHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, database, **kwargs):
+    def __init__(self, *args, database, shell, owner_access=None, **kwargs):
         self.database = database
+        self.shell = shell
+        self.owner_access = owner_access
         super().__init__(*args, **kwargs)
 
     def send_json(self, status, data):
@@ -164,8 +202,14 @@ class InventoryHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def serve_asset(self, name, content_type):
-        body = (WEB_DIR / name).read_bytes()
+    def serve_asset(self, route, name, content_type):
+        revision, paths = self.shell
+        requested = parse_qs(route.query, keep_blank_values=True).get("shell")
+        if requested is not None and (route.path not in SHELL_PATHS or requested != [revision]):
+            raise RequestError(409, "Checkout shell revision unavailable")
+        body = paths.get(route.path)
+        if body is None:
+            body = (WEB_DIR / name).read_bytes()
         self.send_bytes(200, body, content_type, "no-cache")
 
     def send_database_backup(self):
@@ -202,30 +246,38 @@ class InventoryHandler(BaseHTTPRequestHandler):
 
     def dispatch(self, db, route):
         parts = route.path.strip("/").split("/")
-        if self.command == "GET" and parts in (["products"], ["customers"]) and self.headers.get("X-POS-Store-ID"):
+        if self.command == "GET" and (parts == ["products"] or (parts in (["customers"], ["expenses"]) and self.headers.get("X-POS-Store-ID"))):
+            # Product rows, availability and units must share one snapshot.
             db.execute("BEGIN")
-            require_store(db, self.headers["X-POS-Store-ID"])
+            if self.headers.get("X-POS-Store-ID"):
+                require_store(db, self.headers["X-POS-Store-ID"])
         if parts == ["customers"]:
             if self.command == "GET":
                 return 200, customer_list(db)
-            name = required_text(self.read_json(), "name")
-            expected_store = self.headers.get("X-POS-Store-ID")
-            if expected_store:
-                with db:
-                    db.execute("BEGIN IMMEDIATE")
-                    require_store(db, expected_store)
-                    return 201, add_customer(db, name)
-            return 201, add_customer(db, name)
+            data = self.read_json()
+            name = required_text(data, "name")
+            request_id = uuid_field(data["request_id"], "request_id") if "request_id" in data else None
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                require_store(db, self.headers.get("X-POS-Store-ID", ""))
+                return 201, add_customer(db, name, request_id)
+
+        if len(parts) == 2 and parts[0] == "customer-requests" and self.command == "GET":
+            request_id = uuid_field(parts[1], "request_id")
+            db.execute("BEGIN")
+            require_store(db, self.headers.get("X-POS-Store-ID", ""))
+            row = db.execute("SELECT customer_id, name FROM customer_requests WHERE request_id = ?", (request_id,)).fetchone()
+            return 200, {"request_id": request_id, "customer": {"id": row[0], "name": row[1]} if row else None}
 
         if parts == ["customer-debts"] and self.command == "GET":
-            return 200, customer_debt_list(db)
+            return 200, customer_debt_list(db, expected_store=self.headers.get("X-POS-Store-ID"))
 
         if len(parts) == 3 and parts[0] == "customers":
             if parts[2] == "debt" and self.command == "GET":
-                return 200, customer_debt(db, uuid_field(parts[1], "customer_id"))
+                return 200, customer_debt(db, uuid_field(parts[1], "customer_id"), expected_store=self.headers.get("X-POS-Store-ID"))
             if parts[2] == "repayments" and self.command == "POST":
                 customer_id = uuid_field(parts[1], "customer_id")
-                created, repayment = record_repayment(db, customer_id, self.read_json())
+                created, repayment = record_repayment(db, customer_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
                 return (201 if created else 200), repayment
 
         if parts == ["cash-drawer"] and self.command == "GET":
@@ -234,29 +286,29 @@ class InventoryHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "cash-drawer" and self.command == "POST":
             if parts[1] not in DRAWER_ACTIONS:
                 raise RequestError(404, "Drawer action not found")
-            created, drawer = record_drawer(db, parts[1], self.read_json())
+            created, drawer = record_drawer(db, parts[1], self.read_json(), expected_store=self.headers.get("X-POS-Store-ID"))
             return (201 if created else 200), drawer
 
         if parts == ["expenses"]:
             if self.command == "GET":
                 dates = parse_qs(route.query)
                 return 200, list_expenses(db, dates.get("from", [""])[0], dates.get("to", [""])[0])
-            created, expense = record_expense(db, self.read_json())
+            created, expense = record_expense(db, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), expense
 
         if len(parts) == 3 and parts[0] == "expenses" and parts[2] == "void" and self.command == "POST":
-            return 200, void_expense(db, uuid_field(parts[1], "id"), self.read_json())
+            return 200, void_expense(db, uuid_field(parts[1], "id"), self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
 
         if parts == ["sales-report"] and self.command == "GET":
             dates = parse_qs(route.query)
             return 200, sales_report(db, dates.get("from", [""])[0], dates.get("to", [""])[0])
 
         if parts == ["sale-history"] and self.command == "GET":
-            return 200, sale_history(db)
+            return 200, sale_history(db, expected_store=self.headers.get("X-POS-Store-ID"))
 
         if len(parts) == 3 and parts[0] == "sales" and parts[2] == "corrections" and self.command == "POST":
             sale_id = uuid_field(parts[1], "id")
-            created, correction = correct_sale(db, sale_id, self.read_json())
+            created, correction = correct_sale(db, sale_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), correction
 
         if len(parts) == 3 and parts[0] == "sales" and parts[2] == "abandon" and self.command == "POST":
@@ -264,7 +316,7 @@ class InventoryHandler(BaseHTTPRequestHandler):
             return 200, abandon_sale(db, parts[1], expected_store=self.headers.get("X-POS-Store-ID", ""))
 
         if parts == ["store-identity"] and self.command == "GET":
-            return 200, {"id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0],
+            return 200, {"customer_request_id": True, "id": db.execute("SELECT id FROM store_identity WHERE singleton = 1").fetchone()[0],
                          "binding_id": db.execute("SELECT id FROM store_binding WHERE singleton = 1").fetchone()[0],
                          "restore_ancestors": [row[0] for row in db.execute("SELECT id FROM store_binding_ancestors ORDER BY id")]}
 
@@ -317,14 +369,24 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if len(parts) == 5 and parts[2] == "units" and parts[4] == "price":
                 return 200, edit_unit_price(db, parts[1], parts[3], self.read_json())
 
-        if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts"}:
+        if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts", "cost-baselines"}:
             raise RequestError(404, "Route not found")
         _, product_id, resource = parts
-        check_product(db, product_id)
+        if resource == "cost-baselines":
+            if self.command == "GET":
+                db.execute("BEGIN")
+                require_store(db, self.headers.get("X-POS-Store-ID", ""))
+                check_product(db, product_id)
+                rows = db.execute("SELECT id, expected_quantity, expected_version, unit_cost, reason, created_at FROM cost_baselines WHERE product_id = ? ORDER BY rowid DESC", (product_id,))
+                return 200, [dict(row) for row in rows]
+            created, result = record_cost_baseline(db, product_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
+            return (201 if created else 200), result
+        if self.command == "GET" or resource == "units":
+            check_product(db, product_id)
         if resource == "stock-counts":
             if self.command == "GET":
                 return 200, list_counts(db, product_id)
-            created, count = record_count(db, product_id, self.read_json())
+            created, count = record_count(db, product_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
             return (201 if created else 200), count
         if self.command == "GET":
             if resource != "receipts":
@@ -347,19 +409,28 @@ class InventoryHandler(BaseHTTPRequestHandler):
             db, product_id, required_text(data, "unit_id"),
             decimal_field(data, "quantity", positive=True), decimal_field(data, "unit_cost"),
             uuid_field(data["id"], "id") if "id" in data else None,
+            expected_store=self.headers.get("X-POS-Store-ID", ""),
         )
         return 201, {"id": receipt_id}
 
     def handle_request(self):
         try:
             port = self.server.server_port
-            if self.headers.get("Host") not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+            if not allows_local_request(self.headers, self.client_address[0], port):
                 raise RequestError(403, "Use the local server address")
+            owner_access = getattr(self, "owner_access", None)
+            if owner_access is not None:
+                try:
+                    allowed = owner_access.authorize(self.command, self.path, self.headers) is True
+                except Exception:
+                    allowed = False
+                if not allowed:
+                    raise RequestError(403, "Request not authorized")
             route = urlsplit(self.path)
             if self.command == "GET" and route.path == "/database-backup":
                 return self.send_database_backup()
             if self.command == "GET" and route.path in WEB_ASSETS:
-                return self.serve_asset(*WEB_ASSETS[route.path])
+                return self.serve_asset(route, *WEB_ASSETS[route.path])
             if self.command == "GET" and route.path == "/payment-qr":
                 amount = parse_qs(route.query).get("amount", [""])[0]
                 return self.send_bytes(200, payment_qr_svg(amount), "image/svg+xml", "no-store")
@@ -393,7 +464,11 @@ class InventoryHandler(BaseHTTPRequestHandler):
     do_POST = handle_request
 
 
-def make_server(database, port):
+def make_server(database, port, *, shell=None, owner_access=None):
+    if owner_access is not None and not callable(getattr(owner_access, "authorize", None)):
+        raise ValueError("Invalid owner access policy")
+    if shell is None:
+        shell = checkout_shell()
     # Initialize the file before accepting requests.
     with closing(connect(database)) as db:
         db.executescript(SALES_SCHEMA)
@@ -405,7 +480,7 @@ def make_server(database, port):
         db.execute("INSERT OR IGNORE INTO store_identity (singleton, id) VALUES (1, ?)", (str(uuid4()),))
         db.executescript(BINDING_SCHEMA)
         ensure_binding(db)
-    handler = partial(InventoryHandler, database=database)
+    handler = partial(InventoryHandler, database=database, shell=shell, owner_access=owner_access)
     return ThreadingHTTPServer(("127.0.0.1", port), handler)
 
 
@@ -419,6 +494,7 @@ def main():
         parser.error("--create-database requires --database")
     database = args.database or Path("inventory.sqlite3")
     try:
+        shell = checkout_shell()
         if args.create_database or (args.database is None and not database.exists()):
             # Exclusive creation prevents accidentally replacing an existing store.
             with database.open("xb"):
@@ -431,10 +507,13 @@ def main():
             # Validate before connect() can create tables or modify a non-POS file.
             with closing(read_only_database(database)) as db:
                 db.execute("PRAGMA trusted_schema = OFF")
+                db.execute("BEGIN")
                 validate_backup(db)
+    except RuntimeError as exc:
+        parser.exit(1, f"Cannot start server: {exc}\n")
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"Cannot open database: {exc}\n")
-    with make_server(database, args.port) as server:
+    with make_server(database, args.port, shell=shell) as server:
         print(f"Inventory API: http://127.0.0.1:{server.server_port}", flush=True)
         try:
             server.serve_forever()

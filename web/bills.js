@@ -23,6 +23,8 @@ let bills = [];
 let displayedBills = [];
 let catalog = new Map();
 let customers = [];
+let pendingProblem = false;
+let pendingRawAvailable = false;
 let pending = restorePending();
 let pendingStored = true;
 let selectedId = pending?.saleId ?? null;
@@ -33,6 +35,9 @@ let editing = false;
 let cart = new Map();
 let nextLine = 0;
 let expectedExcess = null;
+let storeId = null;
+let storeMismatch = false;
+let listRequest = 0;
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -105,11 +110,12 @@ function formError(text) {
   byId("bill-error").hidden = !text;
 }
 
-async function api(path, data) {
-  const options = { signal: AbortSignal.timeout(15000) };
+async function api(path, data, binding = storeId) {
+  const options = { signal: AbortSignal.timeout(15000), headers: {} };
+  if (binding) options.headers["X-POS-Store-ID"] = binding;
   if (data !== undefined) {
     options.method = "POST";
-    options.headers = { "Content-Type": "application/json" };
+    options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(data);
   }
   const response = await fetch(path, options);
@@ -148,7 +154,9 @@ function renderList(clearSelection = false) {
         return false;
       }
     }
-    if (!bill.id.toLowerCase().includes(query) && !(bill.customer_name ?? "").toLowerCase().includes(query)) {
+    const matchesItem = Array.isArray(bill.items) && bill.items.some((item) =>
+      typeof item?.name === "string" && item.name.toLowerCase().includes(query));
+    if (!bill.id.toLowerCase().includes(query) && !(bill.customer_name ?? "").toLowerCase().includes(query) && !matchesItem) {
       return false;
     }
     if (!from && !to) return true;
@@ -303,16 +311,22 @@ function renderDetail() {
   }
   byId("bill-actions").hidden = voided;
   byId("bill-reprint").disabled = sending || opening;
-  for (const id of ["bill-edit", "bill-void"]) byId(id).disabled = Boolean(pending) || sending || opening;
+  for (const id of ["bill-edit", "bill-void"]) byId(id).disabled = Boolean(pending) || sending || opening || pendingProblem || storeMismatch || !storeId;
 }
 
 async function loadBills() {
+  if (!storeId || storeMismatch) return;
+  const request = ++listRequest;
   try {
-    bills = await api("/sale-history");
+    const result = await api("/sale-history");
+    if (request !== listRequest || storeMismatch) return;
+    bills = result;
     listState = "ready";
     renderList();
     renderDetail();
-  } catch {
+  } catch (error) {
+    if (request !== listRequest) return;
+    if (error.code === "store_mismatch") return blockStore();
     listState = "error";
     renderList();
   }
@@ -432,7 +446,7 @@ function updateForm() {
   else if (difference < 0n) balance = "ยอดชำระเกิน " + money(-difference);
   byId("bill-balance").textContent = balance;
   byId("bill-add-item").disabled = !byId("bill-catalog").value;
-  byId("bill-submit").disabled = Boolean(pending) || sending || !fields.reason.value.trim() || !fields.reconciled.checked
+  byId("bill-submit").disabled = Boolean(pending) || sending || pendingProblem || storeMismatch || !storeId || !fields.reason.value.trim() || !fields.reconciled.checked
     || (editing && (!cart.size || difference !== 0n || (paid.credit > 0n && !fields.customer_id.value)
       || (paid.qr > 0n && !fields.qr_confirmed.checked)))
     || (!byId("bill-excess").hidden && !fields.excess_action.value) || (refund && !fields.refund_confirmed.checked);
@@ -440,7 +454,7 @@ function updateForm() {
 
 async function openCorrection(edit) {
   const bill = currentBill();
-  if (!bill || bill.status !== "active" || pending || sending || opening) return;
+  if (!bill || bill.status !== "active" || pending || sending || opening || pendingProblem || storeMismatch || !storeId) return;
   opening = true;
   renderList();
   renderDetail();
@@ -448,6 +462,7 @@ async function openCorrection(edit) {
   try {
     if (edit) {
       const [products, rows] = await Promise.all([api("/products"), api("/customers")]);
+      if (storeMismatch) return;
       buildCatalog(products);
       customers = rows;
     }
@@ -475,8 +490,9 @@ async function openCorrection(edit) {
     }
     renderCart();
     dialog.showModal();
-  } catch {
-    message("โหลดสินค้าและลูกค้าไม่สำเร็จ กรุณาลองอีกครั้ง", true);
+  } catch (error) {
+    if (error.code === "store_mismatch") blockStore();
+    else message("โหลดสินค้าและลูกค้าไม่สำเร็จ กรุณาลองอีกครั้ง", true);
   } finally {
     opening = false;
     renderList();
@@ -485,15 +501,69 @@ async function openCorrection(edit) {
 }
 
 function restorePending() {
+  let raw;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey));
-    return typeof saved?.saleId === "string" && typeof saved.payload?.id === "string" ? saved : null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    pendingProblem = true;
     return null;
   }
+  if (raw === null) return null;
+  pendingRawAvailable = true;
+  try {
+    const saved = JSON.parse(raw);
+    if (validPending(saved)) return saved;
+  } catch { /* Keep raw data for manual recovery. */ }
+  pendingProblem = true;
+  return null;
+}
+
+function validPending(saved) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isUuid = (value) => typeof value === "string" && uuid.test(value);
+  const number = (value, digits, max, positive = false) => {
+    if (typeof value !== "string" && (typeof value !== "number" || !Number.isFinite(value))) return null;
+    const text = String(value).trim();
+    if (text.length > 60) return null;
+    const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/i.exec(text);
+    if (!match) return null;
+    const fraction = match[3] ?? match[4] ?? "";
+    const exponent = Number(match[5] || 0) - fraction.length;
+    if (!Number.isSafeInteger(exponent) || exponent < -digits) return null;
+    const integer = BigInt((match[2] || "0") + fraction);
+    if (integer === 0n) return positive ? null : 0n;
+    if (match[1] === "-" || exponent > 30) return null;
+    const scaled = integer * 10n ** BigInt(exponent + digits);
+    return scaled <= max * 10n ** BigInt(digits) ? scaled : null;
+  };
+  const payload = saved?.payload;
+  if (!isUuid(saved?.binding_id) || !isUuid(saved?.saleId) || !payload || typeof payload !== "object" || Array.isArray(payload) || !isUuid(payload.id)
+      || typeof payload.reason !== "string" || !payload.reason.trim() || Array.from(payload.reason.trim()).length > 300) return false;
+  if (payload.excess_action != null && !["refund_cash", "refund_qr", "apply"].includes(payload.excess_action)) return false;
+  if (payload.expected_excess != null && number(payload.expected_excess, 2, 10n ** 22n) === null) return false;
+  if (payload.replacement == null) return true;
+  const replacement = payload.replacement;
+  if (typeof replacement !== "object" || Array.isArray(replacement) || !isUuid(replacement.id)
+      || !Array.isArray(replacement.items) || !replacement.items.length || !replacement.payments
+      || typeof replacement.payments !== "object" || Array.isArray(replacement.payments)
+      || Object.keys(replacement.payments).sort().join(",") !== "cash,credit,qr"
+      || (replacement.customer_id != null && !isUuid(replacement.customer_id))
+      || typeof replacement.qr_confirmed !== "boolean") return false;
+  const paid = ["cash", "credit", "qr"].map((method) => number(replacement.payments[method], 2, 10n ** 22n));
+  if (paid.includes(null) || (paid[1] > 0n && !replacement.customer_id) || (paid[2] > 0n && !replacement.qr_confirmed)) return false;
+  let total = 0n;
+  for (const item of replacement.items) {
+    if (!item || !isUuid(item.product_id) || !isUuid(item.unit_id)) return false;
+    const quantity = number(item.quantity, 6, 1000000000n, true);
+    const price = number(item.expected_unit_price, 6, 1000000000n);
+    if (quantity === null || price === null) return false;
+    total += (quantity * price + 5000000000n) / 10000000000n;
+  }
+  return total === paid.reduce((sum, value) => sum + value, 0n);
 }
 
 function setPending(request) {
+  if (pendingProblem) return;
   pending = request;
   pendingStored = true;
   try {
@@ -506,14 +576,19 @@ function setPending(request) {
 }
 
 function renderPending() {
-  const locked = Boolean(pending) || sending;
+  const mismatch = Boolean(pending && storeId && pending.binding_id !== storeId);
+  const locked = Boolean(pending) || sending || pendingProblem || storeMismatch || !storeId;
   byId("bill-fields").disabled = locked;
   byId("bill-pending").hidden = !pending || sending;
   byId("bill-pending-close-warning").hidden = !pending;
   byId("bill-storage-warning").hidden = !pending || pendingStored;
   byId("bill-dialog-storage-warning").hidden = !pending || pendingStored;
-  byId("bill-retry").disabled = sending;
+  byId("bill-retry").disabled = sending || mismatch || storeMismatch || !storeId;
+  byId("bill-mismatch").hidden = !mismatch && !storeMismatch && Boolean(storeId);
+  byId("bill-pending-export").hidden = !pending || (!mismatch && !storeMismatch && Boolean(storeId));
   byId("bill-close").disabled = sending;
+  byId("bill-restore-error").hidden = !pendingProblem;
+  byId("bill-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
   renderList();
   renderDetail();
   updateForm();
@@ -547,14 +622,14 @@ function showExcess(error) {
 }
 
 async function submitPending() {
-  if (!pending || sending) return;
+  if (!pending || sending || pendingProblem || storeMismatch || !storeId || pending.binding_id !== storeId) return;
   sending = true;
   renderPending();
-  const { saleId, payload } = pending;
+  const { saleId, payload, binding_id } = pending;
   formError("");
   message("กำลังบันทึกการเปลี่ยนแปลง…");
   try {
-    const result = await api("/sales/" + encodeURIComponent(saleId) + "/corrections", payload);
+    const result = await api("/sales/" + encodeURIComponent(saleId) + "/corrections", payload, binding_id);
     setPending(null);
     if (dialog.open) dialog.close();
     selectedId = result.replacement_id ?? saleId;
@@ -563,7 +638,10 @@ async function submitPending() {
       + (disposition ? " · " + disposition + " " + moneyText(result.excess) : ""));
     await loadBills();
   } catch (error) {
-    if ([400, 404, 409, 413, 415, 422].includes(error.status)) {
+    if (error.code === "store_mismatch") {
+      blockStore();
+      message("ร้านเปลี่ยนแล้ว เก็บคำขอเดิมไว้และดาวน์โหลดเพื่อตรวจสอบ", true);
+    } else if ([400, 404, 409, 413, 415, 422].includes(error.status)) {
       setPending(null);
       const needsExcess = ["excess_action_required", "insufficient_other_debt", "excess_changed"].includes(error.code);
       if (needsExcess && dialog.open) {
@@ -621,9 +699,10 @@ form.addEventListener("input", (event) => {
 });
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (byId("bill-submit").disabled || !currentBill()) return;
+  if (pendingProblem || storeMismatch || !storeId || byId("bill-submit").disabled || !currentBill()) return;
   const paid = amounts();
   setPending({
+    binding_id: storeId,
     saleId: selectedId,
     payload: {
       id: crypto.randomUUID(),
@@ -644,11 +723,60 @@ form.addEventListener("submit", (event) => {
   });
   submitPending();
 });
+byId("bill-restore-export").addEventListener("click", () => {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (raw === null) throw new Error("Request unavailable");
+    const url = URL.createObjectURL(new Blob([JSON.stringify(raw)], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pos-correction-raw.txt";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { message("ดาวน์โหลดข้อมูลเดิมไม่ได้ กรุณาอย่าปิดแท็บและติดต่อผู้ดูแล", true); }
+});
+function blockStore() {
+  storeMismatch = true;
+  ++listRequest;
+  bills = [];
+  selectedId = null;
+  catalog = new Map();
+  customers = [];
+  if (dialog.open) dialog.close();
+  listState = "error";
+  renderPending();
+}
+byId("bill-pending-export").addEventListener("click", () => {
+  if (!pending) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(pending)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "pos-correction-pending.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+async function initialize() {
+  try {
+    const identity = await api("/store-identity", undefined, null);
+    if (typeof identity.binding_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identity.binding_id)) throw new Error("Invalid store");
+    storeId = identity.binding_id;
+    renderPending();
+    if (pending && pending.binding_id !== storeId) return;
+    await loadBills();
+  } catch {
+    message("ตรวจสอบร้านไม่สำเร็จ กรุณาโหลดหน้าใหม่", true);
+    renderPending();
+  }
+}
 renderPending();
-loadBills();
+initialize();
 
 window.addEventListener("beforeunload", (event) => {
-  if (pending) {
+  if (pending || pendingProblem) {
     event.preventDefault();
     event.returnValue = "";
   }

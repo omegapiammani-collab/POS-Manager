@@ -5,11 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ขายสินค้า | POS Manager</title>
   <link rel="icon" href="data:,">
+  <script>
+    window.addEventListener("error", (event) => {
+      if (!["SCRIPT", "LINK"].includes(event.target?.tagName)) return;
+      const show = () => { document.getElementById("shell-load-error").hidden = false; };
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", show, { once: true });
+      else show();
+    }, true);
+  </script>
   <link rel="stylesheet" href="/inventory.css">
   <script defer src="/offline-store.js"></script>
   <script defer src="/checkout.js"></script>
 </head>
 <body class="checkout">
+  <p id="shell-load-error" role="alert" hidden>ไฟล์หน้าจอโหลดไม่ครบ กรุณาติดต่อผู้ดูแลและอย่าลบข้อมูลเว็บไซต์ บิลในเครื่องไม่ถูกลบจากข้อผิดพลาดนี้</p>
   <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
   <main class="frame">
     <div class="page-title"><h1>ขายสินค้า</h1><nav class="actions" aria-label="เมนู POS"><a class="pos-link" href="/">สินค้าและสต๊อก</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/checkout/backup">สำรองข้อมูล</a></nav></div>
@@ -17,11 +26,16 @@
     <section id="sale-store-blocked" class="panel sale-pending" hidden>
       <h2>ตรวจสอบฐานข้อมูลร้าน</h2>
       <p id="sale-store-message" role="alert"></p>
+      <button id="customer-pending-export" type="button" hidden>ส่งออกคำขอลูกค้าที่ยังค้าง</button>
+      <details id="customer-pending-view" hidden><summary>ดูคำขอลูกค้าที่รอตรวจสอบ</summary><p>ข้อมูลนี้อ่านอย่างเดียว ตรวจฐานเดิมและหลักฐานภายนอกก่อนดำเนินการ ฐานสำรองเก่าอาจไม่มีรายการที่เกิดหลังสำรอง</p><div id="customer-pending-summary"></div><pre id="customer-pending-details" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
+      <button id="customer-restore-review" type="button" hidden>ตรวจสอบคำขอลูกค้าหลังคืนฐาน</button>
       <button id="sale-store-bind" type="button" hidden>ตรวจสอบและยืนยันฐานข้อมูล</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
     </section>
     <section class="panel sale-pending" aria-labelledby="sale-storage-title">
       <h2 id="sale-storage-title">พื้นที่เก็บบิลออฟไลน์</h2>
+      <button id="customer-history-export" type="button" hidden>ส่งออกประวัติคำขอลูกค้าที่ตรวจแล้ว</button>
+      <details id="customer-history-view" hidden><summary>ดูประวัติการตรวจคำขอลูกค้า</summary><p>ประวัตินี้เก็บในเบราว์เซอร์เครื่องนี้ ฐานสำรองเก่าอาจไม่มีรายการที่เกิดหลังสำรอง</p><div id="customer-history-summary"></div><pre id="customer-history-details" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
       <p id="sale-storage-status" class="muted" role="status">กำลังตรวจสอบ…</p>
       <button id="sale-storage-persist" class="secondary" type="button" hidden>ขอเก็บข้อมูลถาวร</button>
       <a class="pos-link" href="/checkout/backup">สำรองบิลในเครื่อง</a>
@@ -85,6 +99,16 @@
       </section>
     </div>
   </main>
+  <dialog id="customer-restore-dialog" aria-labelledby="customer-restore-title">
+    <h2 id="customer-restore-title">ตรวจสอบคำขอลูกค้าหลังคืนฐาน</h2>
+    <p id="customer-restore-details"></p>
+    <p>ฐานสำรองอาจไม่มีรายการที่เกิดหลังเวลาสำรอง ตรวจประวัติจากฐานเดิมและแหล่งอื่นก่อนตัดสินใจ ชื่อซ้ำอาจเป็นคนละคน</p>
+    <p id="customer-restore-result" role="status"></p>
+    <ul id="customer-restore-matches"></ul>
+    <label><input type="checkbox" id="customer-restore-confirmed">ตรวจสอบแล้วและต้องการเก็บคำขอเดิมเป็นประวัติ โดยไม่ส่งคำขอนี้ซ้ำ</label>
+    <p id="customer-restore-error" class="error" role="alert" hidden></p>
+    <div class="actions"><button id="customer-restore-cancel" type="button" class="secondary">กลับ</button><button id="customer-restore-finish" type="button" disabled>เก็บเป็นประวัติและยืนยันฐาน</button></div>
+  </dialog>
   <dialog id="sale-store-confirm" aria-labelledby="sale-store-confirm-title">
     <h2 id="sale-store-confirm-title">ยืนยันฐานข้อมูลร้าน</h2>
     <p id="sale-store-confirm-message"></p>
@@ -123,6 +147,7 @@
       <h2 id="sale-customer-title">เพิ่มลูกค้า</h2>
       <label>ชื่อลูกค้า<input name="name" required maxlength="120"></label>
       <p class="error" role="alert" hidden></p>
+      <button type="button" id="customer-export" hidden>ส่งออกคำขอลูกค้าที่ยังค้าง</button>
       <div class="actions"><button class="secondary" type="button" data-customer-close>ยกเลิก</button><button>บันทึกลูกค้า</button></div>
     </form>
   </dialog>

@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from debts import baht, satang
 from expenses import business_date, expense_text
-from sales import SaleConflict, checkout_number, uuid_field
+from sales import SaleConflict, checkout_number, require_store, uuid_field
 
 
 DRAWER_SCHEMA = """
@@ -189,10 +189,11 @@ def close_drawer(db, day, request_id, data):
 DRAWER_ACTIONS = {"open": open_drawer, "movements": add_movement, "close": close_drawer}
 
 
-def record_drawer(db, action, data):
+def record_drawer(db, action, data, *, expected_store):
     day = business_date(data.get("date")).isoformat()
     request_id = uuid_field(data.get("id"), "id")
     with db:
         db.execute("BEGIN IMMEDIATE")
+        require_store(db, expected_store)
         created = DRAWER_ACTIONS[action](db, day, request_id, data)
         return created, drawer_state(db, day)

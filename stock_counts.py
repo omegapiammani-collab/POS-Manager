@@ -1,7 +1,8 @@
 """Audited, absolute inventory adjustments from physical counts."""
 from decimal import Decimal, InvalidOperation, localcontext
 
-from sales import SaleConflict, checkout_number, uuid_field
+from sales import SaleConflict, checkout_number, uuid_field, require_store
+from inventory import bump_stock_revision
 from stock_shortages import cover_shortages
 
 
@@ -56,7 +57,7 @@ def expected_quantity(value):
     return expected
 
 
-def record_count(db, product_id, data):
+def record_count(db, product_id, data, *, expected_store=None):
     count_id = uuid_field(data.get("id"), "id")
     expected = expected_quantity(data.get("expected_quantity"))
     counted = checkout_number(data.get("counted_quantity"), "counted_quantity")
@@ -71,6 +72,8 @@ def record_count(db, product_id, data):
     with db, localcontext() as context:
         context.prec = 50
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         existing = db.execute(
             f"SELECT {COUNT_FIELDS}, product_id, requested_unit_cost FROM stock_counts WHERE id = ?",
             (count_id,),
@@ -84,9 +87,12 @@ def record_count(db, product_id, data):
                 raise SaleConflict("idempotency_conflict", "This stock count ID was already used")
             return False, count_result(db, count_id)
 
-        current, previous_average = db.execute(
+        product = db.execute(
             "SELECT quantity, average_cost FROM products WHERE id = ?", (product_id,),
         ).fetchone()
+        if product is None:
+            raise ValueError("Product not found")
+        current, previous_average = product
         current = Decimal(current)
         if current != expected:
             raise SaleConflict("stock_changed", "Stock changed after the count form was opened")
@@ -102,8 +108,12 @@ def record_count(db, product_id, data):
             cost = requested if requested is not None else Decimal(previous_average)
             if current <= 0:
                 average = str(cost)
+            elif previous_average is None:
+                # A cost for newly counted units cannot establish the unknown
+                # cost of the positive stock already on hand.
+                average = None
             else:
-                existing_cost = Decimal(previous_average) if previous_average is not None else cost
+                existing_cost = Decimal(previous_average)
                 average = str((current * existing_cost + delta * cost) / counted)
         elif requested is not None:
             raise ValueError("Unit cost applies only when increasing stock")
@@ -118,6 +128,7 @@ def record_count(db, product_id, data):
             cover_shortages(db, product_id, count_id, -current, cost, from_count=True)
         db.execute("UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?",
                    (str(counted), average, product_id))
+        bump_stock_revision(db, product_id)
         return True, count_result(db, count_id)
 
 

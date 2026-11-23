@@ -1,0 +1,12 @@
+{
+  "sha256": {
+    "backup.html": "6cb7e3130ce657ebef62da66016395898ac9fd894e8011faf902312767d4a485",
+    "backup.js": "9f4996c4817c0fe22f5fd39f8ec2ecd0f11b2b7d889f17a40798399e1128832e",
+    "checkout.html": "cb907722ccb71abc450cbad555b79b57bf4441a6e8480773248f0b3b58eddf42",
+    "checkout.js": "00c3aaa187d8d5db4071aa0eb267d4c3b46e8a805e782a5b334e1749626e97ba",
+    "inventory.css": "fe29c871671f1473be0180e6d02d4435508a2a9bf7266bac2b73b259bd17aee1",
+    "offline-store.js": "33aa7ce2a1cbf0c992d1a3d54718ed29181384107d8b441f6c1c84cf24c26dc8",
+    "sw.js": "00827a01dd0a7419fa519eefdf0d6468f14a2d681531df35f5d5405edff05c11"
+  },
+  "version": 1
+}

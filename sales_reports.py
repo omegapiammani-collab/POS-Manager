@@ -58,6 +58,8 @@ class SalesTotals(Totals):
     cash: Decimal = ZERO
     qr: Decimal = ZERO
     credit: Decimal = ZERO
+    debt_repayments_cash: Decimal = ZERO
+    debt_repayments_qr: Decimal = ZERO
     cash_drawer_expenses: Decimal = ZERO
     external_expenses: Decimal = ZERO
 
@@ -74,6 +76,12 @@ class SalesTotals(Totals):
         else:
             self.external_expenses += amount
 
+    def add_repayment(self, amount, method):
+        if method == "cash":
+            self.debt_repayments_cash += Decimal(amount)
+        elif method == "qr":
+            self.debt_repayments_qr += Decimal(amount)
+
     def result(self):
         totals = super().result()
         expenses = self.cash_drawer_expenses + self.external_expenses
@@ -81,6 +89,8 @@ class SalesTotals(Totals):
         return {
             **totals, "bill_count": self.bill_count,
             "cash": money(self.cash), "qr": money(self.qr), "credit": money(self.credit),
+            "debt_repayments_cash": money(self.debt_repayments_cash),
+            "debt_repayments_qr": money(self.debt_repayments_qr),
             "expenses": money(expenses),
             "cash_drawer_expenses": money(self.cash_drawer_expenses),
             "external_expenses": money(self.external_expenses),
@@ -142,6 +152,12 @@ def sales_report(db, start, end):
         for day, amount, source in active_expenses(db, start, end):
             summary.add_expense(amount, source)
             days[day].add_expense(amount, source)
+        for day, amount, method in db.execute(
+            "SELECT date(created_at, '+7 hours'), amount, method FROM debt_repayments "
+            "WHERE date(created_at, '+7 hours') BETWEEN ? AND ?", (start, end),
+        ):
+            summary.add_repayment(amount, method)
+            days[day].add_repayment(amount, method)
         return {
             "from": start, "to": end, "summary": summary.result(),
             "days": [{"date": day, **group.result()} for day, group in sorted(days.items())],

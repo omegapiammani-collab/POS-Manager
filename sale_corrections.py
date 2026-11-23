@@ -6,10 +6,12 @@ import json
 
 from debts import baht, bill_balances, satang
 from sales import (
+    require_store,
     SaleConflict, checkout_hash, checkout_in_transaction, checkout_number, read_sale, uuid_field, validate_checkout,
 )
 
 from stock_shortages import sale_shortages
+from inventory import bump_stock_revision
 
 CORRECTION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sale_corrections (
@@ -37,9 +39,11 @@ class CorrectionConflict(SaleConflict):
         self.excess = baht(excess)
 
 
-def sale_history(db):
+def sale_history(db, *, expected_store=None):
     with db:
         db.execute("BEGIN")
+        if expected_store is not None:
+            require_store(db, expected_store)
         return [
             {
                 **read_sale(db, sale_id, include_item_ids=True),
@@ -53,7 +57,8 @@ def sale_history(db):
                 "SELECT s.id, c.replacement_id, c.reason, c.excess, c.excess_action "
                 "FROM sales s LEFT JOIN sale_corrections c ON c.sale_id = s.id "
                 "LEFT JOIN offline_sale_times t ON t.sale_id = s.id "
-                "ORDER BY COALESCE(t.sold_at, s.created_at) DESC, s.id DESC",
+                "ORDER BY COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(t.sold_at, s.created_at)), "
+                "COALESCE(t.sold_at, s.created_at)) DESC, s.id DESC",
             )
         ]
 
@@ -119,17 +124,17 @@ def restore_stock(db, sale_id):
                     "stock_shortage_unresolved", "Receive stock before correcting a sale for this product",
                 )
             new_quantity = quantity + restored_qty
-            if known_qty:
-                if average is not None:
-                    existing_valued_qty = quantity + restored_qty - known_qty
-                    new_value = existing_valued_qty * Decimal(average) + known_value
-                    average = str(new_value / new_quantity)
-                else:
-                    average = str(known_value / known_qty)
+            if known_qty < restored_qty or (quantity > 0 and average is None):
+                # Any unknown-cost units make the combined average unknown.
+                average = None
+            elif known_qty:
+                existing_value = quantity * Decimal(average) if quantity > 0 else Decimal(0)
+                average = str((existing_value + known_value) / new_quantity)
             db.execute(
                 "UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?",
                 (str(new_quantity), average, product_id),
             )
+            bump_stock_revision(db, product_id)
 
 
 def previous_allocations(db, sale_id):
@@ -211,10 +216,12 @@ def move_allocations(db, sale_id, previous, destinations):
     return changes
 
 
-def correct_sale(db, sale_id, data):
+def correct_sale(db, sale_id, data, *, expected_store=None):
     correction_id, reason, action, replacement_input, signature, expected_excess = correction_input(data, sale_id)
     with db:
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         existing = db.execute(
             "SELECT request_hash, sale_id, replacement_id, excess, excess_action "
             "FROM sale_corrections WHERE id = ?", (correction_id,),

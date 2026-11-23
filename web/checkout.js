@@ -11,10 +11,12 @@ let products = [];
 let catalogLoaded = false;
 let confirmingPrice = false;
 let customers = [];
+let legacyProblem = null;
 let legacyPending = restorePending();
 let staging = false;
 let syncing = false;
 let connected = navigator.onLine !== false;
+let serverAccessUnconfirmed = false;
 const snapshotKeys = new Set();
 const cacheProblems = new Set();
 let shellReady = false;
@@ -34,12 +36,110 @@ let initializingStore = false;
 let negativePayload = null;
 let abandonPayload = null;
 const store = window.PosOffline;
+const customerPendingKey = "pos-pending-customer";
+const unconfirmedServerMessage = "ยังยืนยันสิทธิ์หรือการเชื่อมต่อเซิร์ฟเวอร์ไม่ได้ บิลที่รอส่งจะยังอยู่ในเครื่อง กรุณาตรวจสอบก่อนลองส่งอีกครั้ง";
+function customerLock(action, { immediate = false } = {}) {
+  if (!navigator.locks) { status("เบราว์เซอร์ไม่รองรับการประสานงานระหว่างแท็บ กรุณาใช้เบราว์เซอร์ที่รองรับ", true); return Promise.resolve(); }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const options = immediate ? { ifAvailable: true } : { signal: controller.signal };
+  return navigator.locks.request("pos-customer-and-store", options, async (lock) => {
+    clearTimeout(timer);
+    if (!lock) { status("แท็บอื่นกำลังทำรายการ กรุณาลองอีกครั้ง ตะกร้ายังคงอยู่", true); return; }
+    return action();
+  }).catch(() => { status("ยังไม่สามารถประสานงานกับแท็บอื่น กรุณาตรวจสอบและลองอีกครั้ง", true); })
+    .finally(() => clearTimeout(timer));
+}
+async function pendingCustomerRaw() {
+  const legacy = localStorage.getItem(customerPendingKey);
+  const saved = await store.getPendingCustomer();
+  if (legacy !== null && saved !== null && legacy !== saved) throw new Error("Multiple customer requests require recovery");
+  return legacy ?? saved;
+}
+async function migratePendingCustomer(binding) {
+  const legacy = localStorage.getItem(customerPendingKey);
+  if (legacy === null || !binding) return;
+  const saved = await store.stageCustomer(legacy, binding);
+  if (saved !== legacy || localStorage.getItem(customerPendingKey) !== legacy) throw new Error("Multiple customer requests require recovery");
+  localStorage.removeItem(customerPendingKey);
+}
+function pendingCustomer(raw) {
+  try {
+    const value = JSON.parse(raw);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!value || Object.keys(value).sort().join(",") !== "binding_id,name,request_id" ||
+        !uuid.test(value.binding_id) || !uuid.test(value.request_id) ||
+        typeof value.name !== "string" || !value.name.trim() || value.name !== value.name.trim() || value.name.length > 120) return null;
+    return value;
+  } catch { return null; }
+}
+async function exportCustomerPending() {
+  try {
+    const legacy = localStorage.getItem(customerPendingKey);
+    let saved;
+    try { saved = await store.getPendingCustomer(); } catch (error) { if (legacy === null) throw error; saved = null; }
+    const raw = legacy !== null && saved !== null && legacy !== saved
+      ? JSON.stringify({legacy, saved}) : (legacy ?? saved);
+    if (raw === null) return;
+    const url = URL.createObjectURL(new Blob([raw], {type: "application/json"}));
+    const link = document.createElement("a"); link.href = url; link.download = "pending-customer.json"; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { status("ส่งออกคำขอลูกค้าไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บ", true); }
+}
+byId("customer-pending-export").addEventListener("click", exportCustomerPending);
+
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
   if (className) node.className = className;
   return node;
+}
+
+// Summaries are informational only; original evidence remains visible and exportable.
+function renderCustomerEvidence(pendingRaw, history) {
+  const pendingNode = byId("customer-pending-summary");
+  pendingNode.replaceChildren();
+  if (pendingRaw !== null) {
+    const pending = pendingCustomer(pendingRaw);
+    pendingNode.append(element("p", pending
+      ? `ชื่อลูกค้า: ${pending.name} • รหัสคำขอ: ${pending.request_id} • รหัสร้าน: ${pending.binding_id}`
+      : "อ่านรายละเอียดคำขอไม่ได้ กรุณาตรวจข้อมูลดิบและส่งออกเพื่อตรวจสอบ"));
+  }
+  const historyNode = byId("customer-history-summary");
+  historyNode.replaceChildren();
+  if (!Array.isArray(history)) {
+    historyNode.append(element("p", "ประวัติอยู่ในรูปแบบที่อ่านไม่ได้ กรุณาตรวจข้อมูลดิบและส่งออกเพื่อตรวจสอบ"));
+    return;
+  }
+  Array.from(history).forEach((record, index) => {
+    const section = element("section");
+    section.append(element("h3", `รายการที่ ${index + 1}`));
+    const pending = record && typeof record === "object" && typeof record.raw === "string" ? pendingCustomer(record.raw) : null;
+    if (!pending || record.from !== pending.binding_id || typeof record.to !== "string" || typeof record.reviewed_at !== "string") {
+      section.append(element("p", "ข้อมูลรายการนี้ไม่ครบหรืออ่านไม่ได้ กรุณาตรวจข้อมูลดิบ"));
+    } else {
+      section.append(element("p", `ชื่อลูกค้า: ${pending.name} • รหัสคำขอ: ${pending.request_id}`));
+      section.append(element("p", `ร้านเดิม: ${record.from} • ร้านที่คืนข้อมูล: ${record.to} • เวลาตรวจ: ${record.reviewed_at}`));
+      const lookup = record.lookup;
+      if (!lookup || lookup.request_id !== pending.request_id || !(lookup.customer === null || (typeof lookup.customer?.name === "string" && typeof lookup.customer?.id === "string"))) {
+        section.append(element("p", "ผลตรวจคำขออ่านไม่ได้ กรุณาตรวจข้อมูลดิบ"));
+      } else if (lookup.customer === null) {
+        section.append(element("p", "ไม่พบรหัสคำขอในฐานที่คืน ข้อมูลนี้ไม่ยืนยันว่าไม่มีรายการในฐานเดิม"));
+      } else {
+        section.append(element("p", `พบคำขอในฐานที่คืน: ${lookup.customer.name} • รหัสลูกค้า: ${lookup.customer.id}`));
+      }
+      if (!Array.isArray(record.matches) || record.matches.some(item => !item || typeof item.name !== "string" || typeof item.id !== "string")) {
+        section.append(element("p", "รายชื่อที่ตรงกันอ่านไม่ได้ กรุณาตรวจข้อมูลดิบ"));
+      } else {
+        section.append(element("p", `รายชื่อที่ตรงกันในฐานที่คืน: ${record.matches.length} รายการ`));
+        const list = element("ul");
+        record.matches.forEach(item => list.append(element("li", `${item.name} • รหัสลูกค้า: ${item.id}`)));
+        section.append(list);
+      }
+    }
+    historyNode.append(section);
+  });
 }
 
 function status(message, error = false) {
@@ -50,7 +150,7 @@ function status(message, error = false) {
 }
 
 async function api(path, data, expectedStore = storeId) {
-  const options = { signal: AbortSignal.timeout(15000) };
+  const options = { signal: AbortSignal.timeout(15000), redirect: "manual" };
   if (expectedStore) options.headers = { "X-POS-Store-ID": expectedStore };
   if (data !== undefined) {
     options.method = "POST";
@@ -64,13 +164,29 @@ async function api(path, data, expectedStore = storeId) {
     setConnected(false);
     throw failure;
   }
-  setConnected(response.status < 500);
-  const result = await response.json();
-  if (response.ok) return result;
+  const unconfirmed = () => {
+    serverAccessUnconfirmed = true;
+    setConnected(false);
+    status(unconfirmedServerMessage, true);
+    return Object.assign(new Error("Server response unconfirmed"), { code: "access_unconfirmed" });
+  };
+  if (response.redirected || response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) throw unconfirmed();
+  const mediaType = (response.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();
+  if (mediaType !== "application/json") throw unconfirmed();
+  let result;
+  try { result = await response.json(); } catch { throw unconfirmed(); }
+  if (response.ok) {
+    if (path === "/store-identity") serverAccessUnconfirmed = false;
+    setConnected(!serverAccessUnconfirmed);
+    return result;
+  }
+  if (!result || typeof result !== "object") throw unconfirmed();
   const error = new Error(result.error || "บันทึกไม่สำเร็จ");
   error.status = response.status;
   error.code = result.code;
   if (error.code === "store_mismatch") blockStore("ฐานข้อมูลร้านเปลี่ยน กรุณาตรวจสอบก่อนขายหรือส่งบิล");
+  if ((response.status === 401 || response.status === 403) && error.code !== "store_mismatch") throw unconfirmed();
+  setConnected(response.status < 500);
   throw error;
 }
 
@@ -87,7 +203,8 @@ function blockStore(text, canBind = false, refreshQueue = true) {
 async function verifyServerStore() {
   if (!storeReady || !storeId || navigator.onLine === false) return false;
   try {
-    const observed = (await api("/store-identity")).binding_id;
+    const identity = await api("/store-identity");
+    const observed = identity.binding_id;
     if (observed !== storeId) {
       blockStore("ฐานข้อมูลร้านเปลี่ยนหรือถูกกู้คืน กรุณาโหลดหน้านี้ใหม่เพื่อตรวจสอบบิลค้าง");
       return false;
@@ -98,12 +215,34 @@ async function verifyServerStore() {
   }
 }
 
-async function initializeStore() {
+function initializeStore() {
+  if (!navigator.locks) {
+    blockStore("เบราว์เซอร์ไม่รองรับการประสานงานระหว่างแท็บ จึงยังขายหรือส่งคิวไม่ได้");
+    return Promise.resolve();
+  }
+  return customerLock(initializeStoreLocked);
+}
+async function initializeStoreLocked() {
   if (initializingStore) return;
+  if (legacyProblem) {
+    blockStore(legacyProblem);
+    return;
+  }
   initializingStore = true;
   try {
     storeId = await store.getBinding();
     const queued = await store.list();
+    await migratePendingCustomer(storeId);
+    const pendingRaw = await pendingCustomerRaw();
+    const reviewHistory = await store.getCustomerReviewHistory();
+    renderCustomerEvidence(pendingRaw, reviewHistory);
+    byId("customer-pending-view").hidden = pendingRaw === null;
+    byId("customer-pending-details").textContent = pendingRaw === null ? "" : String(pendingRaw);
+    byId("customer-history-view").hidden = Array.isArray(reviewHistory) && !reviewHistory.length;
+    byId("customer-history-details").textContent = JSON.stringify(reviewHistory, null, 2);
+    byId("customer-history-export").hidden = Array.isArray(reviewHistory) && !reviewHistory.length;
+    byId("customer-pending-export").hidden = pendingRaw === null;
+    byId("customer-restore-review").hidden = true;
     if (navigator.onLine !== false) {
       try {
         const identity = await api("/store-identity");
@@ -122,10 +261,16 @@ async function initializeStore() {
       }
     }
     if (observedStoreId) {
-      if (!storeId && !queued.length && !legacyPending) {
+      if (!storeId && !queued.length && !legacyPending && pendingRaw === null) {
         const result = await store.bindStore(observedStoreId, { ancestors: observedAncestors });
         if (!result.bound) throw new Error("Store binding changed");
         storeId = observedStoreId;
+      }
+      if (pendingRaw !== null && (!pendingCustomer(pendingRaw) || pendingCustomer(pendingRaw).binding_id !== observedStoreId || storeId !== observedStoreId)) {
+        const pending = pendingCustomer(pendingRaw);
+        byId("customer-restore-review").hidden = !(pending && storeId && pending.binding_id === storeId && observedStoreId !== storeId && observedAncestors.includes(storeId));
+        blockStore("มีคำขอลูกค้าที่ยังไม่ยืนยันหรือข้อมูลอ่านไม่ได้ กรุณาส่งออกและตรวจสอบฐานข้อมูลเดิมก่อนดำเนินการ");
+        return;
       }
       if (storeId !== observedStoreId || legacyPending) {
         const fromRestore = Boolean(storeId && observedAncestors.includes(storeId));
@@ -149,6 +294,7 @@ async function initializeStore() {
     loadCustomers();
     syncQueue();
   } catch (error) {
+    byId("customer-pending-export").hidden = false;
     blockStore(error.message === "Offline database upgrade blocked by another tab"
       ? "มีแท็บ POS รุ่นเก่าเปิดอยู่ กรุณาปิดแท็บนั้นแล้วโหลดหน้านี้ใหม่ ข้อมูลบิลค้างยังอยู่ในเครื่อง"
       : "ตรวจสอบข้อมูลร้านในเครื่องไม่ได้ กรุณาตรวจสอบพื้นที่จัดเก็บและสำรองบิล");
@@ -156,6 +302,70 @@ async function initializeStore() {
     initializingStore = false;
   }
 }
+
+let restoreCustomerReview = null;
+async function customerRestoreEvidence(raw, expected, target) {
+  const pending = pendingCustomer(raw);
+  if (!pending || pending.binding_id !== expected) throw new Error("คำขอไม่ตรงกับร้านเดิม");
+  const identity = await api("/store-identity");
+  if (identity.binding_id !== target || !Array.isArray(identity.restore_ancestors) || !identity.restore_ancestors.includes(expected)) throw new Error("ฐานข้อมูลเปลี่ยนหรือไม่ใช่ฐานที่กู้คืน กรุณาโหลดหน้าใหม่");
+  const lookup = await api("/customer-requests/" + encodeURIComponent(pending.request_id), undefined, target);
+  if (lookup.request_id !== pending.request_id || !(lookup.customer === null || (typeof lookup.customer?.id === "string" && typeof lookup.customer.name === "string"))) throw new Error("ตรวจสอบคำขอจากฐานข้อมูลไม่ได้");
+  const list = await api("/customers", undefined, target);
+  if (!Array.isArray(list)) throw new Error("ตรวจสอบรายชื่อลูกค้าไม่ได้");
+  return { pending, lookup, matches: list.filter(customer => customer.name === pending.name) };
+}
+byId("customer-history-export").addEventListener("click", async () => {
+  try {
+    const history = await store.getCustomerReviewHistory();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(history, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = "customer-review-history.json"; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch { status("ส่งออกประวัติคำขอลูกค้าไม่สำเร็จ", true); }
+});
+byId("customer-restore-review").addEventListener("click", () => customerLock(async () => {
+  const dialog = byId("customer-restore-dialog");
+  const button = byId("customer-restore-review");
+  button.disabled = true;
+  try {
+    const raw = await pendingCustomerRaw();
+    const evidence = await customerRestoreEvidence(raw, storeId, observedStoreId);
+    restoreCustomerReview = { raw, from: storeId, to: observedStoreId, evidence };
+    byId("customer-restore-details").textContent = "ชื่อ " + evidence.pending.name + " · รหัสคำขอ " + evidence.pending.request_id + " · ฐานเดิม " + storeId + " · ฐานกู้คืน " + observedStoreId;
+    byId("customer-restore-result").textContent = evidence.lookup.customer
+      ? "พบรหัสคำขอนี้ในฐานกู้คืน: " + evidence.lookup.customer.name + " · รหัสลูกค้า " + evidence.lookup.customer.id
+      : "ไม่พบรหัสคำขอนี้ในฐานกู้คืน การไม่พบไม่ได้ยืนยันว่าไม่มีรายการในฐานเดิมหรือแหล่งอื่น";
+    byId("customer-restore-matches").replaceChildren(...evidence.matches.map(customer => element("li", customer.name + " · รหัสลูกค้า " + customer.id)));
+    byId("customer-restore-confirmed").checked = false;
+    byId("customer-restore-finish").disabled = true;
+    byId("customer-restore-error").hidden = true;
+    dialog.showModal();
+  } catch (error) {
+    byId("sale-store-message").textContent = error.message || "ตรวจสอบคำขอไม่สำเร็จ กรุณาลองใหม่";
+  } finally { button.disabled = false; }
+}));
+byId("customer-restore-confirmed").addEventListener("change", event => { byId("customer-restore-finish").disabled = !event.target.checked; });
+byId("customer-restore-cancel").addEventListener("click", () => byId("customer-restore-dialog").close());
+byId("customer-restore-finish").addEventListener("click", () => customerLock(async () => {
+  const button = byId("customer-restore-finish");
+  button.disabled = true;
+  try {
+    const review = restoreCustomerReview;
+    if (!review || !byId("customer-restore-confirmed").checked || await pendingCustomerRaw() !== review.raw || await store.getBinding() !== review.from) throw new Error("ข้อมูลคำขอเปลี่ยน กรุณาตรวจสอบใหม่");
+    const evidence = await customerRestoreEvidence(review.raw, review.from, review.to);
+    if (JSON.stringify(evidence) !== JSON.stringify(review.evidence)) throw new Error("ข้อมูลลูกค้าเปลี่ยน กรุณากลับไปตรวจสอบใหม่");
+    const identity = await api("/store-identity");
+    if (identity.binding_id !== review.to || !identity.restore_ancestors?.includes(review.from)) throw new Error("ฐานข้อมูลเปลี่ยน กรุณาตรวจสอบใหม่");
+    const customerReview = { raw: review.raw, from: review.from, to: review.to, lookup: evidence.lookup, matches: evidence.matches, reviewed_at: new Date().toISOString() };
+    const result = await store.bindStore(review.to, { expectedCurrent: review.from, acceptRestore: true, ancestors: identity.restore_ancestors, customerReview });
+    if (!result.bound) throw new Error("คำขอหรือฐานข้อมูลเปลี่ยน กรุณาตรวจสอบใหม่");
+    location.reload();
+  } catch (error) {
+    byId("customer-restore-error").textContent = error.message || "ตรวจสอบไม่สำเร็จ";
+    byId("customer-restore-error").hidden = false;
+    button.disabled = false;
+  }
+}));
 
 byId("sale-store-bind")?.addEventListener("click", () => {
   if (!observedStoreId) return;
@@ -168,10 +378,11 @@ byId("sale-store-bind")?.addEventListener("click", () => {
   byId("sale-store-confirm").showModal();
 });
 byId("sale-store-cancel")?.addEventListener("click", () => byId("sale-store-confirm").close());
-byId("sale-store-confirm-button")?.addEventListener("click", async () => {
+byId("sale-store-confirm-button")?.addEventListener("click", () => customerLock(async () => {
   const button = byId("sale-store-confirm-button");
   button.disabled = true;
   try {
+    if (await pendingCustomerRaw() !== null) throw new Error("Pending customer request");
     const identity = await api("/store-identity");
     const current = identity.binding_id;
     if (current !== observedStoreId || !Array.isArray(identity.restore_ancestors)) throw new Error("Store changed");
@@ -185,7 +396,7 @@ byId("sale-store-confirm-button")?.addEventListener("click", async () => {
   } catch {
     byId("sale-store-confirm-message").textContent = "ยืนยันไม่สำเร็จ กรุณาตรวจสอบฐานข้อมูลและบิลค้างแล้วลองใหม่";
   } finally { button.disabled = false; }
-});
+}));
 
 function scaledDecimal(value, digits, allowExponent = false) {
   const match = /^(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(value);
@@ -407,12 +618,20 @@ function renderCustomers(selected = "") {
 }
 
 function restorePending() {
+  let raw;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(storageKey));
-    return typeof saved?.id === "string" && Array.isArray(saved.items) && saved.payments ? saved : null;
+    raw = sessionStorage.getItem(storageKey);
   } catch {
+    legacyProblem = "อ่านข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่ได้ กรุณาตรวจสอบพื้นที่จัดเก็บและสำรองบิลจากแท็บนี้ก่อนโหลดหน้าใหม่";
     return null;
   }
+  if (raw === null) return null;
+  try {
+    const saved = JSON.parse(raw);
+    if (typeof saved?.id === "string" && Array.isArray(saved.items) && saved.payments) return saved;
+  } catch { /* Preserve the original string for backup. */ }
+  legacyProblem = "ข้อมูลบิลรุ่นเดิมในแท็บนี้ไม่สมบูรณ์ กรุณาสำรองบิลจากแท็บนี้และติดต่อผู้ดูแลก่อนโหลดหน้าใหม่";
+  return null;
 }
 
 function setConnected(value) {
@@ -477,7 +696,8 @@ async function showQueue() {
   summary.textContent = queueProblem
     ? "อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์"
     : "รอส่ง " + (pendingCount + Number(Boolean(legacyPending))) + " บิล · ต้องตรวจสอบ " + conflictCount + " บิล";
-  queue.replaceChildren(...entries.map(({ payload, state, error }) => {
+  queue.replaceChildren(...entries.map((entry) => {
+    const { payload, state, error } = entry;
     const row = element("li");
     const total = paymentMethods.reduce((sum, method) =>
       sum + (scaledDecimal(payload.payments[method], 2, true) ?? 0n), 0n
@@ -498,7 +718,7 @@ async function showQueue() {
       retry.type = "button";
       retry.disabled = !storeReady || syncing || staging;
       retry.setAttribute("aria-label", "ลองส่งบิล " + payload.id + " อีกครั้ง");
-      retry.addEventListener("click", () => retryQueue(payload.id));
+      retry.addEventListener("click", () => retryQueue(entry));
       row.append(retry);
       if (byId("sale-abandon")) {
         const abandon = element("button", "ยกเลิกบิลค้าง", "secondary");
@@ -507,7 +727,7 @@ async function showQueue() {
         abandon.setAttribute("aria-label", "ยกเลิกบิลค้าง " + payload.id);
         abandon.addEventListener("click", () => {
           if (syncing || staging) return;
-          abandonPayload = payload;
+          abandonPayload = entry;
           byId("sale-abandon-reference").textContent = "เลขบิล " + payload.id;
           byId("sale-abandon").showModal();
         });
@@ -518,7 +738,7 @@ async function showQueue() {
         confirm.type = "button";
         confirm.disabled = !storeReady || syncing || staging;
         confirm.setAttribute("aria-label", "ขายบิล " + payload.id + " แม้สต๊อกไม่พอ");
-        confirm.addEventListener("click", () => openNegativeConfirmation(payload));
+        confirm.addEventListener("click", () => openNegativeConfirmation(entry));
         row.append(confirm);
       }
     }
@@ -631,16 +851,18 @@ const saleErrors = {
 };
 
 byId("sale-abandon-cancel")?.addEventListener("click", () => byId("sale-abandon").close());
-byId("sale-abandon-confirm")?.addEventListener("click", async () => {
-  const payload = abandonPayload;
-  if (!storeReady || !payload || syncing || staging) return;
+byId("sale-abandon-confirm")?.addEventListener("click", () => customerLock(async () => {
+  const entry = abandonPayload;
+  if (!storeReady || !entry || syncing || staging) return;
+  const { payload } = entry;
   const expectedStore = storeId;
   syncing = true;
   byId("sale-abandon").close();
   try {
     await showQueue();
+    if (!(await store.currentEntry(entry, expectedStore))) throw new Error("Queue changed");
     await api("/sales/" + encodeURIComponent(payload.id) + "/abandon", {}, expectedStore);
-    await store.remove(payload.id, expectedStore);
+    if (!(await store.changeEntry(entry, expectedStore, null))) throw new Error("Queue changed");
     status("ยกเลิกบิลค้างแล้ว สามารถเริ่มบิลใหม่ได้");
   } catch (error) {
     if (error.code === "sale_already_recorded") {
@@ -654,20 +876,63 @@ byId("sale-abandon-confirm")?.addEventListener("click", async () => {
     await showQueue();
     flushRequestedSync();
   }
-});
+}));
 
-async function syncSale(payload, allowNegative = false, expectedStore = storeId) {
+function confirmsSale(sale, payload) {
+  const decimal = (value, digits) => typeof value === "string" ? scaledDecimal(value, digits, true) : null;
+  const sameId = (left, right) => typeof left === "string" && typeof right === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(left)
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(right)
+    && left.toLowerCase() === right.toLowerCase();
+  if (!payload || !Array.isArray(payload.items) || !payload.payments || typeof payload.payments !== "object"
+      || !sale || typeof sale !== "object" || sale.id !== payload.id || typeof sale.created_at !== "string"
+      || !sale.created_at || (sale.sold_at !== undefined && typeof sale.sold_at !== "string")
+      || (payload.sold_at !== undefined && sale.sold_at !== payload.sold_at)
+      || (payload.customer_id == null ? sale.customer_id !== null : !sameId(sale.customer_id, payload.customer_id))
+      || (sale.customer_name !== null && typeof sale.customer_name !== "string")
+      || !Array.isArray(sale.items) || sale.items.length !== payload.items.length
+      || !sale.payments || typeof sale.payments !== "object") return false;
+  if (sale.stock_shortages !== undefined && (!Array.isArray(sale.stock_shortages)
+      || sale.stock_shortages.some((shortage) => !shortage || typeof shortage.remaining !== "string"
+        || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(shortage.remaining)
+        || !Number.isFinite(Number(shortage.remaining))))) return false;
+  let total = 0n;
+  for (let i = 0; i < payload.items.length; i++) {
+    const requested = payload.items[i], item = sale.items[i];
+    if (!requested || !item || !sameId(item.product_id, requested.product_id) || !sameId(item.unit_id, requested.unit_id)
+        || typeof item.name !== "string" || typeof item.unit_name !== "string"
+        || decimal(item.quantity, 6) === null || decimal(item.quantity, 6) !== decimal(requested.quantity, 6)
+        || decimal(item.unit_price, 6) === null || decimal(item.unit_price, 6) !== decimal(requested.expected_unit_price, 6)) return false;
+    const expectedLine = lineTotal({ quantity: requested.quantity, unit: { price: requested.expected_unit_price } }, true);
+    if (expectedLine === null || decimal(item.total, 2) !== expectedLine) return false;
+    total += expectedLine;
+  }
+  if (decimal(sale.total, 2) !== total) return false;
+  let paid = 0n;
+  for (const method of paymentMethods) {
+    const value = decimal(sale.payments[method], 2);
+    if (value === null || value !== decimal(payload.payments[method], 2)) return false;
+    paid += value;
+  }
+  return paid === total;
+}
+
+async function syncSale(entry, allowNegative = false, expectedStore = storeId) {
+  const { payload } = entry;
+  if (!(await store.currentEntry(entry, expectedStore))) return { state: "pending" };
   let sale;
   try {
     sale = await api(allowNegative ? "/sales/allow-negative" : payload.offline ? "/offline-sales" : "/sales", payload, expectedStore);
   } catch (failure) {
-    if (failure.code === "store_mismatch" || ![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending" };
+    if (failure.code === "store_mismatch" || ![400, 404, 409, 413, 415, 422].includes(failure.status)) return { state: "pending", accessUnconfirmed: failure.code === "access_unconfirmed" };
     const reason = saleErrors[failure.code] ?? "บันทึกบิลไม่สำเร็จ กรุณาตรวจสอบรายการและยอดชำระ";
-    await store.update(payload.id, "conflict", reason, expectedStore);
+    if (!(await store.changeEntry(entry, expectedStore, "conflict", reason))) return { state: "pending" };
     return { state: "conflict", reason };
   }
+  // A matching identifier alone cannot confirm a complete, consistent receipt.
+  if (!confirmsSale(sale, payload)) return { state: "pending" };
   try {
-    await store.remove(payload.id, expectedStore);
+    if (!(await store.changeEntry(entry, expectedStore, null))) return { state: "pending" };
   } catch {
     // The server has confirmed the sale. Retrying the retained identifier is safe.
     status("บันทึกบิลแล้ว แต่ล้างคิวในเครื่องไม่สำเร็จ", true);
@@ -675,9 +940,10 @@ async function syncSale(payload, allowNegative = false, expectedStore = storeId)
   return { state: "synced", sale };
 }
 
-function openNegativeConfirmation(payload) {
+function openNegativeConfirmation(entry) {
+  const { payload } = entry;
   if (!storeReady || syncing || staging || payload.offline) return;
-  negativePayload = payload;
+  negativePayload = entry;
   byId("sale-negative-reference").textContent = "เลขบิล " + payload.id;
   byId("sale-negative-items").replaceChildren(...payload.items.map((item) => {
     const product = products.find(({ id }) => id === item.product_id);
@@ -693,15 +959,15 @@ function openNegativeConfirmation(payload) {
 }
 
 byId("sale-negative-cancel")?.addEventListener("click", () => byId("sale-negative").close());
-byId("sale-negative-confirm")?.addEventListener("click", async () => {
-  const payload = negativePayload;
-  if (!storeReady || !payload || syncing || staging) return;
+byId("sale-negative-confirm")?.addEventListener("click", () => customerLock(async () => {
+  const entry = negativePayload;
+  if (!storeReady || !entry || syncing || staging) return;
   const expectedStore = storeId;
   syncing = true;
   byId("sale-negative").close();
   try {
     await showQueue();
-    const result = await syncSale(payload, true, expectedStore);
+    const result = await syncSale(entry, true, expectedStore);
     if (result.state === "synced") {
       const shortage = hasStockShortage(result.sale);
       status(shortage ? "บันทึกบิลแล้ว · ตรวจสอบสต๊อกติดลบที่หน้าสินค้าและสต๊อก" : "บันทึกบิลแล้ว", shortage);
@@ -710,7 +976,7 @@ byId("sale-negative-confirm")?.addEventListener("click", async () => {
     } else if (result.state === "conflict") {
       status("บิลยังต้องตรวจสอบ · " + result.reason, true);
     } else {
-      status("ยังไม่ทราบผล กรุณาตรวจสอบและยืนยันส่งบิลเดิมอีกครั้ง", true);
+      status(result.accessUnconfirmed ? unconfirmedServerMessage : "ยังไม่ทราบผล กรุณาตรวจสอบและยืนยันส่งบิลเดิมอีกครั้ง", true);
     }
   } catch {
     status("จัดการคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบบิลเดิมก่อนลองอีกครั้ง", true);
@@ -720,9 +986,10 @@ byId("sale-negative-confirm")?.addEventListener("click", async () => {
     await showQueue();
     flushRequestedSync();
   }
-});
+}));
 
-async function syncQueue(onlyId) {
+function syncQueue(onlyEntry) { return customerLock(() => syncQueueLocked(onlyEntry)); }
+async function syncQueueLocked(onlyEntry) {
   if (!storeReady || syncing || staging) return;
   const expectedStore = storeId;
   syncing = true;
@@ -731,19 +998,21 @@ async function syncQueue(onlyId) {
   let conflicts = 0;
   let shortages = 0;
   let deferred = false;
+  let accessUnconfirmed = false;
   try {
     await showQueue();
     await migrateLegacy();
     if (navigator.onLine === false || !(await verifyServerStore()) || storeId !== expectedStore) return;
     for (const entry of await store.listForStore(expectedStore)) {
       if (stagedDuringSync.has(entry.payload.id)) continue;
-      if (onlyId ? entry.payload.id !== onlyId : entry.state !== "pending") continue;
-      let result = await syncSale(entry.payload, false, expectedStore);
-      if (result.state === "pending" && navigator.onLine !== false) {
+      if (onlyEntry ? entry.sequence !== onlyEntry.sequence : entry.state !== "pending") continue;
+      const selected = onlyEntry ?? entry;
+      let result = await syncSale(selected, false, expectedStore);
+      if (result.state === "pending" && !result.accessUnconfirmed && navigator.onLine !== false) {
         // The online event can arrive before the network can carry requests.
         // Reuse the queued identifier if the server accepted the first attempt.
         await new Promise((resolve) => setTimeout(resolve, 500));
-        if (navigator.onLine !== false) result = await syncSale(entry.payload, false, expectedStore);
+        if (navigator.onLine !== false) result = await syncSale(selected, false, expectedStore);
       }
       if (result.state === "synced") {
         synced++;
@@ -751,6 +1020,7 @@ async function syncQueue(onlyId) {
       }
       if (result.state === "conflict") conflicts++;
       if (result.state === "pending") {
+        accessUnconfirmed = Boolean(result.accessUnconfirmed);
         deferred = true;
         break;
       }
@@ -761,7 +1031,7 @@ async function syncQueue(onlyId) {
       if (synced) parts.push("ส่งสำเร็จ " + synced + " บิล");
       if (shortages) parts.push("สต๊อกติดลบ " + shortages + " บิล · ตรวจที่หน้าสินค้าและสต๊อก");
       if (conflicts) parts.push("ต้องตรวจสอบ " + conflicts + " บิล");
-      if (deferred) parts.push("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
+      if (deferred) parts.push(accessUnconfirmed ? unconfirmedServerMessage : "ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้");
       status(parts.join(" · "), Boolean(conflicts || deferred || shortages));
     }
   } catch {
@@ -779,8 +1049,9 @@ function flushRequestedSync() {
   syncQueue();
 }
 
-paymentForm.addEventListener("submit", async (event) => {
+paymentForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  customerLock(async () => {
   if (!storeReady || staging || byId("sale-submit").disabled) return;
   const expectedStore = storeId;
   const paid = amounts();
@@ -807,10 +1078,10 @@ paymentForm.addEventListener("submit", async (event) => {
   lockSaleFields();
   let staged = false;
   try {
-    await store.put(payload, expectedStore);
+    const entry = await store.put(payload, expectedStore);
     staged = true;
     let result = { state: "pending" };
-    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(payload, false, expectedStore);
+    if (!queuedDuringSync && connected && navigator.onLine !== false) result = await syncSale(entry, false, expectedStore);
     if (queuedDuringSync) syncRequested = true;
     cart.clear();
     paymentForm.reset();
@@ -823,7 +1094,7 @@ paymentForm.addEventListener("submit", async (event) => {
       status("บิลอยู่ในคิวตรวจสอบ · " + result.reason, true);
       if (connected) loadProducts();
     } else {
-      status("บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล");
+      status(result.accessUnconfirmed ? unconfirmedServerMessage : "บันทึกบิลในเครื่องแล้ว · รอส่งข้อมูล", Boolean(result.accessUnconfirmed));
     }
     showReceipt(result.sale ?? receipt, result.state, change);
   } catch (error) {
@@ -846,6 +1117,7 @@ paymentForm.addEventListener("submit", async (event) => {
     await showQueue();
     flushRequestedSync();
   }
+  }, { immediate: true });
 });
 
 paymentForm.addEventListener("input", (event) => {
@@ -859,12 +1131,12 @@ byId("sale-cash-all").addEventListener("click", () => {
   clearQr();
   updatePayment();
 });
-function retryQueue(onlyId) {
+function retryQueue(onlyEntry) {
   if (navigator.onLine === false) {
     status("ยังออฟไลน์อยู่ บิลยังเก็บไว้ในเครื่องนี้", true);
     return;
   }
-  syncQueue(onlyId);
+  syncQueue(onlyEntry);
 }
 
 byId("sale-retry").addEventListener("click", () => retryQueue());
@@ -895,43 +1167,73 @@ const customerDialog = byId("sale-customer");
 const customerForm = customerDialog.querySelector("form");
 const customerError = customerForm.querySelector(".error");
 const customerSave = customerForm.querySelector("button:not([type])");
-byId("sale-new-customer").addEventListener("click", () => {
+let displayedCustomerRaw = null;
+function displayPendingCustomer(raw) {
+  const pending = raw === null ? null : pendingCustomer(raw);
+  displayedCustomerRaw = raw;
+  byId("customer-export").hidden = raw === null;
+  customerForm.elements.name.readOnly = raw !== null;
+  if (pending) customerForm.elements.name.value = pending.name;
+  customerError.textContent = pending ? "มีคำขอเดิมที่ยังไม่ยืนยัน ตรวจสอบชื่อแล้วกดบันทึกอีกครั้ง" : raw === null ? "คำขอเดิมเปลี่ยนแล้ว กรุณาตรวจสอบก่อนบันทึก" : "คำขอเดิมอ่านไม่ได้ กรุณาส่งออกและตรวจสอบ";
+  customerError.hidden = false;
+}
+byId("customer-export").addEventListener("click", exportCustomerPending);
+byId("sale-new-customer").addEventListener("click", async () => {
   if (!connected || !storeReady) return;
   customerForm.reset();
   customerError.hidden = true;
+  try {
+    const raw = await pendingCustomerRaw();
+    displayedCustomerRaw = raw;
+    byId("customer-export").hidden = raw === null;
+    customerForm.elements.name.readOnly = raw !== null;
+    if (raw !== null) displayPendingCustomer(raw);
+  } catch { customerError.textContent = "อ่านพื้นที่จัดเก็บไม่ได้"; customerError.hidden = false; }
   customerDialog.showModal();
 });
 const customerClose = customerDialog.querySelector("[data-customer-close]");
 customerClose.addEventListener("click", () => customerDialog.close());
-customerDialog.addEventListener("cancel", (event) => {
-  if (customerSave.disabled) event.preventDefault();
-});
-customerForm.addEventListener("submit", async (event) => {
+customerDialog.addEventListener("cancel", (event) => { if (customerSave.disabled) event.preventDefault(); });
+customerForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  customerLock(async () => {
   if (customerSave.disabled) return;
-  if (!connected || !storeReady) {
-    customerError.textContent = "เพิ่มลูกค้าได้เมื่อเชื่อมต่อกับระบบ";
-    customerError.hidden = false;
-    return;
-  }
-  const name = customerForm.elements.name.value.trim();
-  if (!name) return;
   customerSave.disabled = customerClose.disabled = true;
-  const expectedStore = storeId;
-  customerError.hidden = true;
   try {
-    const customer = await api("/customers", { name }, expectedStore);
-    if (storeId !== expectedStore || !storeReady) throw new Error("Store changed");
+    if (!connected || !storeReady) throw new Error("เพิ่มลูกค้าได้เมื่อเชื่อมต่อกับระบบ");
+    const currentIdentity = await api("/store-identity");
+    if (currentIdentity.binding_id !== storeId) throw new Error("ฐานข้อมูลเปลี่ยน กรุณาโหลดหน้าใหม่");
+    if (currentIdentity.customer_request_id !== true) throw new Error("เซิร์ฟเวอร์ไม่รองรับการป้องกันคำขอซ้ำ กรุณาอัปเดตระบบ");
+    if (await store.getBinding() !== storeId) throw new Error("ฐานข้อมูลเปลี่ยน กรุณาโหลดหน้าใหม่");
+    let raw = await pendingCustomerRaw();
+    if (raw !== displayedCustomerRaw) { displayPendingCustomer(raw); return; }
+    let pending = raw === null ? null : pendingCustomer(raw);
+    if (raw !== null && !pending) throw new Error("คำขอเดิมอ่านไม่ได้ กรุณาส่งออกและตรวจสอบ");
+    if (!pending) {
+      const name = customerForm.elements.name.value.trim();
+      if (!name) throw new Error("กรุณาระบุชื่อลูกค้า");
+      pending = {name, request_id: crypto.randomUUID(), binding_id: storeId};
+      raw = JSON.stringify(pending);
+      const staged = await store.stageCustomer(raw, storeId);
+      if (staged !== raw) { displayPendingCustomer(staged); return; }
+      displayedCustomerRaw = raw;
+    }
+    byId("customer-export").hidden = false;
+    const identity = await api("/store-identity");
+    if (pending.binding_id !== storeId || identity.binding_id !== pending.binding_id || identity.customer_request_id !== true) throw new Error("ฐานข้อมูลเปลี่ยนหรือเซิร์ฟเวอร์ไม่รองรับ กรุณาตรวจสอบคำขอค้าง");
+    const customer = await api("/customers", {name: pending.name, request_id: pending.request_id}, pending.binding_id);
+    if (storeId !== pending.binding_id || !storeReady || customer.name !== pending.name || typeof customer.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customer.id)) throw new Error("ตรวจสอบคำตอบจากระบบไม่ได้");
+    if (!(await store.clearCustomer(raw, pending.binding_id))) throw new Error("คำขอในเครื่องเปลี่ยน กรุณาตรวจสอบก่อนดำเนินการ");
+    customers = customers.filter((item) => item.id !== customer.id);
     customers.push(customer);
     renderCustomers(customer.id);
-    saveSnapshot("customers", customers, expectedStore);
+    await saveSnapshot("customers", customers, pending.binding_id);
     customerDialog.close();
-  } catch {
-    customerError.textContent = "บันทึกลูกค้าไม่สำเร็จ กรุณาลองอีกครั้ง";
+  } catch (error) {
+    customerError.textContent = error.message || "บันทึกลูกค้าไม่สำเร็จ กรุณาลองอีกครั้ง";
     customerError.hidden = false;
-  } finally {
-    customerSave.disabled = customerClose.disabled = false;
-  }
+  } finally { customerSave.disabled = customerClose.disabled = false; }
+  });
 });
 
 async function saveSnapshot(key, value, expectedStore = storeId) {
@@ -1093,7 +1395,7 @@ window.addEventListener("online", async () => {
       try {
         const entries = await store.listForStore(storeId);
         if (entries.some(({ state }) => state === "pending") || legacyPending) {
-          status("ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้", true);
+          status(serverAccessUnconfirmed ? unconfirmedServerMessage : "ส่งข้อมูลไม่ได้ คิวบิลยังอยู่ในเครื่องนี้", true);
         }
       } catch {
         status("อ่านคิวในเครื่องไม่สำเร็จ กรุณาตรวจสอบพื้นที่จัดเก็บของเบราว์เซอร์", true);

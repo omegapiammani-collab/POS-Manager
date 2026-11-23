@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 import re
 
-from sales import SaleConflict, checkout_number, uuid_field
+from sales import SaleConflict, checkout_number, uuid_field, require_store
 
 EXPENSE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS expenses (
@@ -62,7 +62,7 @@ def read_expense(db, expense_id):
     return dict(row)
 
 
-def record_expense(db, data):
+def record_expense(db, data, *, expected_store=None):
     expense_id = uuid_field(data.get("id"), "id")
     day = business_date(data.get("date")).isoformat()
     description = expense_text(data.get("description"), "description")
@@ -73,6 +73,8 @@ def record_expense(db, data):
     details = (day, description, amount, source)
     with db:
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         existing = db.execute(
             "SELECT date, description, amount, source FROM expenses WHERE id = ?", (expense_id,),
         ).fetchone()
@@ -87,10 +89,12 @@ def record_expense(db, data):
         return True, read_expense(db, expense_id)
 
 
-def void_expense(db, expense_id, data):
+def void_expense(db, expense_id, data, *, expected_store=None):
     reason = expense_text(data.get("reason"), "reason")
     with db:
         db.execute("BEGIN IMMEDIATE")
+        if expected_store is not None:
+            require_store(db, expected_store)
         expense = read_expense(db, expense_id)
         if expense["status"] == "voided":
             if expense["void_reason"] != reason:

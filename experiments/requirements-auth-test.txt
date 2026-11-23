@@ -1,0 +1,3 @@
+# Test-only dependencies, not required or imported by the local POS server.
+PyJWT[crypto]==2.15.1
+cryptography==50.0.2

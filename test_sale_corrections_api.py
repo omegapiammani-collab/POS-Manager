@@ -88,6 +88,21 @@ class SaleCorrectionsApiTests(unittest.TestCase):
             "replacement": replacement, "excess_action": action,
         }
 
+    def test_history_sorts_legacy_and_offline_timestamps_by_instant(self):
+        legacy = self.sell()
+        early = self.sell()
+        offline_payload = self.sale()
+        offline_payload["sold_at"] = "2025-06-14T10:00:00.000Z"
+        offline = self.created("/offline-sales", offline_payload)
+        tied = self.sell()
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14 16:00:00", legacy["id"]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14T01:00:00.000Z", early["id"]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14 23:00:00", offline["id"]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14 10:00:00", tied["id"]))
+        expected = [legacy["id"], *sorted([offline["id"], tied["id"]], reverse=True), early["id"]]
+        self.assertEqual([row["id"] for row in self.expect(200, "/sale-history")], expected)
+
     @staticmethod
     def correction_path(sale):
         return f"/sales/{sale['id']}/corrections"
@@ -271,3 +286,22 @@ class SaleCorrectionsApiTests(unittest.TestCase):
         self.created(self.correction_path(original), self.correction(action="apply"))
         paid = {bill["id"]: Decimal(bill["paid"]) for bill in self.debt()["bills"]}
         self.assertEqual(paid, {offline["id"]: Decimal(40), online["id"]: Decimal(15)})
+
+class CorrectionBindingTests(SaleCorrectionsApiTests):
+    def test_binding_precedes_history_and_replay(self):
+        sale = self.sell()
+        path = self.correction_path(sale)
+        payload = self.correction()
+        self.created(path, payload)
+        for route, data in [(path, payload), ('/sale-history', None), ('/products', None), ('/customers', None)]:
+            req = Request(self.origin + route, data=None if data is None else json.dumps(data).encode(),
+                          headers={'Content-Type': 'application/json', 'X-POS-Store-ID': str(uuid4())})
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(req, timeout=3)
+            self.assertEqual(caught.exception.code, 409)
+            self.assertEqual(json.load(caught.exception)['code'], 'store_mismatch')
+        req = Request(self.origin + path, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(req, timeout=3)
+        self.assertEqual(json.load(caught.exception)['code'], 'store_mismatch')
+        self.assertEqual(self.expect(200, path, payload)['id'], payload['id'])

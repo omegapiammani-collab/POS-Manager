@@ -1,10 +1,10 @@
 """Check drawer reconciliation and its source transactions over HTTP."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import closing
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from inventory import connect
 from inventory_api import make_server
+from database_backup import copy_database, restore_database
+import sqlite3
 
 
 DAY = "2026-11-10"
@@ -249,3 +251,84 @@ class CashDrawerApiTests(unittest.TestCase):
                 self.expect(400, "/cash-drawer/movements", self.payload(**values))
         self.expect(400, "/cash-drawer/close", self.payload(actual_cash="-1", expected_cash="100"))
         self.assertEqual(self.drawer(), opened)
+
+    def test_restore_requires_current_binding_for_every_drawer_action(self):
+        self.open_drawer()
+        with urlopen(self.origin + "/store-identity") as response:
+            old = json.load(response)
+        backup = self.database.with_name("drawer-backup.sqlite3")
+        restored = self.database.with_name("drawer-restored.sqlite3")
+        copy_database(self.database, backup)
+        restore_database(backup, restored)
+        server = make_server(restored, 0)
+        self.addCleanup(server.server_close)
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(server.shutdown)
+        origin = f"http://127.0.0.1:{server.server_port}"
+        with urlopen(origin + "/store-identity") as response:
+            current = json.load(response)
+        self.assertEqual(old["id"], current["id"])
+        self.assertNotEqual(old["binding_id"], current["binding_id"])
+
+        def post(path, data, binding):
+            headers = {"Content-Type": "application/json"}
+            if binding is not None:
+                headers["X-POS-Store-ID"] = binding
+            request = Request(origin + path, data=json.dumps(data).encode(), headers=headers)
+            try:
+                response = urlopen(request, timeout=3)
+            except HTTPError as error:
+                response = error
+            with response:
+                return response.status, json.load(response)
+
+        movement = self.payload(direction="in", amount="10", reason="เติม")
+        actions = [("/cash-drawer/open", self.payload(NEXT_DAY, opening_cash="5")),
+                   ("/cash-drawer/movements", movement),
+                   ("/cash-drawer/close", self.payload(actual_cash="100", expected_cash="100.00"))]
+        for path, body in actions:
+            for binding in (None, old["binding_id"]):
+                with self.subTest(path=path, binding=binding):
+                    status, result = post(path, body, binding)
+                    self.assertEqual(status, 409)
+                    self.assertEqual(result["code"], "store_mismatch")
+        with urlopen(origin + "/cash-drawer?date=" + DAY) as response:
+            self.assertEqual(json.load(response)["movements"], [])
+        self.assertEqual(post("/cash-drawer/movements", movement, current["binding_id"])[0], 201)
+        self.assertEqual(post("/cash-drawer/movements", movement, current["binding_id"])[0], 200)
+        with urlopen(origin + "/cash-drawer?date=" + DAY) as response:
+            self.assertEqual(len(json.load(response)["movements"]), 1)
+        self.assertEqual(self.drawer()["movements"], [])
+
+    def test_drawer_binding_is_checked_after_acquiring_the_write_transaction(self):
+        self.open_drawer()
+        old = store_headers(self.origin)["X-POS-Store-ID"]
+        started = Event()
+        movement = self.payload(direction="in", amount="10", reason="เติม")
+
+        def submit():
+            started.set()
+            request = Request(self.origin + "/cash-drawer/movements", data=json.dumps(movement).encode(),
+                              headers={"Content-Type": "application/json", "X-POS-Store-ID": old})
+            try:
+                response = urlopen(request, timeout=5)
+            except HTTPError as error:
+                response = error
+            with response:
+                return response.status, json.load(response)
+
+        with closing(sqlite3.connect(self.database, timeout=3)) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE store_binding SET id = ? WHERE singleton = 1", (str(uuid4()),))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(submit)
+                self.assertTrue(started.wait(2))
+                with self.assertRaises(TimeoutError):
+                    future.result(timeout=0.2)
+                writer.commit()
+                status, result = future.result(timeout=5)
+        self.assertEqual(status, 409)
+        self.assertEqual(result["code"], "store_mismatch")
+        self.assertEqual(self.drawer()["movements"], [])

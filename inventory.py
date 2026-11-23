@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS receipts (
  unit_id TEXT NOT NULL REFERENCES units(id), quantity TEXT NOT NULL,
  unit_cost TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS stock_revisions (
+ product_id TEXT NOT NULL PRIMARY KEY REFERENCES products(id),
+ version INTEGER NOT NULL CHECK (typeof(version) = 'integer' AND version >= 0)
+);
+CREATE TABLE IF NOT EXISTS cost_baselines (
+ id TEXT NOT NULL PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id),
+ expected_quantity TEXT NOT NULL, expected_version INTEGER NOT NULL,
+ unit_cost TEXT NOT NULL, reason TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 """
 
 def connect(path):
@@ -41,6 +51,16 @@ def number(value, *, positive=False):
     if not value.is_finite() or value < 0 or (positive and value == 0):
         raise ValueError('Number must be finite and non-negative')
     return value
+
+
+def bump_stock_revision(db, product_id):
+    """Call inside the same write transaction as every stock/cost mutation."""
+    if not db.in_transaction:
+        raise RuntimeError("Stock revision requires a write transaction")
+    db.execute(
+        "INSERT INTO stock_revisions (product_id, version) VALUES (?, 1) "
+        "ON CONFLICT(product_id) DO UPDATE SET version = version + 1", (product_id,),
+    )
 
 def add_product(db, code, name, base_unit, price, minimum_quantity=0):
     code, name, base_unit = code.strip(), name.strip(), base_unit.strip()
@@ -71,10 +91,13 @@ class ReceiptConflict(Exception):
     pass
 
 
-def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None):
+def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None, *, expected_store=None):
     quantity, unit_cost = number(quantity, positive=True), number(unit_cost)
     db.execute('BEGIN IMMEDIATE')
     try:
+        if expected_store is not None:
+            from sales import require_store
+            require_store(db, expected_store)
         if receipt_id is not None:
             previous = db.execute(
                 'SELECT product_id, unit_id, quantity, unit_cost FROM receipts WHERE id = ?', (receipt_id,),
@@ -104,11 +127,16 @@ def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None):
                 incoming_cost = unit_cost / multiplier
                 cover_shortages(db, product_id, receipt_id, min(-old_quantity, added), incoming_cost)
                 average = str(incoming_cost) if new_quantity >= 0 else row[1]
+            elif old_quantity > 0 and row[1] is None:
+                # Existing units have unknown cost; assigning zero would invent
+                # a weighted average and make later profit reports misleading.
+                average = None
             else:
                 old_value = old_quantity * Decimal(row[1] or '0')
                 average = str((old_value + quantity * unit_cost) / new_quantity)
         db.execute('UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?',
                    (str(new_quantity), average, product_id))
+        bump_stock_revision(db, product_id)
         db.commit()
         return receipt_id
     except Exception:

@@ -6,7 +6,7 @@ import json
 import re
 from uuid import UUID, uuid4
 
-from inventory import number
+from inventory import bump_stock_revision, number
 from stock_shortages import SHORTAGE_SCHEMA, sale_shortages
 
 SALES_SCHEMA = """
@@ -17,6 +17,11 @@ CREATE TABLE IF NOT EXISTS store_identity (
 CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS customer_requests (
+    request_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    customer_id TEXT NOT NULL REFERENCES customers(id)
 );
 CREATE TABLE IF NOT EXISTS sales (
     id TEXT PRIMARY KEY,
@@ -69,13 +74,21 @@ def customer_list(db):
     ]
 
 
-def add_customer(db, name):
+def add_customer(db, name, request_id=None):
+    if request_id is not None:
+        row = db.execute("SELECT name, customer_id FROM customer_requests WHERE request_id = ?", (request_id,)).fetchone()
+        if row:
+            if row[0] != name:
+                raise SaleConflict("idempotency_conflict", "This customer request ID was already used")
+            return {"id": row[1], "name": row[0]}
     customer_id = str(uuid4())
     db.execute("INSERT INTO customers (id, name) VALUES (?, ?)", (customer_id, name))
+    if request_id is not None:
+        db.execute("INSERT INTO customer_requests (request_id, name, customer_id) VALUES (?, ?, ?)", (request_id, name, customer_id))
     return {"id": customer_id, "name": name}
 
 
-def read_sale(db, sale_id, *, include_item_ids=False):
+def read_sale(db, sale_id, *, include_item_ids=True):
     row = db.execute(
         "SELECT s.id, s.created_at, s.total, s.cash, s.qr, s.credit, "
         "s.customer_id, s.customer_name, t.sold_at "
@@ -318,4 +331,6 @@ def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None
         "UPDATE products SET quantity = ? WHERE id = ?",
         ((str(remaining), product_id) for product_id, remaining in stock.items()),
     )
+    for product_id in stock:
+        bump_stock_revision(db, product_id)
     return True, read_sale(db, sale_id)

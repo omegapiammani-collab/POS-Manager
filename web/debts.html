@@ -23,17 +23,30 @@
         <a class="pos-link" href="/backup">สำรองข้อมูล</a>
       </nav>
     </div>
+    <div id="debt-restore-error" class="panel debt-pending" role="alert" hidden>
+      <p>อ่านรายการรับชำระเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดรับชำระในแท็บนี้ กรุณาเก็บข้อมูลเดิมและติดต่อผู้ดูแลก่อนปิดแท็บ</p>
+      <p>ไฟล์ที่ดาวน์โหลดเก็บข้อความเดิมเป็น JSON string สำหรับตรวจสอบ ไม่ใช่ไฟล์ส่งรายการอัตโนมัติ</p>
+      <button id="debt-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลรับชำระเดิม</button>
+    </div>
+    <div id="debt-mismatch" class="panel debt-pending" role="alert" hidden>ร้านปัจจุบันไม่ตรงกับรายการเดิมหรือร้านเปลี่ยนระหว่างทำรายการ กรุณาตรวจสอบร้านก่อนดำเนินการ</div>
     <div id="debt-pending" class="panel debt-pending" hidden>
-      <p>ยังไม่ได้รับผลยืนยันการชำระ กดส่งรายการเดิมอีกครั้งเพื่อดูผล</p>
-      <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p>
-      <p id="debt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
+      <p id="debt-pending-instruction">ยังไม่ได้รับผลยืนยันการชำระ กดส่งรายการเดิมอีกครั้งเพื่อดูผล</p>
+      <p id="debt-review-required" role="alert" hidden>เลขอ้างอิงชนกับรายการอื่น เก็บคำขอเดิมไว้ กรุณาดาวน์โหลดและตรวจสอบประวัติการชำระก่อนดำเนินการ</p>
+      <p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาตรวจสอบและเก็บรายการเดิมก่อนปิดแท็บ</p>
+      <p id="debt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาดาวน์โหลดและตรวจสอบรายการเดิมก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p>
       <button id="debt-retry" type="button">ส่งรายการเดิมอีกครั้ง</button>
+      <button id="debt-pending-export" type="button">ดาวน์โหลดรายการเดิม</button>
     </div>
     <p id="debt-message" class="debt-message" role="status" hidden></p>
     <div class="workspace">
       <section class="panel" aria-labelledby="debt-customers-title">
         <h2 id="debt-customers-title">รายชื่อลูกค้า</h2>
+        <div id="debt-summary" hidden aria-live="polite">
+          <dl class="metrics"><div><dt>ยอดค้างรวมทุกลูกค้า</dt><dd id="debt-total"></dd></div><div><dt>ลูกค้าที่ยังค้าง</dt><dd id="debt-count"></dd></div></dl>
+          <p class="muted">จากข้อมูลที่โหลดล่าสุด ยังไม่รวมบิลออฟไลน์ที่รอซิงก์ และอาจยังไม่สะท้อนรายการชำระที่รอผล</p>
+        </div>
         <label>ค้นหาลูกค้า<input id="debt-search" type="search" placeholder="ค้นด้วยชื่อลูกค้า"></label>
+        <label class="debt-check"><input id="debt-only-outstanding" type="checkbox"> แสดงเฉพาะลูกค้าที่มียอดค้าง</label>
         <ul id="debt-customers" class="products"></ul>
         <p id="debt-customers-state" class="muted" role="status">กำลังโหลดลูกค้า…</p>
       </section>

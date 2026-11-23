@@ -90,6 +90,7 @@ class SalesReportApiTests(unittest.TestCase):
         summary = {
             "bill_count": 2, "revenue": "30.00", "cash": "19.00", "qr": "5.00",
             "credit": "6.00", "cost": "12.00", "gross_profit": "18.00",
+            "debt_repayments_cash": "0.00", "debt_repayments_qr": "0.00",
             "expenses": "0.00", "cash_drawer_expenses": "0.00", "external_expenses": "0.00",
             "profit_after_expenses": "18.00",
             "pending_cost_bills": 0, "unknown_cost_bills": 0,
@@ -134,11 +135,41 @@ class SalesReportApiTests(unittest.TestCase):
         self.assertEqual(report["summary"], {
             "bill_count": 1, "revenue": "30.00", "cash": "5.00", "qr": "20.00",
             "credit": "5.00", "cost": "12.00", "gross_profit": "18.00",
+            "debt_repayments_cash": "0.00", "debt_repayments_qr": "0.00",
             "expenses": "0.00", "cash_drawer_expenses": "0.00", "external_expenses": "0.00",
             "profit_after_expenses": "18.00",
             "pending_cost_bills": 0, "unknown_cost_bills": 0,
         })
         self.assertEqual(self.report("2026-11-11", "2026-11-12")["summary"]["bill_count"], 0)
+
+    def test_debt_payments_use_payment_day_and_are_gross_not_sales(self):
+        self.receive("10", "4")
+        sale = self.sell("2026-11-08T03:00:00.000Z", 5, credit=50)
+        for amount, method, timestamp in (
+            ("1", "cash", "2026-11-09T16:59:59.999Z"),
+            ("2", "cash", "2026-11-09T17:00:00.000Z"),
+            ("3", "qr", "2026-11-10T16:59:59.999Z"),
+            ("4", "qr", "2026-11-10T17:00:00.000Z"),
+        ):
+            payment_id = str(uuid4())
+            self.expect(201, f"/customers/{self.customer['id']}/repayments", {
+                "id": payment_id, "amount": amount, "method": method,
+            })
+            with closing(connect(self.database)) as db:
+                db.execute("UPDATE debt_repayments SET created_at = ? WHERE id = ?", (timestamp, payment_id))
+        self.expect(201, f"/sales/{sale['id']}/corrections", {
+            "id": str(uuid4()), "reason": "cancel", "replacement": None, "excess_action": "refund_cash",
+        })
+        report = self.report()
+        self.assertEqual(report["summary"]["debt_repayments_cash"], "2.00")
+        self.assertEqual(report["summary"]["debt_repayments_qr"], "3.00")
+        self.assertEqual(report["summary"]["revenue"], "0.00")
+        self.assertEqual(report["summary"]["gross_profit"], "0.00")
+        self.assertEqual(len(report["days"]), 1)
+        self.assertEqual(report["days"][0]["date"], "2026-11-10")
+        self.assertEqual(report["days"][0]["debt_repayments_cash"], "2.00")
+        self.assertEqual(report["days"][0]["debt_repayments_qr"], "3.00")
+        self.assertEqual(self.report("2026-11-11", "2026-11-11")["summary"]["debt_repayments_qr"], "4.00")
 
     def test_shortage_cost_moves_from_provisional_to_actual(self):
         self.receive("1", "4")

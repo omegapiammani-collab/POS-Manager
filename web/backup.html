@@ -4,11 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>สำรองและกู้คืนข้อมูล | POS Manager</title>
+  <script>
+    window.addEventListener("error", (event) => {
+      if (!["SCRIPT", "LINK"].includes(event.target?.tagName)) return;
+      const show = () => { document.getElementById("shell-load-error").hidden = false; };
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", show, { once: true });
+      else show();
+    }, true);
+  </script>
   <link rel="stylesheet" href="/inventory.css">
   <script src="/offline-store.js" defer></script>
   <script src="/backup.js" defer></script>
 </head>
 <body class="backup">
+  <p id="shell-load-error" role="alert" hidden>ไฟล์หน้าจอโหลดไม่ครบ กรุณาติดต่อผู้ดูแลและอย่าลบข้อมูลเว็บไซต์ บิลในเครื่องไม่ถูกลบจากข้อผิดพลาดนี้</p>
   <header><div class="frame brand"><span aria-hidden="true"></span>POS Manager</div></header>
   <main class="frame">
     <div class="page-title">
@@ -28,6 +37,9 @@
         <h2 id="backup-database-title">ฐานข้อมูลร้าน</h2>
         <p>ดาวน์โหลดข้อมูลที่บันทึกถึงเซิร์ฟเวอร์แล้ว เช่น สินค้า บิล ลูกหนี้ และค่าใช้จ่าย ต้องเชื่อมต่อเซิร์ฟเวอร์เพื่อดาวน์โหลด เก็บไฟล์ไว้ในที่ที่คุณควบคุมการเข้าถึงได้</p>
         <div class="actions"><a class="pos-link" href="/database-backup" download>ดาวน์โหลดฐานข้อมูลร้าน</a></div>
+        <h3>ตรวจไฟล์สำรอง</h3>
+        <p>ตรวจเฉพาะไฟล์สำรองที่ดาวน์โหลด ไม่ใช่ฐานข้อมูลที่กำลังใช้งาน หลังดาวน์โหลด เปิดเทอร์มินัลในโฟลเดอร์ POS Manager แล้วตรวจไฟล์ด้วยคำสั่งด้านล่าง โดยแทน BACKUP ด้วยพาธไฟล์สำรอง คำสั่งนี้ไม่แก้ไขไฟล์ การตรวจผ่านไม่ได้ยืนยันว่าไฟล์เป็นข้อมูลล่าสุดหรือมีบิลที่ยังรอส่งครบ</p>
+        <pre><code>python3 database_backup.py check BACKUP</code></pre>
         <h3>กู้คืนเป็นฐานข้อมูลใหม่</h3>
         <ol class="backup-steps">
           <li>เปิดเทอร์มินัลในโฟลเดอร์ POS Manager แล้วระบุชื่อไฟล์สำรองและไฟล์ปลายทางใหม่
@@ -44,6 +56,10 @@
         <p>สำรองแยกจากฐานข้อมูลร้านในแต่ละเครื่อง ไฟล์รวมทั้งบิลรอส่งและบิลที่ต้องตรวจสอบ</p>
         <p id="backup-queue-count" class="muted" role="status">กำลังตรวจรายการในเบราว์เซอร์…</p>
         <div class="actions"><button id="backup-queue-export" type="button" disabled>ดาวน์โหลดบิลรอส่ง</button></div>
+        <h3>บิลรุ่นเดิมในแท็บนี้</h3>
+        <p>บิลรุ่นเดิมอาจเก็บเฉพาะในแท็บที่เปิดหน้าขาย และไม่รวมในไฟล์บิลรอส่งด้านบน ควรสำรองก่อนปิดแท็บ ไฟล์นี้ไม่ระบุร้านและต้องตรวจสอบก่อนนำเข้าและส่ง</p>
+        <p id="backup-legacy-count" class="muted" role="status">กำลังตรวจบิลรุ่นเดิม…</p>
+        <div class="actions"><button id="backup-legacy-export" type="button" disabled>ดาวน์โหลดบิลรุ่นเดิมในแท็บนี้</button></div>
         <h3>นำเข้าบิลรอส่ง</h3>
         <p>บิลใหม่ที่นำเข้าจะรอให้ตรวจสอบก่อนส่ง ส่วนบิลที่มีอยู่แล้วในเครื่องจะคงสถานะเดิม รหัสร้านที่ตรงกันไม่ได้ยืนยันว่าฐานข้อมูลมีประวัติล่าสุด หากกู้ฐานข้อมูลเก่าให้ตรวจสอบบิลและการรับเงินจากแหล่งข้อมูลอื่นด้วย</p>
         <form id="backup-queue-import">

@@ -244,3 +244,34 @@ class DebtApiTests(unittest.TestCase):
         self.assertEqual(self.repay(payment, self.other_customer)[0], 409)
         self.assertEqual(self.debt(), first_debt)
         self.assertEqual(self.debt(self.other_customer), other_debt)
+
+    def test_store_binding_covers_reads_new_payments_and_replays(self):
+        binding = self.request('/store-identity')[1]['binding_id']
+        other = str(uuid4())
+        payment = self.repayment('10')
+        path = f"/customers/{self.customer['id']}/repayments"
+
+        def raw(path, data=None, store=None):
+            headers = {'Content-Type': 'application/json'}
+            if store is not None:
+                headers['X-POS-Store-ID'] = store
+            req = Request(self.origin + path, data=json.dumps(data).encode() if data is not None else None, headers=headers)
+            try:
+                response = urlopen(req, timeout=3)
+            except HTTPError as error:
+                response = error
+            with response:
+                return response.status, json.load(response)
+
+        for read_path in ['/customer-debts', f"/customers/{self.customer['id']}/debt"]:
+            status, result = raw(read_path, store=other)
+            self.assertEqual((status, result['code']), (409, 'store_mismatch'))
+            self.assertEqual(raw(read_path, store=binding)[0], 200)
+        for store in [None, other]:
+            status, result = raw(path, payment, store)
+            self.assertEqual((status, result['code']), (409, 'store_mismatch'))
+        self.assertEqual(raw(path, payment, binding)[0], 201)
+        self.assertEqual(raw(path, payment, binding)[0], 200)
+        status, result = raw(path, payment, other)
+        self.assertEqual((status, result['code']), (409, 'store_mismatch'))
+        self.assertEqual(len(self.debt()['repayments']), 1)

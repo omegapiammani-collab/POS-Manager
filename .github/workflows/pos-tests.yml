@@ -14,6 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  auth-experiment:
+    name: Isolated Access token experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r experiments/requirements-auth-test.txt
+      - run: python3 -m unittest experiments.test_cloudflare_token_experiment experiments.test_access_handler_experiment experiments.test_cloudflare_jwks_experiment experiments.test_loopback_access_experiment experiments.test_isolated_access_server -v
+
   api:
     name: Python API and database
     runs-on: ubuntu-latest
@@ -25,6 +39,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: python3 shell_manifest.py --check
       - run: python3 -m unittest discover -q
 
   chromium:
@@ -42,5 +57,11 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
+      - run: node --test experiments/service-worker-cache-check.cjs
+      - run: node --test experiments/expense-pending-check.cjs
+      - run: node --test experiments/drawer-pending-check.cjs
+      - run: node --test experiments/correction-pending-check.cjs
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      - run: python3 -m pip install -r experiments/requirements-auth-test.txt
+      - run: npx playwright test --config=experiments/access-browser.config.cjs

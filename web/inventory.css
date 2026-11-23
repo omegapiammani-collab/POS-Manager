@@ -29,6 +29,8 @@ button.secondary:hover { background: #edf3f6; }
 :focus-visible { outline: 3px solid #377fb7; outline-offset: 2px; }
 label { display: grid; gap: 5px; margin-top: 13px; }
 input, select { width: 100%; min-width: 0; padding: 8px 11px; color: inherit; background: white; border: 1px solid #aabac7; }
+.drawer .drawer-check { display: flex; align-items: center; gap: 8px; }
+.drawer .drawer-check input { width: 20px; min-height: 20px; flex-shrink: 0; }
 .products, .lines { list-style: none; padding: 0; margin: 12px 0 0; }
 .products button, .lines li { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .products button { width: 100%; text-align: start; color: inherit; background: white; border-color: #e1e8ed; margin-block: 6px; font-weight: 500; }
