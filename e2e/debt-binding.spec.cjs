@@ -98,6 +98,101 @@ test('list, detail and normal repayment use the selected store binding', async (
   expect(detail.repayments[0].id).toBe(recorded.id);
 });
 
+for (const mode of ['null', 'wrong-id', 'wrong-amount', 'wrong-method', 'wrong-note', '401', '403', 'redirect', 'html']) {
+  test(`repayment retains original request when confirmation is untrusted: ${mode}`, async ({ page, request, pos }) => {
+    const { binding, customer } = await setup(request, pos);
+    const record = pending(customer.id, binding);
+    const raw = JSON.stringify(record);
+    let attempts = [], redirected = 0;
+    await page.route('**/synthetic-login', route => { redirected++; return route.fulfill({ status: 200, json: {} }); });
+    await page.route(`**/customers/${customer.id}/repayments`, async route => {
+      attempts.push(route.request().postDataJSON().id);
+      if (attempts.length > 1) return route.continue();
+      const upstream = await route.fetch();
+      expect(upstream.status()).toBe(201);
+      const actual = await upstream.json();
+      if (mode === '401' || mode === '403') return route.fulfill({ status: Number(mode), json: { error: 'unavailable' } });
+      if (mode === 'redirect') return route.fulfill({ status: 302, headers: { location: '/synthetic-login' } });
+      if (mode === 'html') return route.fulfill({ status: 200, contentType: 'text/html', body: '<p>login</p>' });
+      const altered = mode === 'null' ? null : { ...actual,
+        ...(mode === 'wrong-id' ? { id: randomUUID() } : {}),
+        ...(mode === 'wrong-amount' ? { amount: '10.01' } : {}),
+        ...(mode === 'wrong-method' ? { method: 'qr' } : {}),
+        ...(mode === 'wrong-note' ? { note: 'different' } : {}) };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(altered) });
+    });
+    await savePending(page, pos, raw);
+    await expect(page.locator('#debt-retry')).toBeEnabled();
+    await page.locator('#debt-retry').click();
+    await expect.poll(() => attempts.length).toBe(1);
+    await expect(page.locator('#debt-retry')).toBeEnabled();
+    expect(await page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBe(raw);
+    expect(redirected).toBe(0);
+    if (['401', '403', 'redirect', 'html'].includes(mode)) await expect(page.locator('#debt-message')).toContainText('ยืนยันสิทธิ์หรือการเชื่อมต่อ');
+    await page.locator('#debt-retry').click();
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBeNull();
+    expect(attempts).toEqual([record.payload.id, record.payload.id]);
+    const detail = await (await request.get(pos + `/customers/${customer.id}/debt`)).json();
+    expect(detail.outstanding).toBe('15.00');
+    expect(detail.repayments).toHaveLength(1);
+    expect(detail.repayments[0].id).toBe(record.payload.id);
+  });
+}
+
+test('confirmation compares equivalent decimal amounts exactly', async ({ page, request, pos }) => {
+  const { binding, customer } = await setup(request, pos);
+  const record = pending(customer.id, binding);
+  await page.route(`**/customers/${customer.id}/repayments`, async route => {
+    const upstream = await route.fetch();
+    expect(upstream.status()).toBe(201);
+    return route.fulfill({ json: { ...await upstream.json(), amount: '10.0' } });
+  });
+  await savePending(page, pos, JSON.stringify(record));
+  await expect(page.locator('#debt-retry')).toBeEnabled();
+  await page.locator('#debt-retry').click();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBeNull();
+  const detail = await (await request.get(pos + `/customers/${customer.id}/debt`)).json();
+  expect(detail.outstanding).toBe('15.00');
+  expect(detail.repayments).toHaveLength(1);
+});
+
+test('a restored uppercase UUID accepts the canonical server response', async ({ page, request, pos }) => {
+  const { binding, customer } = await setup(request, pos);
+  const record = pending(customer.id, binding);
+  record.payload.id = record.payload.id.toUpperCase();
+  await savePending(page, pos, JSON.stringify(record));
+  await expect(page.locator('#debt-retry')).toBeEnabled();
+  await page.locator('#debt-retry').click();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('pos-pending-repayment'))).toBeNull();
+  const detail = await (await request.get(pos + `/customers/${customer.id}/debt`)).json();
+  expect(detail.repayments).toHaveLength(1);
+  expect(detail.repayments[0].id).toBe(record.payload.id.toLowerCase());
+});
+
+test('conflicting repayment ID is retained for review and export after reload', async ({ page, request, pos }) => {
+  const { binding, customer } = await setup(request, pos);
+  const record = pending(customer.id, binding);
+  const prior = { ...record.payload, amount: '5.00' };
+  expect((await request.post(pos + `/customers/${customer.id}/repayments`, { headers: { 'X-POS-Store-ID': binding }, data: prior })).status()).toBe(201);
+  await savePending(page, pos, JSON.stringify(record));
+  await expect(page.locator('#debt-retry')).toBeEnabled();
+  await page.locator('#debt-retry').click();
+  await expect(page.locator('#debt-review-required')).toBeVisible();
+  await expect(page.locator('#debt-retry')).toBeDisabled();
+  const saved = JSON.parse(await page.evaluate(() => sessionStorage.getItem('pos-pending-repayment')));
+  expect(saved).toMatchObject({ ...record, reviewRequired: true });
+  const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#debt-pending-export').click()]);
+  expect(JSON.parse(await readFile(await download.path(), 'utf8'))).toEqual(saved);
+  page.once('dialog', dialog => dialog.accept());
+  await page.reload();
+  await expect(page.locator('#debt-review-required')).toBeVisible();
+  await expect(page.locator('#debt-retry')).toBeDisabled();
+  expect(JSON.parse(await page.evaluate(() => sessionStorage.getItem('pos-pending-repayment')))).toEqual(saved);
+  const detail = await (await request.get(pos + `/customers/${customer.id}/debt`)).json();
+  expect(detail.outstanding).toBe('20.00');
+  expect(detail.repayments).toHaveLength(1);
+});
+
 test('a server-side store change preserves the pending request on rejection', async ({ page, request, pos }) => {
   const { binding, customer } = await setup(request, pos);
   await page.route(`**/customers/${customer.id}/repayments`, (route) => {

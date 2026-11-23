@@ -62,7 +62,7 @@ function message(text, error = false) {
 }
 
 async function api(path, data, binding = storeId) {
-  const options = { signal: AbortSignal.timeout(15000), headers: {} };
+  const options = { signal: AbortSignal.timeout(15000), redirect: "manual", headers: {} };
   if (binding) options.headers["X-POS-Store-ID"] = binding;
   if (data !== undefined) {
     options.method = "POST";
@@ -70,11 +70,18 @@ async function api(path, data, binding = storeId) {
     options.body = JSON.stringify(data);
   }
   const response = await fetch(path, options);
-  const result = await response.json();
+  const unconfirmed = () => Object.assign(new Error("Server response unconfirmed"), { code: "access_unconfirmed" });
+  if (response.redirected || response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) throw unconfirmed();
+  const mediaType = (response.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();
+  if (mediaType !== "application/json") throw unconfirmed();
+  let result;
+  try { result = await response.json(); } catch { throw unconfirmed(); }
   if (response.ok) return result;
+  if (!result || typeof result !== "object") throw unconfirmed();
   const error = new Error("Request failed");
   error.status = response.status;
   error.code = result.code;
+  if ((response.status === 401 || response.status === 403) && error.code !== "store_mismatch") throw unconfirmed();
   throw error;
 }
 
@@ -211,7 +218,8 @@ function restorePending() {
     const saved = JSON.parse(raw);
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const payload = saved?.payload;
-    if (typeof saved?.binding_id === "string" && uuid.test(saved.binding_id)
+    if ((saved?.reviewRequired === undefined || typeof saved.reviewRequired === "boolean")
+      && typeof saved?.binding_id === "string" && uuid.test(saved.binding_id)
       && typeof saved?.customerId === "string" && uuid.test(saved.customerId)
       && typeof payload?.id === "string" && uuid.test(payload.id)
       && typeof payload.amount === "string" && payload.amount.length <= 40 && satang(payload.amount) > 0n
@@ -236,6 +244,7 @@ function setPending(request) {
 
 function renderPending() {
   const mismatch = Boolean(pending && storeId && pending.binding_id !== storeId);
+  const reviewRequired = Boolean(pending?.reviewRequired);
   const locked = Boolean(pending) || sending || pendingProblem || storeMismatch || !storeId;
   byId("debt-repayment-fields").disabled = locked;
   for (const button of byId("debt-customers").querySelectorAll("button")) {
@@ -243,22 +252,27 @@ function renderPending() {
   }
   byId("debt-pending").hidden = !pending || sending;
   byId("debt-storage-warning").hidden = !pending || pendingStored;
-  byId("debt-retry").disabled = sending || mismatch || storeMismatch || !storeId;
+  byId("debt-retry").disabled = sending || mismatch || storeMismatch || !storeId || reviewRequired;
   byId("debt-mismatch").hidden = !mismatch && !storeMismatch;
-  byId("debt-pending-export").hidden = !pending || (!mismatch && !storeMismatch);
+  byId("debt-pending-instruction").hidden = reviewRequired;
+  byId("debt-review-required").hidden = !reviewRequired;
+  byId("debt-pending-export").hidden = !pending;
   byId("debt-restore-error").hidden = !pendingProblem;
   byId("debt-restore-export").hidden = !pendingProblem || !pendingRawAvailable;
   updateForm();
 }
 
 async function submitPending() {
-  if (!pending || sending || pendingProblem || storeMismatch || !storeId || pending.binding_id !== storeId) return;
+  if (!pending || pending.reviewRequired || sending || pendingProblem || storeMismatch || !storeId || pending.binding_id !== storeId) return;
   sending = true;
   renderPending();
   message("กำลังบันทึกรับชำระ…");
   const { customerId, payload, binding_id } = pending;
   try {
-    await api("/customers/" + encodeURIComponent(customerId) + "/repayments", payload, binding_id);
+    const result = await api("/customers/" + encodeURIComponent(customerId) + "/repayments", payload, binding_id);
+    if (!result || typeof result !== "object" || typeof result.id !== "string" || result.id.toLowerCase() !== payload.id.toLowerCase()
+        || typeof result.amount !== "string" || result.amount.length > 40 || satang(result.amount) !== satang(payload.amount)
+        || result.method !== payload.method || result.note !== payload.note) throw new Error("Unconfirmed repayment response");
     setPending(null);
     form.reset();
     message("บันทึกรับชำระ " + money(payload.amount) + " แล้ว");
@@ -267,17 +281,20 @@ async function submitPending() {
     if (failure.code === "store_mismatch") {
       blockStore();
       message("ร้านเปลี่ยนแล้ว เก็บรายการเดิมไว้และดาวน์โหลดเพื่อตรวจสอบ", true);
+    } else if (failure.code === "idempotency_conflict") {
+      setPending({ ...pending, reviewRequired: true });
+      message("เลขอ้างอิงชนกับรายการอื่น เก็บคำขอไว้ กรุณาดาวน์โหลดและตรวจสอบประวัติการชำระ", true);
     } else if ([400, 404, 409, 413, 415, 422].includes(failure.status)) {
       setPending(null);
       const error = failure.code === "overpayment"
         ? "ยอดค้างเปลี่ยนแล้ว กรุณาตรวจสอบยอดก่อนบันทึก"
-        : failure.code === "idempotency_conflict"
-          ? "เลขอ้างอิงนี้ถูกใช้แล้ว กรุณาตรวจสอบประวัติรับชำระ"
-          : failure.status === 404 ? "ไม่พบลูกค้ารายนี้" : "บันทึกรับชำระไม่สำเร็จ กรุณาตรวจสอบข้อมูล";
+        : failure.status === 404 ? "ไม่พบลูกค้ารายนี้" : "บันทึกรับชำระไม่สำเร็จ กรุณาตรวจสอบข้อมูล";
       message(error, true);
       if (failure.status === 404 || failure.status === 409) {
         await Promise.all([loadCustomers(), loadDetail()]);
       }
+    } else if (failure.code === "access_unconfirmed") {
+      message("ยังยืนยันสิทธิ์หรือการเชื่อมต่อเซิร์ฟเวอร์ไม่ได้ เก็บคำขอเดิมไว้ กรุณาตรวจสอบก่อนส่งอีกครั้ง", true);
     } else {
       message("การเชื่อมต่อขัดข้อง กรุณาส่งรายการเดิมอีกครั้ง", true);
     }
