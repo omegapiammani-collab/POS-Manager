@@ -2,6 +2,7 @@
 import argparse
 from contextlib import closing
 from decimal import Decimal, DecimalException, ROUND_HALF_UP, localcontext
+import json
 from pathlib import Path
 import sqlite3
 from uuid import UUID
@@ -164,6 +165,33 @@ def check_backup(source):
         validate_backup(source_db)
 
 
+def inventory_backup(source):
+    """Describe a validated snapshot without returning row values or modifying it."""
+    with closing(read_only_database(source)) as source_db:
+        source_db.execute("PRAGMA trusted_schema = OFF")
+        source_db.execute("BEGIN")
+        validate_backup(source_db)
+        tables = []
+        names = [row[0] for row in source_db.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name"
+        ) if not row[0].startswith("sqlite_")]
+        for name in names:
+            identifier = '"' + name.replace('"', '""') + '"'
+            columns = [
+                {"name": row[1], "type": row[2], "not_null": bool(row[3]), "primary_key_position": row[5], "hidden": row[6]}
+                for row in source_db.execute(f"PRAGMA table_xinfo({identifier})")
+            ]
+            foreign_keys = [
+                {"id": row[0], "sequence": row[1], "table": row[2], "from": row[3], "to": row[4],
+                 "on_update": row[5], "on_delete": row[6]}
+                for row in source_db.execute(f"PRAGMA foreign_key_list({identifier})")
+            ]
+            count = source_db.execute(f"SELECT COUNT(*) FROM {identifier}").fetchone()[0]
+            tables.append({"name": name, "row_count": count, "columns": columns, "foreign_keys": foreign_keys})
+        return {"format": "pos-sqlite-inventory", "version": 1,
+                "user_version": source_db.execute("PRAGMA user_version").fetchone()[0], "tables": tables}
+
+
 def restore_database(source, target):
     target = Path(target).absolute()
     with closing(read_only_database(source)) as source_db:
@@ -193,16 +221,22 @@ def main():
     restore.add_argument("new_database", type=Path)
     check = actions.add_parser("check", help="Check a backup without restoring it")
     check.add_argument("backup", type=Path)
+    inventory = actions.add_parser("inventory", help="Describe a validated backup without exporting row values")
+    inventory.add_argument("backup", type=Path)
     args = parser.parse_args()
     try:
         if args.action == "check":
             check_backup(args.backup)
+        elif args.action == "inventory":
+            report = inventory_backup(args.backup)
         else:
             restore_database(args.backup, args.new_database)
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"{args.action.capitalize()} failed: {exc}\n")
     if args.action == "check":
         print(f"Backup check passed: {args.backup}")
+    elif args.action == "inventory":
+        print(json.dumps(report, ensure_ascii=True, indent=2))
     else:
         print(f"Restored database: {args.new_database}")
 
