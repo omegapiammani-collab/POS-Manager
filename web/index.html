@@ -34,7 +34,9 @@
           <option value="low">สินค้าใกล้หมด</option>
           <option value="negative">สต๊อกติดลบ</option>
           <option value="paused">สินค้าพักขาย</option>
+          <option value="unknown-cost">สต๊อกบวกที่ยังไม่ทราบต้นทุน</option>
         </select>
+        <p id="unknown-cost-note" class="muted" hidden>รายการจากข้อมูลที่โหลดล่าสุด รวมสินค้าพักขาย สต๊อกอาจเปลี่ยนเมื่อซิงก์บิลออฟไลน์</p>
         <div class="actions"><button id="stock-download" class="secondary" type="button" disabled>ดาวน์โหลดรายการสต๊อก CSV</button></div>
         <ul id="products" class="products"></ul>
         <p id="list-state" class="muted">กำลังโหลดสินค้า…</p>

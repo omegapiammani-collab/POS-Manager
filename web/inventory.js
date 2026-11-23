@@ -57,10 +57,12 @@ function notice(message, error = false) {
 function renderList() {
   const query = byId("search").value.trim().toLowerCase();
   const filter = byId("stock-filter").value;
+  byId("unknown-cost-note").hidden = filter !== "unknown-cost";
   const matches = products.filter((product) => {
     if (!product.name.toLowerCase().includes(query) && !product.code.toLowerCase().includes(query)) return false;
     if (filter === "low") return product.available !== false && Number(product.quantity) >= 0 && product.low_stock;
     if (filter === "negative") return Number(product.quantity) < 0;
+    if (filter === "unknown-cost") return Number(product.quantity) > 0 && product.average_cost === null;
     if (filter === "paused") return product.available === false;
     return true;
   });
@@ -78,6 +80,7 @@ function renderList() {
     const name = element("span", product.name);
     name.append(element("small", product.code));
     if (product.available === false) name.append(element("small", "พักขาย"));
+    if (Number(product.quantity) > 0 && product.average_cost === null) name.append(element("small", "ยังไม่ทราบต้นทุน"));
     const stock = element("span", format(product.quantity) + " " + product.base_unit);
     if (product.low_stock) {
       const low = element("small", Number(product.quantity) < 0 ? "สต๊อกติดลบ" : "ใกล้หมด");
