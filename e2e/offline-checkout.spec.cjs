@@ -3391,9 +3391,15 @@ test("customer evidence summaries preserve malformed entries and raw export", as
   expect(JSON.parse(await readFile(await download.path(), "utf8"))).toEqual(history);
 });
 
-for (const invalidResponse of [{}, { id: "wrong-sale" }, null, "matching-id-only", "wrong-total", "wrong-payment", "missing-line-field", "bad-shortages"]) {
+for (const invalidResponse of [{}, { id: "wrong-sale" }, null, "matching-id-only", "wrong-total", "wrong-payment", "missing-line-field", "bad-shortages", "wrong-product", "wrong-unit", "missing-product-id"]) {
   test(`unconfirmed sale response preserves queue: ${JSON.stringify(invalidResponse)}`, async ({ page, context, request, pos }) => {
     const product = await createProduct(request, pos);
+    let otherProduct = null;
+    if (["wrong-product", "wrong-unit"].includes(invalidResponse)) {
+      const added = await request.post(pos + "/products", { data: { code: "W02", name: "Other", base_unit: "piece", price: "25" } });
+      expect(added.status()).toBe(201);
+      otherProduct = await added.json();
+    }
     await page.goto(pos + "/checkout");
     await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
     await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
@@ -3420,6 +3426,9 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null, "matching-id-only
       if (invalidResponse === "wrong-payment") replacement = { ...actual, payments: { ...actual.payments, cash: "0.00" } };
       if (invalidResponse === "missing-line-field") replacement = { ...actual, items: [{ ...actual.items[0], unit_name: null }] };
       if (invalidResponse === "bad-shortages") replacement = { ...actual, stock_shortages: {} };
+      if (invalidResponse === "wrong-product") replacement = { ...actual, items: [{ ...actual.items[0], product_id: otherProduct.id }] };
+      if (invalidResponse === "wrong-unit") replacement = { ...actual, items: [{ ...actual.items[0], unit_id: otherProduct.base_unit_id }] };
+      if (invalidResponse === "missing-product-id") replacement = { ...actual, items: [{ ...actual.items[0], product_id: null }] };
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(replacement) });
     });
     await context.setOffline(false);
@@ -3435,8 +3444,7 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null, "matching-id-only
     await expect.poll(() => page.evaluate(async () => (await window.PosOffline.list()).length)).toBe(0);
     expect((await request.get(pos + "/sales/" + entry.payload.id)).status()).toBe(200);
     expect((await (await request.get(pos + "/sale-history")).json())).toHaveLength(1);
-    const [inventory] = await (await request.get(pos + "/products")).json();
-    expect(inventory.id).toBe(product.id);
+    const inventory = (await (await request.get(pos + "/products")).json()).find(row => row.id === product.id);
     expect(inventory.quantity).toBe("0");
   });
 }

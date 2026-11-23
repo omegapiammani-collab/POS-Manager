@@ -88,7 +88,7 @@ def add_customer(db, name, request_id=None):
     return {"id": customer_id, "name": name}
 
 
-def read_sale(db, sale_id, *, include_item_ids=False):
+def read_sale(db, sale_id, *, include_item_ids=True):
     row = db.execute(
         "SELECT s.id, s.created_at, s.total, s.cash, s.qr, s.credit, "
         "s.customer_id, s.customer_name, t.sold_at "

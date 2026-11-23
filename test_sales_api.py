@@ -203,6 +203,8 @@ class SalesApiTests(unittest.TestCase):
             {"cash": Decimal("50"), "qr": Decimal("50"), "credit": Decimal("100")},
         )
         self.assertEqual(len(result["items"]), 2)
+        self.assertEqual([(item["product_id"], item["unit_id"]) for item in result["items"]],
+                         [(item["product_id"], item["unit_id"]) for item in sale["items"]])
         self.assertEqual(
             {
                 (item["name"], item["unit_name"], Decimal(item["quantity"]),

@@ -880,11 +880,15 @@ byId("sale-abandon-confirm")?.addEventListener("click", () => customerLock(async
 
 function confirmsSale(sale, payload) {
   const decimal = (value, digits) => typeof value === "string" ? scaledDecimal(value, digits, true) : null;
+  const sameId = (left, right) => typeof left === "string" && typeof right === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(left)
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(right)
+    && left.toLowerCase() === right.toLowerCase();
   if (!payload || !Array.isArray(payload.items) || !payload.payments || typeof payload.payments !== "object"
       || !sale || typeof sale !== "object" || sale.id !== payload.id || typeof sale.created_at !== "string"
       || !sale.created_at || (sale.sold_at !== undefined && typeof sale.sold_at !== "string")
       || (payload.sold_at !== undefined && sale.sold_at !== payload.sold_at)
-      || sale.customer_id !== (payload.customer_id ?? null)
+      || (payload.customer_id == null ? sale.customer_id !== null : !sameId(sale.customer_id, payload.customer_id))
       || (sale.customer_name !== null && typeof sale.customer_name !== "string")
       || !Array.isArray(sale.items) || sale.items.length !== payload.items.length
       || !sale.payments || typeof sale.payments !== "object") return false;
@@ -895,7 +899,8 @@ function confirmsSale(sale, payload) {
   let total = 0n;
   for (let i = 0; i < payload.items.length; i++) {
     const requested = payload.items[i], item = sale.items[i];
-    if (!requested || !item || typeof item.name !== "string" || typeof item.unit_name !== "string"
+    if (!requested || !item || !sameId(item.product_id, requested.product_id) || !sameId(item.unit_id, requested.unit_id)
+        || typeof item.name !== "string" || typeof item.unit_name !== "string"
         || decimal(item.quantity, 6) === null || decimal(item.quantity, 6) !== decimal(requested.quantity, 6)
         || decimal(item.unit_price, 6) === null || decimal(item.unit_price, 6) !== decimal(requested.expected_unit_price, 6)) return false;
     const expectedLine = lineTotal({ quantity: requested.quantity, unit: { price: requested.expected_unit_price } }, true);
