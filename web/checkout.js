@@ -878,6 +878,40 @@ byId("sale-abandon-confirm")?.addEventListener("click", () => customerLock(async
   }
 }));
 
+function confirmsSale(sale, payload) {
+  const decimal = (value, digits) => typeof value === "string" ? scaledDecimal(value, digits, true) : null;
+  if (!payload || !Array.isArray(payload.items) || !payload.payments || typeof payload.payments !== "object"
+      || !sale || typeof sale !== "object" || sale.id !== payload.id || typeof sale.created_at !== "string"
+      || !sale.created_at || (sale.sold_at !== undefined && typeof sale.sold_at !== "string")
+      || (payload.sold_at !== undefined && sale.sold_at !== payload.sold_at)
+      || sale.customer_id !== (payload.customer_id ?? null)
+      || (sale.customer_name !== null && typeof sale.customer_name !== "string")
+      || !Array.isArray(sale.items) || sale.items.length !== payload.items.length
+      || !sale.payments || typeof sale.payments !== "object") return false;
+  if (sale.stock_shortages !== undefined && (!Array.isArray(sale.stock_shortages)
+      || sale.stock_shortages.some((shortage) => !shortage || typeof shortage.remaining !== "string"
+        || !/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(shortage.remaining)
+        || !Number.isFinite(Number(shortage.remaining))))) return false;
+  let total = 0n;
+  for (let i = 0; i < payload.items.length; i++) {
+    const requested = payload.items[i], item = sale.items[i];
+    if (!requested || !item || typeof item.name !== "string" || typeof item.unit_name !== "string"
+        || decimal(item.quantity, 6) === null || decimal(item.quantity, 6) !== decimal(requested.quantity, 6)
+        || decimal(item.unit_price, 6) === null || decimal(item.unit_price, 6) !== decimal(requested.expected_unit_price, 6)) return false;
+    const expectedLine = lineTotal({ quantity: requested.quantity, unit: { price: requested.expected_unit_price } }, true);
+    if (expectedLine === null || decimal(item.total, 2) !== expectedLine) return false;
+    total += expectedLine;
+  }
+  if (decimal(sale.total, 2) !== total) return false;
+  let paid = 0n;
+  for (const method of paymentMethods) {
+    const value = decimal(sale.payments[method], 2);
+    if (value === null || value !== decimal(payload.payments[method], 2)) return false;
+    paid += value;
+  }
+  return paid === total;
+}
+
 async function syncSale(entry, allowNegative = false, expectedStore = storeId) {
   const { payload } = entry;
   if (!(await store.currentEntry(entry, expectedStore))) return { state: "pending" };
@@ -890,8 +924,8 @@ async function syncSale(entry, allowNegative = false, expectedStore = storeId) {
     if (!(await store.changeEntry(entry, expectedStore, "conflict", reason))) return { state: "pending" };
     return { state: "conflict", reason };
   }
-  // Keep the queued sale until the server confirms this exact identifier.
-  if (!sale || typeof sale !== "object" || sale.id !== payload.id) return { state: "pending" };
+  // A matching identifier alone cannot confirm a complete, consistent receipt.
+  if (!confirmsSale(sale, payload)) return { state: "pending" };
   try {
     if (!(await store.changeEntry(entry, expectedStore, null))) return { state: "pending" };
   } catch {

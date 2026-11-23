@@ -3391,9 +3391,9 @@ test("customer evidence summaries preserve malformed entries and raw export", as
   expect(JSON.parse(await readFile(await download.path(), "utf8"))).toEqual(history);
 });
 
-for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
+for (const invalidResponse of [{}, { id: "wrong-sale" }, null, "matching-id-only", "wrong-total", "wrong-payment", "missing-line-field", "bad-shortages"]) {
   test(`unconfirmed sale response preserves queue: ${JSON.stringify(invalidResponse)}`, async ({ page, context, request, pos }) => {
-    await createProduct(request, pos);
+    const product = await createProduct(request, pos);
     await page.goto(pos + "/checkout");
     await expect(page.locator("#sale-connection")).toContainText("เปิดหน้าขายและบันทึกบิลออฟไลน์ได้");
     await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
@@ -3413,7 +3413,14 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
       const upstream = await route.fetch();
       expect([200, 201]).toContain(upstream.status());
       attempts++;
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(invalidResponse) });
+      const actual = await upstream.json();
+      let replacement = invalidResponse;
+      if (invalidResponse === "matching-id-only") replacement = { id: actual.id };
+      if (invalidResponse === "wrong-total") replacement = { ...actual, total: "999.00" };
+      if (invalidResponse === "wrong-payment") replacement = { ...actual, payments: { ...actual.payments, cash: "0.00" } };
+      if (invalidResponse === "missing-line-field") replacement = { ...actual, items: [{ ...actual.items[0], unit_name: null }] };
+      if (invalidResponse === "bad-shortages") replacement = { ...actual, stock_shortages: {} };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(replacement) });
     });
     await context.setOffline(false);
     await expect.poll(() => attempts).toBeGreaterThanOrEqual(2);
@@ -3428,5 +3435,38 @@ for (const invalidResponse of [{}, { id: "wrong-sale" }, null]) {
     await expect.poll(() => page.evaluate(async () => (await window.PosOffline.list()).length)).toBe(0);
     expect((await request.get(pos + "/sales/" + entry.payload.id)).status()).toBe(200);
     expect((await (await request.get(pos + "/sale-history")).json())).toHaveLength(1);
+    const [inventory] = await (await request.get(pos + "/products")).json();
+    expect(inventory.id).toBe(product.id);
+    expect(inventory.quantity).toBe("0");
   });
 }
+
+test("an unconfirmed sale can be retried after it was voided without selling twice", async ({ page, request, pos }) => {
+  const product = await createProduct(request, pos);
+  await page.goto(pos + "/checkout");
+  await page.route("**/sales", async route => {
+    const upstream = await route.fetch();
+    expect([200, 201]).toContain(upstream.status());
+    const sale = await upstream.json();
+    return route.fulfill({ status: 200, json: { id: sale.id } });
+  });
+  await sellOne(page);
+  await expect(page.locator("#sale-receipt")).toBeVisible();
+  await expect.poll(() => page.evaluate(async () => (await PosOffline.list()).length)).toBe(1);
+  const [entry] = await page.evaluate(() => PosOffline.list());
+  const response = await request.post(pos + "/sales/" + entry.payload.id + "/corrections", {
+    data: { id: randomUUID(), reason: "test", replacement: null },
+  });
+  expect(response.status()).toBe(201);
+  await page.unroute("**/sales");
+  await page.locator("#sale-receipt-close").click();
+  await expect(page.locator("#sale-retry")).toBeEnabled();
+  await page.locator("#sale-retry").click();
+  await expect.poll(() => page.evaluate(async () => (await PosOffline.list()).length)).toBe(0);
+  const [inventory] = await (await request.get(pos + "/products")).json();
+  expect(inventory.id).toBe(product.id);
+  expect(inventory.quantity).toBe("1");
+  const [sale] = await (await request.get(pos + "/sale-history")).json();
+  expect(sale.id).toBe(entry.payload.id);
+  expect(sale.status).toBe("voided");
+});
