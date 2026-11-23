@@ -510,7 +510,9 @@ function updateCountControls() {
   byId("stock-count-cost-label").hidden = !increase;
   byId("stock-count-cost-help").hidden = !increase;
   byId("stock-count-cost-help").textContent = cost.required
-    ? "ระบุต้นทุนต่อหน่วยสำหรับจำนวนที่ปรับเพิ่ม"
+    ? (Number(countProduct.quantity) > 0
+      ? "ระบุต้นทุนต่อหน่วยสำหรับจำนวนที่ปรับเพิ่ม ต้นทุนเฉลี่ยยังไม่ทราบเพราะสต็อกเดิมไม่มีข้อมูลต้นทุน"
+      : "ระบุต้นทุนต่อหน่วยสำหรับจำนวนที่ปรับเพิ่ม")
     : "เว้นว่างเพื่อใช้ต้นทุนเฉลี่ยปัจจุบัน";
   for (const field of countFields) field.disabled = savingCount || Boolean(pendingCount);
   cost.disabled ||= !increase;

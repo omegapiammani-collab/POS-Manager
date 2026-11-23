@@ -107,8 +107,12 @@ def record_count(db, product_id, data, *, expected_store=None):
             cost = requested if requested is not None else Decimal(previous_average)
             if current <= 0:
                 average = str(cost)
+            elif previous_average is None:
+                # A cost for newly counted units cannot establish the unknown
+                # cost of the positive stock already on hand.
+                average = None
             else:
-                existing_cost = Decimal(previous_average) if previous_average is not None else cost
+                existing_cost = Decimal(previous_average)
                 average = str((current * existing_cost + delta * cost) / counted)
         elif requested is not None:
             raise ValueError("Unit cost applies only when increasing stock")

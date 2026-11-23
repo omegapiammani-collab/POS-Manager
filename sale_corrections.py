@@ -122,13 +122,12 @@ def restore_stock(db, sale_id):
                     "stock_shortage_unresolved", "Receive stock before correcting a sale for this product",
                 )
             new_quantity = quantity + restored_qty
-            if known_qty:
-                if average is not None:
-                    existing_valued_qty = quantity + restored_qty - known_qty
-                    new_value = existing_valued_qty * Decimal(average) + known_value
-                    average = str(new_value / new_quantity)
-                else:
-                    average = str(known_value / known_qty)
+            if known_qty < restored_qty or (quantity > 0 and average is None):
+                # Any unknown-cost units make the combined average unknown.
+                average = None
+            elif known_qty:
+                existing_value = quantity * Decimal(average) if quantity > 0 else Decimal(0)
+                average = str((existing_value + known_value) / new_quantity)
             db.execute(
                 "UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?",
                 (str(new_quantity), average, product_id),

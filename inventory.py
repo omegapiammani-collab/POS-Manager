@@ -107,6 +107,10 @@ def receive(db, product_id, unit_id, quantity, unit_cost, receipt_id=None, *, ex
                 incoming_cost = unit_cost / multiplier
                 cover_shortages(db, product_id, receipt_id, min(-old_quantity, added), incoming_cost)
                 average = str(incoming_cost) if new_quantity >= 0 else row[1]
+            elif old_quantity > 0 and row[1] is None:
+                # Existing units have unknown cost; assigning zero would invent
+                # a weighted average and make later profit reports misleading.
+                average = None
             else:
                 old_value = old_quantity * Decimal(row[1] or '0')
                 average = str((old_value + quantity * unit_cost) / new_quantity)
