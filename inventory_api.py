@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from cash_drawer import DRAWER_ACTIONS, DRAWER_SCHEMA, read_drawer, record_drawer
+from cost_baselines import record_cost_baseline
 from database_backup import copy_database, read_only_database, validate_backup
 from debts import DEBT_SCHEMA, CustomerNotFound, customer_debt, customer_debt_list, record_repayment
 from expenses import EXPENSE_SCHEMA, ExpenseNotFound, list_expenses, record_expense, void_expense
@@ -109,7 +110,8 @@ def decimal_field(data, field, *, positive=False, default=None):
 
 
 def list_products(db, query):
-    products = db.execute("SELECT * FROM products ORDER BY name, code").fetchall()
+    products = db.execute("SELECT p.*, CAST(COALESCE(r.version, 0) AS TEXT) AS stock_version "
+                          "FROM products p LEFT JOIN stock_revisions r ON r.product_id = p.id ORDER BY p.name, p.code").fetchall()
     discontinued = {row[0] for row in db.execute("SELECT product_id FROM discontinued_products")}
     units = {}
     for row in db.execute("SELECT * FROM units ORDER BY name"):
@@ -367,9 +369,18 @@ class InventoryHandler(BaseHTTPRequestHandler):
             if len(parts) == 5 and parts[2] == "units" and parts[4] == "price":
                 return 200, edit_unit_price(db, parts[1], parts[3], self.read_json())
 
-        if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts"}:
+        if len(parts) != 3 or parts[0] != "products" or parts[2] not in {"units", "receipts", "stock-counts", "cost-baselines"}:
             raise RequestError(404, "Route not found")
         _, product_id, resource = parts
+        if resource == "cost-baselines":
+            if self.command == "GET":
+                db.execute("BEGIN")
+                require_store(db, self.headers.get("X-POS-Store-ID", ""))
+                check_product(db, product_id)
+                rows = db.execute("SELECT id, expected_quantity, expected_version, unit_cost, reason, created_at FROM cost_baselines WHERE product_id = ? ORDER BY rowid DESC", (product_id,))
+                return 200, [dict(row) for row in rows]
+            created, result = record_cost_baseline(db, product_id, self.read_json(), expected_store=self.headers.get("X-POS-Store-ID", ""))
+            return (201 if created else 200), result
         if self.command == "GET" or resource == "units":
             check_product(db, product_id)
         if resource == "stock-counts":

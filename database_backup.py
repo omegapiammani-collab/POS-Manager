@@ -120,6 +120,48 @@ def validate_customer_requests(db, objects):
             raise ValueError("The backup contains an inconsistent customer request")
 
 
+def validate_cost_baselines(db, objects):
+    """Validate the additive tables when present; older backups may omit both."""
+    names = ("stock_revisions", "cost_baselines")
+    if not any(name in objects for name in names):
+        return
+    required = {
+        "stock_revisions": {"product_id": "TEXT", "version": "INTEGER"},
+        "cost_baselines": {"id": "TEXT", "product_id": "TEXT", "expected_quantity": "TEXT",
+                           "expected_version": "INTEGER", "unit_cost": "TEXT", "reason": "TEXT", "created_at": "TEXT"},
+    }
+    for name, fields in required.items():
+        if objects.get(name) != "table":
+            raise ValueError("The backup contains incomplete cost baseline tables")
+        columns = {row[1]: row for row in db.execute(f"PRAGMA table_info({name})")}
+        if not all(field in columns and columns[field][2].upper() == kind and columns[field][3]
+                   for field, kind in fields.items()):
+            raise ValueError("The backup contains an invalid cost baseline schema")
+        key = "product_id" if name == "stock_revisions" else "id"
+        if columns[key][5] != 1 or sum(bool(column[5]) for column in columns.values()) != 1:
+            raise ValueError("The backup contains an invalid cost baseline key")
+        if not any(row[2:5] == ("products", "product_id", "id") for row in db.execute(f"PRAGMA foreign_key_list({name})")):
+            raise ValueError("The backup contains an invalid cost baseline reference")
+    for product, version in db.execute("SELECT product_id, version FROM stock_revisions"):
+        if not isinstance(product, str) or type(version) is not int or version < 0:
+            raise ValueError("The backup contains an invalid stock revision")
+    for request_id, quantity, version, cost, reason, revision in db.execute(
+        "SELECT b.id, b.expected_quantity, b.expected_version, b.unit_cost, b.reason, r.version "
+        "FROM cost_baselines b LEFT JOIN stock_revisions r ON r.product_id = b.product_id"
+    ):
+        try:
+            if str(UUID(request_id)) != request_id or len(quantity) > 100 or len(cost) > 100:
+                raise ValueError()
+            quantity_number, cost_number = Decimal(quantity), Decimal(cost)
+            if (not quantity_number.is_finite() or quantity_number <= 0 or not cost_number.is_finite()
+                    or cost_number < 0 or cost_number > Decimal('1000000000')
+                    or type(version) is not int or version < 0 or type(revision) is not int or revision <= version
+                    or not isinstance(reason, str) or reason != reason.strip() or not 1 <= len(reason) <= 300):
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError, DecimalException):
+            raise ValueError("The backup contains an invalid cost baseline")
+
+
 def validate_backup(db):
     objects = dict(db.execute("SELECT name, type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"))
     if any(kind not in ("table", "index") for kind in objects.values()):
@@ -145,6 +187,7 @@ def validate_backup(db):
             raise ValueError("The backup contains incomplete stock count dependencies")
         validate_sales(db)
     validate_customer_requests(db, objects)
+    validate_cost_baselines(db, objects)
     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ValueError("SQLite reported a damaged backup")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:

@@ -14,6 +14,8 @@
   <main class="frame">
     <div class="page-title"><h1>สินค้าและสต๊อก</h1><div class="actions"><a class="pos-link" href="/checkout">ขายสินค้า</a><a class="pos-link" href="/debts">ลูกหนี้</a><a class="pos-link" href="/bills">ประวัติบิล</a><a class="pos-link" href="/reports">รายงานยอดขาย</a><a class="pos-link" href="/expense-entry">ค่าใช้จ่ายร้าน</a><a class="pos-link" href="/drawer">ตรวจเงินสด</a><a class="pos-link" href="/backup">สำรองข้อมูล</a><button data-open="product">+ เพิ่มสินค้า</button></div></div>
     <p id="notice" role="status" hidden></p>
+    <section id="cost-pending" hidden aria-live="polite"><p id="cost-pending-message"></p><button id="cost-retry" type="button">ตรวจสอบและส่งรายการเดิมอีกครั้ง</button> <button id="cost-export" type="button">ดาวน์โหลดรายการค้าง</button> <button id="cost-archive" type="button">เก็บรายการไว้ตรวจสอบภายหลัง</button></section>
+    <button id="cost-archive-export" type="button" hidden>ดาวน์โหลดประวัติรายการต้นทุนที่เก็บไว้</button>
     <div id="receipt-restore-error" role="alert" hidden><p>อ่านรายการรับสินค้าเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดรับสินค้าในแท็บนี้ กรุณาเก็บข้อมูลเดิมไว้และติดต่อผู้ดูแลก่อนปิดแท็บ</p><button id="receipt-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลรับสินค้าเดิม</button></div>
     <div id="count-restore-error" role="alert" hidden><p>อ่านรายการตรวจนับเดิมไม่ได้หรือข้อมูลไม่สมบูรณ์ หยุดปรับยอดในแท็บนี้ กรุณาเก็บข้อมูลเดิมไว้และติดต่อผู้ดูแลก่อนปิดแท็บ</p><button id="count-restore-export" type="button" hidden>ดาวน์โหลดข้อมูลตรวจนับเดิม</button></div>
     <div id="receipt-pending" hidden><button type="button" class="secondary" id="retry-receipt">ตรวจสอบรายการรับสินค้าที่ค้าง</button><p>หากเก็บรายการในแท็บสำเร็จ รีโหลดแท็บเดิมได้โดยเบราว์เซอร์อาจเตือน แต่การปิดแท็บอาจทำเลขอ้างอิงหาย กรุณาส่งรายการเดิมให้ทราบผลก่อนปิดแท็บ</p><p id="receipt-storage-warning" role="alert" hidden>เก็บรายการค้างในแท็บไม่ได้ กรุณาส่งรายการเดิมอีกครั้งก่อนรีโหลดหรือปิดแท็บ มิฉะนั้นเลขอ้างอิงจะหาย</p></div>
@@ -49,6 +51,8 @@
             <div><dt>คงเหลือ</dt><dd id="quantity"></dd></div>
             <div><dt>ต้นทุนเฉลี่ย</dt><dd id="average"></dd></div>
           </dl>
+          <button type="button" id="open-cost-baseline" hidden>ระบุต้นทุนเฉลี่ยปัจจุบัน</button>
+          <h3>ประวัติระบุต้นทุนเฉลี่ย</h3><ul id="cost-baselines" class="lines"></ul>
           <div class="actions"><button data-open="receipt">รับสินค้า</button><button type="button" class="secondary" id="open-product-edit">แก้ไขสินค้า</button><button type="button" class="secondary" id="toggle-availability">พักขาย</button><button class="secondary" data-open="unit">เพิ่มหน่วยขาย</button><button type="button" class="secondary" id="open-stock-count">ปรับยอดจากการตรวจนับ</button></div>
           <h3>หน่วยขาย</h3>
           <ul id="units" class="lines"></ul>
@@ -127,5 +131,14 @@
       <div class="actions"><button type="button" class="secondary" data-close>ปิด</button><button id="submit-stock-count">บันทึกยอดตรวจนับ</button></div>
     </form>
   </dialog>
+  <dialog id="cost-baseline" aria-labelledby="cost-baseline-title"><form>
+    <h2 id="cost-baseline-title">ระบุต้นทุนเฉลี่ยปัจจุบัน</h2>
+    <p id="cost-baseline-product"></p><p>ระบุต้นทุนเฉลี่ยของสินค้าที่มีอยู่ทั้งหมด ณ ตอนนี้ ใช้กับการขายในอนาคตเท่านั้น ไม่เปลี่ยนบิลหรือกำไรเก่า</p>
+    <label>ต้นทุนเฉลี่ยต่อหน่วยสต็อก (บาท)<input name="unit_cost" type="number" required min="0" max="1000000000" step="0.000001"></label>
+    <label>เหตุผลและแหล่งข้อมูล<input name="reason" required maxlength="300"></label>
+    <label><input name="confirmed" type="checkbox" required> ยืนยันว่าตรวจสอบต้นทุนเฉลี่ยของสต็อกปัจจุบันแล้ว</label>
+    <p id="cost-error" role="alert" hidden></p>
+    <div class="actions"><button type="button" id="cost-close">ปิด</button><button type="submit">บันทึกต้นทุน</button></div>
+  </form></dialog>
 </body>
 </html>

@@ -2,6 +2,7 @@
 from decimal import Decimal, InvalidOperation, localcontext
 
 from sales import SaleConflict, checkout_number, uuid_field, require_store
+from inventory import bump_stock_revision
 from stock_shortages import cover_shortages
 
 
@@ -127,6 +128,7 @@ def record_count(db, product_id, data, *, expected_store=None):
             cover_shortages(db, product_id, count_id, -current, cost, from_count=True)
         db.execute("UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?",
                    (str(counted), average, product_id))
+        bump_stock_revision(db, product_id)
         return True, count_result(db, count_id)
 
 

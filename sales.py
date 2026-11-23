@@ -6,7 +6,7 @@ import json
 import re
 from uuid import UUID, uuid4
 
-from inventory import number
+from inventory import bump_stock_revision, number
 from stock_shortages import SHORTAGE_SCHEMA, sale_shortages
 
 SALES_SCHEMA = """
@@ -331,4 +331,6 @@ def checkout_in_transaction(db, validated, *, allow_negative=False, sold_at=None
         "UPDATE products SET quantity = ? WHERE id = ?",
         ((str(remaining), product_id) for product_id, remaining in stock.items()),
     )
+    for product_id in stock:
+        bump_stock_revision(db, product_id)
     return True, read_sale(db, sale_id)

@@ -11,6 +11,7 @@ from sales import (
 )
 
 from stock_shortages import sale_shortages
+from inventory import bump_stock_revision
 
 CORRECTION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sale_corrections (
@@ -132,6 +133,7 @@ def restore_stock(db, sale_id):
                 "UPDATE products SET quantity = ?, average_cost = ? WHERE id = ?",
                 (str(new_quantity), average, product_id),
             )
+            bump_stock_revision(db, product_id)
 
 
 def previous_allocations(db, sale_id):

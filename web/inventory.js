@@ -128,6 +128,8 @@ async function renderDetail() {
   byId("average").textContent = product.average_cost === null
     ? "ยังไม่มีต้นทุน"
     : format(product.average_cost) + " บาท / " + product.base_unit;
+  byId("open-cost-baseline").hidden = product.average_cost !== null || Number(product.quantity) <= 0;
+  loadCostHistory(product, request);
   byId("units").replaceChildren(...product.units.map((unit) => {
     const row = line(unit.name + " · " + format(unit.multiplier) + " " + product.base_unit, format(unit.price) + " บาท");
     const price = row.lastElementChild;
@@ -303,7 +305,7 @@ const actions = {
   },
 };
 
-document.querySelectorAll("dialog:not(#stock-count):not(#receipt)").forEach((dialog) => {
+document.querySelectorAll("dialog:not(#stock-count):not(#receipt):not(#cost-baseline)").forEach((dialog) => {
   const form = dialog.querySelector("form");
   const buttons = [...form.querySelectorAll("button")];
   const error = form.querySelector(".error");
@@ -638,3 +640,155 @@ window.addEventListener("beforeunload", (event) => {
     event.returnValue = "";
   }
 });
+
+// Cost requests are shared between same-origin tabs and serialized through Web Locks.
+// If storage or locks are unavailable, never send a new request.
+const costKey = "pos-cost-baseline-pending-v1";
+const costArchiveKey = "pos-cost-baseline-archive-v1";
+const costDialog = byId("cost-baseline");
+const costForm = costDialog.querySelector("form");
+let costProduct = null;
+let costBinding = null;
+let costBusy = false;
+let costMessage = "";
+const costUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function costStored() {
+  const raw = localStorage.getItem(costKey);
+  if (raw === null) return { raw, value: null };
+  try {
+    const value = JSON.parse(raw);
+    if (!value || !costUuid.test(value.binding_id) || !costUuid.test(value.product_id)
+        || !value.payload || !costUuid.test(value.payload.id)
+        || !["expected_quantity", "expected_version", "unit_cost", "reason"].every((key) => typeof value.payload[key] === "string")) throw new Error();
+    return { raw, value };
+  } catch (_) { return { raw, value: null, invalid: true }; }
+}
+
+function costStatus(message) {
+  const section = byId("cost-pending");
+  try {
+    if (message !== undefined) costMessage = message;
+    const stored = costStored();
+    section.hidden = !stored.raw && !costMessage;
+    byId("cost-pending-message").textContent = costMessage || (stored.invalid
+      ? "อ่านรายการค้างไม่ได้ กรุณาดาวน์โหลดเก็บไว้และตรวจสอบก่อนดำเนินการ"
+      : "มีรายการต้นทุนรอตรวจสอบ รายการจะไม่ส่งซ้ำเองและใช้เลขอ้างอิงเดิมเมื่อกดส่งอีกครั้ง");
+    byId("cost-retry").disabled = costBusy || !stored.value || !navigator.locks;
+    byId("cost-export").disabled = !stored.raw;
+    byId("cost-archive").disabled = costBusy || !stored.raw || !navigator.locks;
+    byId("open-cost-baseline").disabled = costBusy || Boolean(stored.raw) || !navigator.locks;
+    byId("cost-archive-export").hidden = !localStorage.getItem(costArchiveKey);
+  } catch (_) {
+    section.hidden = false;
+    byId("cost-pending-message").textContent = "เข้าถึงที่เก็บรายการไม่ได้ จึงไม่สามารถบันทึกต้นทุนได้";
+    byId("open-cost-baseline").disabled = true;
+    byId("cost-retry").disabled = byId("cost-export").disabled = byId("cost-archive").disabled = true;
+  }
+}
+
+async function costLock(operation) {
+  if (!navigator.locks) throw new Error("เบราว์เซอร์นี้ไม่รองรับการป้องกันรายการซ้ำระหว่างแท็บ");
+  return navigator.locks.request("pos-cost-baseline-v1", { ifAvailable: true }, async (lock) => {
+    if (!lock) throw new Error("อีกแท็บกำลังตรวจสอบรายการ กรุณาลองอีกครั้ง");
+    return operation();
+  });
+}
+
+async function sendCost(raw, entry) {
+  const identityResponse = await fetch("/store-identity", { cache: "no-store", signal: AbortSignal.timeout(15000), redirect: "manual" });
+  if (!identityResponse.ok || (await identityResponse.json()).binding_id !== entry.binding_id) throw new Error("ยืนยันร้านเดิมไม่ได้ รายการยังถูกเก็บไว้");
+  const response = await fetch(productPath(entry.product_id) + "/cost-baselines", {
+    method: "POST", redirect: "manual", signal: AbortSignal.timeout(15000),
+    headers: { "Content-Type": "application/json", "X-POS-Store-ID": entry.binding_id },
+    body: JSON.stringify(entry.payload),
+  });
+  let result;
+  try { result = await response.json(); } catch (_) { throw new Error("ยืนยันผลไม่ได้ รายการยังถูกเก็บไว้"); }
+  if (![200, 201].includes(response.status) || result?.id !== entry.payload.id) {
+    throw new Error(response.status === 409 ? "รายการขัดแย้งหรือสต็อกเปลี่ยน กรุณาดาวน์โหลดและตรวจสอบก่อน" : "ยืนยันผลไม่ได้ รายการยังถูกเก็บไว้");
+  }
+  if (localStorage.getItem(costKey) !== raw) throw new Error("รายการค้างเปลี่ยนระหว่างตรวจสอบ กรุณาตรวจสอบก่อน");
+  localStorage.removeItem(costKey);
+  if (localStorage.getItem(costKey) !== null) throw new Error("ล้างรายการที่ยืนยันแล้วไม่ได้ กรุณาตรวจสอบอีกครั้ง");
+  costStatus("บันทึกต้นทุนแล้ว ใช้กับการขายในอนาคต");
+  await refresh().catch(() => costStatus("บันทึกต้นทุนแล้ว แต่โหลดข้อมูลล่าสุดไม่ได้ กรุณารีเฟรช"));
+}
+
+async function loadCostHistory(product, request) {
+  const list = byId("cost-baselines");
+  list.replaceChildren(element("li", "กำลังโหลดประวัติ"));
+  try {
+    const response = await fetch(productPath(product.id) + "/cost-baselines", { headers: { "X-POS-Store-ID": productBinding }, cache: "no-store", signal: AbortSignal.timeout(15000), redirect: "manual" });
+    if (!response.ok) throw new Error();
+    const rows = await response.json();
+    if (request !== historyRequest) return;
+    list.replaceChildren(...(rows.length ? rows.map((row) => line(format(row.unit_cost) + " บาท / " + product.base_unit, row.reason + " · " + historyDate(row.created_at))) : [element("li", "ยังไม่มีประวัติ")]));
+  } catch (_) { if (request === historyRequest) list.replaceChildren(element("li", "โหลดประวัติไม่ได้")); }
+}
+
+byId("open-cost-baseline").addEventListener("click", () => {
+  const product = products.find((entry) => entry.id === selectedId);
+  if (!product || !productBinding || product.average_cost !== null || Number(product.quantity) <= 0) return;
+  try { if (costStored().raw || !navigator.locks) return; } catch (_) { return; }
+  costProduct = product; costBinding = productBinding;
+  costMessage = "";
+  costForm.reset(); byId("cost-error").hidden = true;
+  byId("cost-baseline-product").textContent = product.name + " · คงเหลือ " + format(product.quantity) + " " + product.base_unit;
+  costDialog.showModal();
+});
+byId("cost-close").addEventListener("click", () => costDialog.close());
+costForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (costBusy || !costForm.reportValidity() || !costProduct || !costBinding) return;
+  const data = new FormData(costForm);
+  costBusy = true; costStatus();
+  try {
+    await costLock(async () => {
+      if (costStored().raw) throw new Error("มีรายการค้างจากอีกแท็บ กรุณาตรวจสอบก่อน");
+      const entry = { binding_id: costBinding, product_id: costProduct.id, payload: {
+        id: crypto.randomUUID(), expected_quantity: costProduct.quantity, expected_version: costProduct.stock_version,
+        unit_cost: String(data.get("unit_cost")), reason: String(data.get("reason")).trim(),
+      } };
+      if (!entry.payload.reason || !/^(0|[1-9][0-9]*)$/.test(entry.payload.expected_version)) throw new Error("ข้อมูลสินค้าไม่ครบ กรุณารีเฟรชและลองใหม่");
+      const raw = JSON.stringify(entry);
+      localStorage.setItem(costKey, raw);
+      if (localStorage.getItem(costKey) !== raw) throw new Error("เก็บรายการค้างไม่ได้ จึงยังไม่ส่งรายการ");
+      await sendCost(raw, entry);
+      costDialog.close();
+    });
+  } catch (error) { byId("cost-error").textContent = error.message || "ยืนยันผลไม่ได้"; byId("cost-error").hidden = false; }
+  finally { costBusy = false; costStatus(); }
+});
+byId("cost-retry").addEventListener("click", async () => {
+  if (costBusy) return;
+  costBusy = true; costStatus();
+  try { await costLock(async () => { const stored = costStored(); if (!stored.value) throw new Error("อ่านรายการค้างไม่ได้"); await sendCost(stored.raw, stored.value); }); }
+  catch (error) { costStatus(error.message || "ยืนยันผลไม่ได้ รายการยังถูกเก็บไว้"); }
+  finally { costBusy = false; costStatus(); }
+});
+byId("cost-export").addEventListener("click", () => {
+  try { const raw = costStored().raw; if (!raw) return; const url = URL.createObjectURL(new Blob([raw], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = "pos-cost-baseline-pending.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (_) { costStatus("ดาวน์โหลดรายการไม่ได้"); }
+});
+byId("cost-archive-export").addEventListener("click", () => {
+  try { const raw = localStorage.getItem(costArchiveKey); if (!raw) return; const url = URL.createObjectURL(new Blob([raw], { type: "application/json" })); const a = document.createElement("a"); a.href = url; a.download = "pos-cost-baseline-archive.json"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch (_) { costStatus("ดาวน์โหลดประวัติไม่ได้"); }
+});
+byId("cost-archive").addEventListener("click", async () => {
+  if (costBusy || !confirm("เก็บรายการนี้ไว้ตรวจสอบภายหลัง? โปรดดาวน์โหลดและตรวจสอบผลก่อนสร้างรายการใหม่")) return;
+  costBusy = true; costStatus();
+  try {
+    await costLock(() => {
+      const stored = costStored(); if (!stored.raw) throw new Error("ไม่พบรายการค้าง");
+      const old = localStorage.getItem(costArchiveKey); const history = old === null ? [] : JSON.parse(old);
+      if (!Array.isArray(history)) throw new Error("อ่านประวัติไม่ได้");
+      history.push({ archived_at: new Date().toISOString(), raw: stored.raw });
+      const next = JSON.stringify(history); localStorage.setItem(costArchiveKey, next);
+      if (localStorage.getItem(costArchiveKey) !== next || localStorage.getItem(costKey) !== stored.raw) throw new Error("เก็บประวัติไม่ได้");
+      localStorage.removeItem(costKey);
+      if (localStorage.getItem(costKey) !== null) throw new Error("ย้ายรายการไม่ได้");
+    });
+  } catch (error) { costStatus(error.message || "เก็บประวัติไม่ได้"); }
+  finally { costBusy = false; costStatus(); }
+});
+window.addEventListener("storage", (event) => { if (event.key === costKey || event.key === null) costStatus(); });
+costStatus();
