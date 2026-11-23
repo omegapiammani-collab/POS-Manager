@@ -5,10 +5,6 @@ const end = form.elements.namedItem("to");
 const status = byId("report-status");
 const results = byId("report-results");
 const integers = new Intl.NumberFormat("th-TH");
-const amounts = new Intl.NumberFormat("th-TH", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
 const quantities = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 12 });
 const thaiDate = new Intl.DateTimeFormat("th-TH", {
   dateStyle: "medium",
@@ -39,7 +35,10 @@ function element(tag, text) {
 }
 
 function money(value) {
-  return value === null ? "ยังคำนวณไม่ได้" : amounts.format(value);
+  if (value === null) return "ยังคำนวณไม่ได้";
+  const match = typeof value === "string" && /^(-?)(\d+)\.(\d{2})$/.exec(value);
+  if (!match) return "ข้อมูลไม่พร้อม";
+  return match[1] + integers.format(BigInt(match[2])) + "." + match[3];
 }
 
 function costLabel(row) {
@@ -65,9 +64,11 @@ function renderSummary(summary) {
       "ลิ้นชัก " + money(summary.cash_drawer_expenses) + " บาท · แหล่งอื่น " + money(summary.external_expenses) + " บาท"],
     ["กำไรหลังหักค่าใช้จ่าย", summary.profit_after_expenses === null
       ? money(null) : money(summary.profit_after_expenses) + " บาท", note],
-    ["เงินสด", money(summary.cash) + " บาท"],
-    ["โอน", money(summary.qr) + " บาท"],
+    ["เงินสดจากการขาย", money(summary.cash) + " บาท"],
+    ["โอนจากการขาย", money(summary.qr) + " บาท"],
     ["เงินเชื่อ", money(summary.credit) + " บาท"],
+    ["รับชำระหนี้เงินสด", money(summary.debt_repayments_cash) + " บาท"],
+    ["รับชำระหนี้โอน", money(summary.debt_repayments_qr) + " บาท"],
   ];
   byId("report-summary").replaceChildren(...metrics.map(([label, value, detail]) => {
     const node = document.createElement("div");
@@ -142,6 +143,7 @@ function renderReport(report) {
   renderSummary(report.summary);
   renderTable("days", report.days.map((day) => tableRow(displayDate(day.date), [
     integers.format(day.bill_count), money(day.revenue), money(day.cash), money(day.qr), money(day.credit),
+    money(day.debt_repayments_cash), money(day.debt_repayments_qr),
     [money(day.cost), costLabel(day)], money(day.gross_profit), money(day.expenses), money(day.profit_after_expenses),
   ])));
   renderProducts(report);
@@ -149,7 +151,9 @@ function renderReport(report) {
 
 const dailyColumns = [
   ["วันที่", "date"], ["จำนวนบิล", "bill_count"], ["ยอดขาย (บาท)", "revenue"],
-  ["เงินสด (บาท)", "cash"], ["โอน (บาท)", "qr"], ["เงินเชื่อ (บาท)", "credit"],
+  ["เงินสดจากการขาย (บาท)", "cash"], ["โอนจากการขาย (บาท)", "qr"], ["เงินเชื่อ (บาท)", "credit"],
+  ["รับชำระหนี้เงินสดก่อนหักเงินคืน (บาท)", "debt_repayments_cash"],
+  ["รับชำระหนี้โอนก่อนหักเงินคืน (บาท)", "debt_repayments_qr"],
   ["ต้นทุนขาย (บาท)", "cost"], ["กำไรขั้นต้น (บาท)", "gross_profit"],
   ["ค่าใช้จ่าย (บาท)", "expenses"], ["กำไรหลังหักค่าใช้จ่าย (บาท)", "profit_after_expenses"],
 ];

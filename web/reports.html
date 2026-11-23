@@ -40,6 +40,7 @@
       <section class="panel" aria-labelledby="report-summary-title">
         <h2 id="report-summary-title">ภาพรวม</h2>
         <dl id="report-summary" class="metrics report-metrics"></dl>
+        <p class="muted">ยอดรับชำระหนี้เป็นรายการรับเงินตามวันที่บันทึก ก่อนหักเงินคืน และแสดงแยกจากยอดขายและกำไร หากต้องการตรวจเงินสดให้ดูหน้าตรวจเงินสด</p>
         <p id="report-cost-warning" class="report-warning" hidden></p>
       </section>
 
@@ -48,11 +49,11 @@
           <h2 id="report-days-title">ยอดขายรายวัน</h2>
           <button type="button" class="secondary" id="report-download-days">ดาวน์โหลดรายวัน (CSV)</button>
         </div>
-        <p id="report-days-empty" class="muted" hidden>ไม่มียอดขายหรือค่าใช้จ่ายในช่วงที่เลือก</p>
+        <p id="report-days-empty" class="muted" hidden>ไม่มียอดขาย ค่าใช้จ่าย หรือรับชำระหนี้ในช่วงที่เลือก</p>
         <div id="report-days-wrap" class="report-table-wrap" role="region" tabindex="0" aria-labelledby="report-days-title" hidden>
           <table class="report-table">
             <thead>
-              <tr><th scope="col">วันที่</th><th scope="col">บิล</th><th scope="col">ยอดขาย (บาท)</th><th scope="col">เงินสด (บาท)</th><th scope="col">โอน (บาท)</th><th scope="col">เงินเชื่อ (บาท)</th><th scope="col">ต้นทุนขาย (บาท)</th><th scope="col">กำไรขั้นต้น (บาท)</th><th scope="col">ค่าใช้จ่าย (บาท)</th><th scope="col">กำไรหลังหักค่าใช้จ่าย (บาท)</th></tr>
+              <tr><th scope="col">วันที่</th><th scope="col">บิล</th><th scope="col">ยอดขาย (บาท)</th><th scope="col">เงินสดจากการขาย (บาท)</th><th scope="col">โอนจากการขาย (บาท)</th><th scope="col">เงินเชื่อ (บาท)</th><th scope="col">รับชำระหนี้เงินสด (บาท)</th><th scope="col">รับชำระหนี้โอน (บาท)</th><th scope="col">ต้นทุนขาย (บาท)</th><th scope="col">กำไรขั้นต้น (บาท)</th><th scope="col">ค่าใช้จ่าย (บาท)</th><th scope="col">กำไรหลังหักค่าใช้จ่าย (บาท)</th></tr>
             </thead>
             <tbody id="report-days"></tbody>
           </table>

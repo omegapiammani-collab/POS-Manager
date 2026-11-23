@@ -9,7 +9,7 @@ const product = (name, revenue, id = name) => ({
 const summary = {
   revenue: '0.00', bill_count: 0, cost: '0.00', gross_profit: '0.00', expenses: '0.00',
   cash_drawer_expenses: '0.00', external_expenses: '0.00', profit_after_expenses: '0.00',
-  cash: '0.00', qr: '0.00', credit: '0.00', pending_cost_bills: 0, unknown_cost_bills: 0,
+  cash: '0.00', qr: '0.00', credit: '0.00', debt_repayments_cash: '0.00', debt_repayments_qr: '0.00', pending_cost_bills: 0, unknown_cost_bills: 0,
 };
 
 async function csvNames(page) {
