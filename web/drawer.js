@@ -36,6 +36,33 @@ let pendingRawAvailable = false;
 let pending = restorePending();
 let pendingStored = true;
 let saving = false;
+let drawerQueueRequest = 0;
+
+async function inspectDrawerQueue() {
+  const request = ++drawerQueueRequest;
+  const expectedStore = storeId;
+  const output = byId("drawer-queue-status");
+  output.textContent = "กำลังตรวจรายการขายค้างในเบราว์เซอร์นี้";
+  try {
+    if (!expectedStore || !window.PosOffline) throw new Error("Unavailable");
+    const snapshot = await Promise.race([
+      window.PosOffline.exportQueue(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000)),
+    ]);
+    if (request !== drawerQueueRequest || expectedStore !== storeId) return;
+    if (!snapshot || !Array.isArray(snapshot.entries)
+      || snapshot.entries.some((entry) => !entry || !["pending", "conflict"].includes(entry.state))) throw new Error("Invalid queue");
+    if (snapshot.storeId !== expectedStore) {
+      output.textContent = "ยืนยันคิวของร้านปัจจุบันในเบราว์เซอร์นี้ไม่ได้ กรุณาไปตรวจที่หน้าขาย";
+    } else if (snapshot.entries.length) {
+      output.textContent = "ขณะตรวจพบรายการขายที่รอซิงก์หรือตรวจสอบในเบราว์เซอร์นี้ " + snapshot.entries.length + " รายการ กรุณาตรวจที่หน้าขายก่อนปิด";
+    } else {
+      output.textContent = "ขณะตรวจไม่พบรายการขายค้างในเบราว์เซอร์นี้";
+    }
+  } catch (_) {
+    if (request === drawerQueueRequest) output.textContent = "ตรวจรายการขายค้างในเบราว์เซอร์นี้ไม่ได้ กรุณาไปตรวจที่หน้าขาย";
+  }
+}
 
 function bangkokToday() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -189,6 +216,8 @@ function render(next) {
   byId("drawer-actions").hidden = closed;
   actionForms.open.hidden = open || closed;
   actionForms.movements.hidden = actionForms.close.hidden = !open;
+  byId("drawer-close-ack").checked = false;
+  if (open) inspectDrawerQueue();
   byId("drawer-close-expected").textContent = "ยอดที่ควรมี " + money(next.expected_cash);
   updateControls();
 }
@@ -317,6 +346,7 @@ dateInput.addEventListener("change", () => {
   loadDrawer();
 });
 byId("drawer-retry").addEventListener("click", submitPending);
+byId("drawer-queue-refresh").addEventListener("click", inspectDrawerQueue);
 byId("drawer-restore-export").addEventListener("click", () => {
   try {
     const raw = pending && !pendingStored ? JSON.stringify(pending) : sessionStorage.getItem(storageKey);

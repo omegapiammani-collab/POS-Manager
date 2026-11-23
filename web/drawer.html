@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ตรวจเงินสด | POS Manager</title>
   <link rel="stylesheet" href="/inventory.css">
+  <script src="/offline-store.js" defer></script>
   <script src="/drawer.js" defer></script>
 </head>
 <body class="drawer">
@@ -82,6 +83,10 @@
           <fieldset>
             <legend>ตรวจยอดตอนปิดร้าน</legend>
             <p id="drawer-close-expected" class="muted"></p>
+            <p id="drawer-queue-status" role="status">กำลังตรวจรายการขายค้างในเบราว์เซอร์นี้</p>
+            <button id="drawer-queue-refresh" class="secondary" type="button">ตรวจรายการค้างอีกครั้ง</button>
+            <p class="muted">ยอดปิดใช้เฉพาะข้อมูลที่ซิงก์แล้ว จำนวนรายการค้างในเบราว์เซอร์นี้รวมทุกวันที่ขาย และตรวจรายการค้างของอุปกรณ์อื่นจากหน้านี้ไม่ได้ รายการที่ซิงก์หลังปิดอาจทำให้ยอดระบบเปลี่ยน <a href="/checkout">ไปตรวจรายการขายค้าง</a></p>
+            <label class="drawer-check"><input id="drawer-close-ack" type="checkbox" required> รับทราบว่ายอดอาจยังไม่รวมบิลที่รอซิงก์</label>
             <label>เงินสดที่นับได้ (บาท)<input type="number" name="actual_cash" min="0" max="1000000000" step="0.01" inputmode="decimal" required></label>
             <button type="submit">ยืนยันปิดลิ้นชัก</button>
           </fieldset>
