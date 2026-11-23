@@ -57,7 +57,8 @@ def sale_history(db, *, expected_store=None):
                 "SELECT s.id, c.replacement_id, c.reason, c.excess, c.excess_action "
                 "FROM sales s LEFT JOIN sale_corrections c ON c.sale_id = s.id "
                 "LEFT JOIN offline_sale_times t ON t.sale_id = s.id "
-                "ORDER BY COALESCE(t.sold_at, s.created_at) DESC, s.id DESC",
+                "ORDER BY COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(t.sold_at, s.created_at)), "
+                "COALESCE(t.sold_at, s.created_at)) DESC, s.id DESC",
             )
         ]
 

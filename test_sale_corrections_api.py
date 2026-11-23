@@ -88,6 +88,21 @@ class SaleCorrectionsApiTests(unittest.TestCase):
             "replacement": replacement, "excess_action": action,
         }
 
+    def test_history_sorts_legacy_and_offline_timestamps_by_instant(self):
+        legacy = self.sell()
+        early = self.sell()
+        offline_payload = self.sale()
+        offline_payload["sold_at"] = "2025-06-14T10:00:00.000Z"
+        offline = self.created("/offline-sales", offline_payload)
+        tied = self.sell()
+        with closing(connect(self.database)) as db:
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14 16:00:00", legacy["id"]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14T01:00:00.000Z", early["id"]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14 23:00:00", offline["id"]))
+            db.execute("UPDATE sales SET created_at = ? WHERE id = ?", ("2025-06-14 10:00:00", tied["id"]))
+        expected = [legacy["id"], *sorted([offline["id"], tied["id"]], reverse=True), early["id"]]
+        self.assertEqual([row["id"] for row in self.expect(200, "/sale-history")], expected)
+
     @staticmethod
     def correction_path(sale):
         return f"/sales/{sale['id']}/corrections"

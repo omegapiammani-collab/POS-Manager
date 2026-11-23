@@ -154,7 +154,9 @@ function renderList(clearSelection = false) {
         return false;
       }
     }
-    if (!bill.id.toLowerCase().includes(query) && !(bill.customer_name ?? "").toLowerCase().includes(query)) {
+    const matchesItem = Array.isArray(bill.items) && bill.items.some((item) =>
+      typeof item?.name === "string" && item.name.toLowerCase().includes(query));
+    if (!bill.id.toLowerCase().includes(query) && !(bill.customer_name ?? "").toLowerCase().includes(query) && !matchesItem) {
       return false;
     }
     if (!from && !to) return true;
